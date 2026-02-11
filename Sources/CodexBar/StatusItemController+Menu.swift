@@ -332,6 +332,7 @@ extension StatusItemController {
         if context.currentProvider == .codex, model.creditsText != nil {
             menu.addItem(self.makeBuyCreditsItem())
         }
+        _ = self.addWeeklyProjectionSubmenu(to: menu, provider: context.currentProvider)
         menu.addItem(.separator())
         return false
     }
@@ -354,6 +355,7 @@ extension StatusItemController {
             if context.hasCostHistory {
                 _ = self.addCostHistorySubmenu(to: menu, provider: currentProvider)
             }
+            _ = self.addWeeklyProjectionSubmenu(to: menu, provider: currentProvider)
         }
         menu.addItem(.separator())
     }
@@ -1098,11 +1100,68 @@ extension StatusItemController {
         return submenu
     }
 
+    @discardableResult
+    private func addWeeklyProjectionSubmenu(to menu: NSMenu, provider: UsageProvider) -> Bool {
+        guard let submenu = self.makeWeeklyProjectionSubmenu(provider: provider) else { return false }
+        let item = NSMenuItem(title: "Weekly projection", action: nil, keyEquivalent: "")
+        item.isEnabled = true
+        item.submenu = submenu
+        menu.addItem(item)
+        return true
+    }
+
+    private func makeWeeklyProjectionSubmenu(provider: UsageProvider) -> NSMenu? {
+        let width = Self.menuCardBaseWidth
+        let report = WeeklyUsageHistoryStore.load(provider: provider)
+        guard let report else { return nil }
+
+        let now = Date()
+        let currentWeek = report.currentWeek(now: now)
+        let previousWeek = report.previousWeek(now: now)
+
+        // Need at least some data to show the chart
+        guard !currentWeek.isEmpty || !previousWeek.isEmpty else { return nil }
+
+        let projection = WeeklyProjection.compute(
+            currentWeek: currentWeek,
+            previousWeek: previousWeek,
+            now: now)
+
+        if !Self.menuCardRenderingEnabled {
+            let submenu = NSMenu()
+            submenu.delegate = self
+            let chartItem = NSMenuItem()
+            chartItem.isEnabled = false
+            chartItem.representedObject = "weeklyProjectionChart"
+            submenu.addItem(chartItem)
+            return submenu
+        }
+
+        let submenu = NSMenu()
+        submenu.delegate = self
+        let chartView = WeeklyProjectionChartMenuView(
+            provider: provider,
+            projection: projection,
+            width: width)
+        let hosting = MenuHostingView(rootView: chartView)
+        let controller = NSHostingController(rootView: chartView)
+        let size = controller.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+        hosting.frame = NSRect(origin: .zero, size: NSSize(width: width, height: size.height))
+
+        let chartItem = NSMenuItem()
+        chartItem.view = hosting
+        chartItem.isEnabled = false
+        chartItem.representedObject = "weeklyProjectionChart"
+        submenu.addItem(chartItem)
+        return submenu
+    }
+
     private func isHostedSubviewMenu(_ menu: NSMenu) -> Bool {
         let ids: Set<String> = [
             "usageBreakdownChart",
             "creditsHistoryChart",
             "costHistoryChart",
+            "weeklyProjectionChart",
         ]
         return menu.items.contains { item in
             guard let id = item.representedObject as? String else { return false }
