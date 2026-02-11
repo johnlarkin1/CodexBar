@@ -195,6 +195,8 @@ final class UsageStore {
     @ObservationIgnored var lastTokenFetchAt: [UsageProvider: Date] = [:]
     @ObservationIgnored private let tokenFetchTTL: TimeInterval = 60 * 60
     @ObservationIgnored private let tokenFetchTimeout: TimeInterval = 10 * 60
+    @ObservationIgnored var weeklyHistoryLastWrite: [String: Date] = [:]
+    @ObservationIgnored var weeklyHistoryLastPrune: Date?
 
     init(
         fetcher: UsageFetcher,
@@ -456,6 +458,7 @@ final class UsageStore {
         }
 
         self.persistWidgetSnapshot(reason: "refresh")
+        self.recordWeeklyHistoryIfNeeded()
     }
 
     /// For demo/testing: drop the snapshot so the loading animation plays, then restore the last snapshot.
