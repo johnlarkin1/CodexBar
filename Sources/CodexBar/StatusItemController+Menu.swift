@@ -322,6 +322,7 @@ extension StatusItemController {
                 provider: context.currentProvider,
                 width: context.menuWidth,
                 webItems: webItems)
+            _ = self.addWeeklyProjectionSubmenu(to: menu, provider: context.currentProvider)
             return true
         }
 
