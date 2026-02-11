@@ -45,9 +45,9 @@ public enum ClaudeProviderDescriptor {
     private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
         switch context.sourceMode {
         case .api:
-            return []
+            []
         case .auto, .oauth, .web, .cli:
-            return [ClaudeKeychainCLIFetchStrategy()]
+            [ClaudeKeychainCLIFetchStrategy()]
         }
     }
 

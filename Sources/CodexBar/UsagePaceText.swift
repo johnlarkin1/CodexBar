@@ -57,7 +57,7 @@ enum UsagePaceText {
     }
 
     static func sessionPace(provider: UsageProvider, window: RateWindow, now: Date) -> UsagePace? {
-        Self.pace(provider: provider, window: window, now: now, defaultWindowMinutes: 300)
+        self.pace(provider: provider, window: window, now: now, defaultWindowMinutes: 300)
     }
 
     static func sessionDetail(provider: UsageProvider, window: RateWindow, now: Date = .init()) -> WeeklyDetail? {
@@ -78,7 +78,7 @@ enum UsagePaceText {
     }
 
     static func weeklyPace(provider: UsageProvider, window: RateWindow, now: Date) -> UsagePace? {
-        Self.pace(provider: provider, window: window, now: now, defaultWindowMinutes: 10080)
+        self.pace(provider: provider, window: window, now: now, defaultWindowMinutes: 10080)
     }
 
     private static func pace(

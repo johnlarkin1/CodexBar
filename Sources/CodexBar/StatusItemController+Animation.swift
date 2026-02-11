@@ -233,12 +233,18 @@ extension StatusItemController {
             return .none
         }()
 
+        let usageColor: NSColor? = {
+            guard self.settings.colorCodedIcons, !needsAnimation else { return nil }
+            return UsageColorLevel.tintColor(for: snapshot?.primary?.usedPercent)
+        }()
+
         if showBrandPercent,
            let brand = ProviderBrandIcon.image(for: primaryProvider)
         {
             let displayText = self.menuBarDisplayText(for: primaryProvider, snapshot: snapshot)
             self.setButtonImage(brand, for: button)
             self.setButtonTitle(displayText, for: button)
+            self.setButtonTintColor(usageColor, for: button)
             return
         }
 
@@ -246,6 +252,7 @@ extension StatusItemController {
         if let morphProgress {
             let image = IconRenderer.makeMorphIcon(progress: morphProgress, style: style)
             self.setButtonImage(image, for: button)
+            self.setButtonTintColor(nil, for: button)
         } else {
             let image = IconRenderer.makeIcon(
                 primaryRemaining: primary,
@@ -258,6 +265,7 @@ extension StatusItemController {
                 tilt: tilt,
                 statusIndicator: statusIndicator)
             self.setButtonImage(image, for: button)
+            self.setButtonTintColor(usageColor, for: button)
         }
     }
 
@@ -268,6 +276,12 @@ extension StatusItemController {
         // user setting we pass either "percent left" or "percent used".
         let showUsed = self.settings.usageBarsShowUsed
         let showBrandPercent = self.settings.menuBarShowsBrandIconWithPercent
+        let isAnimating = phase != nil && self.shouldAnimate(provider: provider)
+
+        let usageColor: NSColor? = {
+            guard self.settings.colorCodedIcons, !isAnimating else { return nil }
+            return UsageColorLevel.tintColor(for: snapshot?.primary?.usedPercent)
+        }()
 
         if showBrandPercent,
            let brand = ProviderBrandIcon.image(for: provider)
@@ -275,6 +289,7 @@ extension StatusItemController {
             let displayText = self.menuBarDisplayText(for: provider, snapshot: snapshot)
             self.setButtonImage(brand, for: button)
             self.setButtonTitle(displayText, for: button)
+            self.setButtonTintColor(usageColor, for: button)
             return
         }
         var primary = showUsed ? snapshot?.primary?.usedPercent : snapshot?.primary?.remainingPercent
@@ -283,21 +298,21 @@ extension StatusItemController {
         var stale = self.store.isStale(provider: provider)
         var morphProgress: Double?
 
-        if let phase, self.shouldAnimate(provider: provider) {
+        if isAnimating {
             var pattern = self.animationPattern
             if provider == .claude, pattern == .unbraid {
                 pattern = .cylon
             }
             if pattern == .unbraid {
-                morphProgress = pattern.value(phase: phase) / 100
+                morphProgress = pattern.value(phase: phase!) / 100
                 primary = nil
                 weekly = nil
                 credits = nil
                 stale = false
             } else {
                 // Keep loading animation layout stable: IconRenderer switches layouts at `weeklyRemaining == 0`.
-                primary = max(pattern.value(phase: phase), Self.loadingPercentEpsilon)
-                weekly = max(pattern.value(phase: phase + pattern.secondaryOffset), Self.loadingPercentEpsilon)
+                primary = max(pattern.value(phase: phase!), Self.loadingPercentEpsilon)
+                weekly = max(pattern.value(phase: phase! + pattern.secondaryOffset), Self.loadingPercentEpsilon)
                 credits = nil
                 stale = false
             }
@@ -310,6 +325,7 @@ extension StatusItemController {
         if let morphProgress {
             let image = IconRenderer.makeMorphIcon(progress: morphProgress, style: style)
             self.setButtonImage(image, for: button)
+            self.setButtonTintColor(nil, for: button)
         } else {
             self.setButtonTitle(nil, for: button)
             let image = IconRenderer.makeIcon(
@@ -323,12 +339,18 @@ extension StatusItemController {
                 tilt: tilt,
                 statusIndicator: self.store.statusIndicator(for: provider))
             self.setButtonImage(image, for: button)
+            self.setButtonTintColor(usageColor, for: button)
         }
     }
 
     private func setButtonImage(_ image: NSImage, for button: NSStatusBarButton) {
         if button.image === image { return }
         button.image = image
+    }
+
+    private func setButtonTintColor(_ color: NSColor?, for button: NSStatusBarButton) {
+        if button.contentTintColor == color { return }
+        button.contentTintColor = color
     }
 
     private func setButtonTitle(_ title: String?, for button: NSStatusBarButton) {
@@ -348,7 +370,8 @@ extension StatusItemController {
             provider: provider,
             percentWindow: self.menuBarPercentWindow(for: provider, snapshot: snapshot),
             paceWindow: snapshot?.secondary,
-            showUsed: self.settings.usageBarsShowUsed)
+            showUsed: self.settings.usageBarsShowUsed,
+            separatorStyle: self.settings.menuBarSeparatorStyle)
     }
 
     private func menuBarPercentWindow(for provider: UsageProvider, snapshot: UsageSnapshot?) -> RateWindow? {
