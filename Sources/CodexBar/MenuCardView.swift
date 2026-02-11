@@ -743,6 +743,11 @@ extension UsageMenuCardView.Model {
         let zaiTokenDetail = Self.zaiLimitDetailText(limit: zaiUsage?.tokenLimit)
         let zaiTimeDetail = Self.zaiLimitDetailText(limit: zaiUsage?.timeLimit)
         if let primary = snapshot.primary {
+            let sessionPaceDetail = Self.sessionPaceDetail(
+                provider: input.provider,
+                window: primary,
+                now: input.now,
+                showUsed: input.usageBarsShowUsed)
             metrics.append(Metric(
                 id: "primary",
                 title: input.metadata.sessionLabel,
@@ -751,10 +756,10 @@ extension UsageMenuCardView.Model {
                 percentStyle: percentStyle,
                 resetText: Self.resetText(for: primary, style: input.resetTimeDisplayStyle, now: input.now),
                 detailText: input.provider == .zai ? zaiTokenDetail : nil,
-                detailLeftText: nil,
-                detailRightText: nil,
-                pacePercent: nil,
-                paceOnTop: true))
+                detailLeftText: sessionPaceDetail?.leftLabel,
+                detailRightText: sessionPaceDetail?.rightLabel,
+                pacePercent: sessionPaceDetail?.pacePercent,
+                paceOnTop: sessionPaceDetail?.paceOnTop ?? true))
         }
         if let weekly = snapshot.secondary {
             let paceDetail = Self.weeklyPaceDetail(
@@ -818,6 +823,27 @@ extension UsageMenuCardView.Model {
         let rightLabel: String?
         let pacePercent: Double?
         let paceOnTop: Bool
+    }
+
+    private static func sessionPaceDetail(
+        provider: UsageProvider,
+        window: RateWindow,
+        now: Date,
+        showUsed: Bool) -> PaceDetail?
+    {
+        guard let detail = UsagePaceText.sessionDetail(provider: provider, window: window, now: now) else { return nil }
+        let expectedUsed = detail.expectedUsedPercent
+        let actualUsed = window.usedPercent
+        let expectedPercent = showUsed ? expectedUsed : (100 - expectedUsed)
+        let actualPercent = showUsed ? actualUsed : (100 - actualUsed)
+        if expectedPercent.isFinite == false || actualPercent.isFinite == false { return nil }
+        let paceOnTop = actualUsed <= expectedUsed
+        let pacePercent: Double? = if detail.stage == .onTrack { nil } else { expectedPercent }
+        return PaceDetail(
+            leftLabel: detail.leftLabel,
+            rightLabel: detail.rightLabel,
+            pacePercent: pacePercent,
+            paceOnTop: paceOnTop)
     }
 
     private static func weeklyPaceDetail(
