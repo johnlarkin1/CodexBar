@@ -32,7 +32,7 @@ public enum CodexProviderDescriptor {
                 supportsTokenCost: true,
                 noDataMessage: self.noDataMessage),
             fetchPlan: ProviderFetchPlan(
-                sourceModes: [.auto, .web, .cli, .oauth],
+                sourceModes: [.auto, .oauth],
                 pipeline: ProviderFetchPipeline(resolveStrategies: self.resolveStrategies)),
             cli: ProviderCLIConfig(
                 name: "codex",
@@ -40,37 +40,11 @@ public enum CodexProviderDescriptor {
     }
 
     private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
-        let cli = CodexCLIUsageStrategy()
-        let oauth = CodexOAuthFetchStrategy()
-        let web = CodexWebDashboardStrategy()
-
-        switch context.runtime {
-        case .cli:
-            switch context.sourceMode {
-            case .oauth:
-                return [oauth]
-            case .web:
-                return [web]
-            case .cli:
-                return [cli]
-            case .api:
-                return []
-            case .auto:
-                return [web, cli]
-            }
-        case .app:
-            switch context.sourceMode {
-            case .oauth:
-                return [oauth]
-            case .cli:
-                return [cli]
-            case .web:
-                return [web]
-            case .api:
-                return []
-            case .auto:
-                return [oauth, cli]
-            }
+        switch context.sourceMode {
+        case .oauth, .auto:
+            return [CodexOAuthFetchStrategy()]
+        case .api, .web, .cli:
+            return []
         }
     }
 

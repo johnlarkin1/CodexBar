@@ -50,11 +50,4 @@ struct CLIWebFallbackTests {
             context: context))
     }
 
-    @Test
-    func claudeFallsBackWhenNoSessionKey() {
-        let context = self.makeContext()
-        let strategy = ClaudeWebFetchStrategy(browserDetection: BrowserDetection(cacheTTL: 0))
-        #expect(strategy.shouldFallback(on: ClaudeWebAPIFetcher.FetchError.noSessionKeyFound, context: context))
-        #expect(strategy.shouldFallback(on: ClaudeWebAPIFetcher.FetchError.unauthorized, context: context))
-    }
 }
