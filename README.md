@@ -36,3 +36,16 @@ I like the notion of pace, but I think it should also render for the 5 hour wind
 
 I want to look at my menu bar and immediately know my CC usage or my Codex usage. @richhickson's project does that better by showing 🟢🟡🔴 so I wanted to do something similar with my version of CodexBar, but instead I wanted to color the claude / codex menu bar options. 
 
+![Color Gradient Usage](Public/bar-usage-pace.png)
+
+Ya see how it's colored. 
+
+## Bar vs Dot dividing Usage vs Pace 
+
+See this: 
+
+![Bar vs Dot dividing Usage vs Pace](Public/bar-usage-pace.png)
+
+and this new option:
+
+![Separator Option](Public/seprator-option.png)

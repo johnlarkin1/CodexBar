@@ -78,7 +78,7 @@ struct UsagePaceTests {
         // elapsed = 3h of 5h => expected = 60%
         #expect(abs(pace.expectedUsedPercent - 60.0) < 0.01)
         // delta = 50 - 60 = -10 => behind (in reserve)
-        #expect(abs(pace.deltaPercent - (-10.0)) < 0.01)
+        #expect(abs(pace.deltaPercent - -10.0) < 0.01)
         #expect(pace.stage == .behind)
         #expect(pace.willLastToReset == true)
     }

@@ -49,5 +49,4 @@ struct CLIWebFallbackTests {
             on: OpenAIDashboardFetcher.FetchError.noDashboardData(body: "missing"),
             context: context))
     }
-
 }

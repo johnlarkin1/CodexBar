@@ -42,9 +42,9 @@ public enum CodexProviderDescriptor {
     private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
         switch context.sourceMode {
         case .oauth, .auto:
-            return [CodexOAuthFetchStrategy()]
+            [CodexOAuthFetchStrategy()]
         case .api, .web, .cli:
-            return []
+            []
         }
     }
 
