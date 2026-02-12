@@ -48,4 +48,4 @@ See this:
 
 and this new option:
 
-![Separator Option](Public/seprator-option.png)
+![Separator Option](Public/separator-option.png)
