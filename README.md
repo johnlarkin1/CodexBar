@@ -49,3 +49,20 @@ See this:
 and this new option:
 
 ![Separator Option](Public/separator-option.png)
+
+
+## Better Menu Bar Configurations
+
+More flexibility for your menu bar again:
+
+### Menu Bar Options (Part 1)
+
+![Menu Bar Options Part 1](Public/menu-bar-options-pt1.png)
+
+### Menu Bar Options (Part 2)
+
+![Menu Bar Options Part 2](Public/menu-bar-options-pt2.png)
+
+
+
+
