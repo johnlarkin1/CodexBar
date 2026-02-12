@@ -365,13 +365,26 @@ extension StatusItemController {
     }
 
     func menuBarDisplayText(for provider: UsageProvider, snapshot: UsageSnapshot?) -> String? {
-        MenuBarDisplayText.displayText(
+        let percentWindow: RateWindow? = switch self.settings.menuBarPercentTimeWindow {
+        case .session:
+            self.menuBarPercentWindow(for: provider, snapshot: snapshot)
+        case .weekly:
+            snapshot?.secondary ?? self.menuBarPercentWindow(for: provider, snapshot: snapshot)
+        }
+        let paceWindow: RateWindow? = switch self.settings.menuBarPaceTimeWindow {
+        case .session:
+            snapshot?.primary ?? snapshot?.secondary
+        case .weekly:
+            snapshot?.secondary ?? snapshot?.primary
+        }
+        return MenuBarDisplayText.displayText(
             mode: self.settings.menuBarDisplayMode,
             provider: provider,
-            percentWindow: self.menuBarPercentWindow(for: provider, snapshot: snapshot),
-            paceWindow: snapshot?.secondary,
+            percentWindow: percentWindow,
+            paceWindow: paceWindow,
             showUsed: self.settings.usageBarsShowUsed,
-            separatorStyle: self.settings.menuBarSeparatorStyle)
+            separatorStyle: self.settings.menuBarSeparatorStyle,
+            paceTimeWindow: self.settings.menuBarPaceTimeWindow)
     }
 
     private func menuBarPercentWindow(for provider: UsageProvider, snapshot: UsageSnapshot?) -> RateWindow? {

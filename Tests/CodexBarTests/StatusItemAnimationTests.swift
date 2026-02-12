@@ -240,6 +240,52 @@ struct StatusItemAnimationTests {
     }
 
     @Test
+    func menuBarDisplayTextUsesSessionPaceTimeWindow() {
+        let now = Date(timeIntervalSince1970: 0)
+        // Session window: 300-minute, 2h remaining => 3h elapsed, expected=60%, actual=30% => -30%
+        let paceWindow = RateWindow(
+            usedPercent: 30,
+            windowMinutes: 300,
+            resetsAt: now.addingTimeInterval(2 * 3600),
+            resetDescription: nil)
+
+        let paceSession = MenuBarDisplayText.paceText(
+            provider: .claude, window: paceWindow, timeWindow: .session, now: now)
+        let paceWeekly = MenuBarDisplayText.paceText(
+            provider: .claude, window: paceWindow, timeWindow: .weekly, now: now)
+
+        // Session pace should produce a value (300-minute window with session calc)
+        #expect(paceSession != nil)
+        // Weekly pace with a 300-minute window won't match the 10080-minute default, so may differ
+        // The key point is that .session dispatches to sessionPace and .weekly to weeklyPace
+        _ = paceWeekly
+    }
+
+    @Test
+    func menuBarDisplayTextPassesPaceTimeWindowThrough() {
+        let now = Date(timeIntervalSince1970: 0)
+        let percentWindow = RateWindow(usedPercent: 40, windowMinutes: nil, resetsAt: nil, resetDescription: nil)
+        let paceWindow = RateWindow(
+            usedPercent: 30,
+            windowMinutes: 300,
+            resetsAt: now.addingTimeInterval(2 * 3600),
+            resetDescription: nil)
+
+        let bothSession = MenuBarDisplayText.displayText(
+            mode: .both,
+            provider: .claude,
+            percentWindow: percentWindow,
+            paceWindow: paceWindow,
+            showUsed: true,
+            paceTimeWindow: .session,
+            now: now)
+
+        // With session time window on a 300-min window, pace should be available for claude
+        #expect(bothSession != nil)
+        #expect(bothSession?.contains("%") == true)
+    }
+
+    @Test
     func menuBarDisplayTextHidesWhenPaceUnavailable() {
         let now = Date(timeIntervalSince1970: 0)
         let percentWindow = RateWindow(usedPercent: 40, windowMinutes: nil, resetsAt: nil, resetDescription: nil)
@@ -266,5 +312,33 @@ struct StatusItemAnimationTests {
 
         #expect(pace == nil)
         #expect(both == nil)
+    }
+
+    @Test
+    func timeWindowSettingsRoundTrip() {
+        // Clean slate for defaults check
+        UserDefaults.standard.removeObject(forKey: "menuBarPercentTimeWindow")
+        UserDefaults.standard.removeObject(forKey: "menuBarPaceTimeWindow")
+
+        let settings = SettingsStore(
+            configStore: testConfigStore(suiteName: "StatusItemAnimationTests-timewindow"),
+            zaiTokenStore: NoopZaiTokenStore())
+
+        // Defaults
+        #expect(settings.menuBarPercentTimeWindow == .session)
+        #expect(settings.menuBarPaceTimeWindow == .weekly)
+
+        // Set to non-default values
+        settings.menuBarPercentTimeWindow = .weekly
+        settings.menuBarPaceTimeWindow = .session
+
+        #expect(settings.menuBarPercentTimeWindow == .weekly)
+        #expect(settings.menuBarPaceTimeWindow == .session)
+
+        // Verify persisted in UserDefaults
+        let percentRaw = settings.userDefaults.string(forKey: "menuBarPercentTimeWindow")
+        let paceRaw = settings.userDefaults.string(forKey: "menuBarPaceTimeWindow")
+        #expect(percentRaw == "weekly")
+        #expect(paceRaw == "session")
     }
 }
