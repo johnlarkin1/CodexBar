@@ -57,7 +57,8 @@ public struct WeeklyProjection: Sendable {
         previousWeek: [WeeklyUsageRecord],
         now: Date = Date()) -> WeeklyProjection
     {
-        let cal = Calendar(identifier: .iso8601)
+        var cal = Calendar(identifier: .iso8601)
+        cal.timeZone = TimeZone.current
         let todayDayOfWeek = cal.component(.weekday, from: now)
         // Convert from Calendar weekday (1=Sun...7=Sat) to ISO 8601 (1=Mon...7=Sun)
         let isoDayOfWeek = todayDayOfWeek == 1 ? 7 : todayDayOfWeek - 1
@@ -71,11 +72,22 @@ public struct WeeklyProjection: Sendable {
         // Determine which metric to use: prefer percentage, fall back to tokens, then cost
         let metric = Self.detectMetric(currentWeek: currentWeek, previousWeek: previousWeek)
 
-        // Compute average daily burn rate from this week's data
+        // Compute average daily rate from this week's data.
+        // For percentage (cumulative): daily rate = latestValue / daysElapsed
+        // For tokens/cost (non-cumulative daily values): daily rate = mean of values
         let currentValues = currentWeek.compactMap { Self.value(for: $0, metric: metric) }
         let daysWithData = currentValues.count
+        let latestValue = currentWeek
+            .sorted { $0.dayOfWeek < $1.dayOfWeek }
+            .last
+            .flatMap { Self.value(for: $0, metric: metric) }
         let avgDailyRate: Double? = if daysWithData > 0 {
-            currentValues.reduce(0, +) / Double(daysWithData)
+            switch metric {
+            case .percentage:
+                (latestValue ?? 0) / Double(daysWithData)
+            case .tokens, .cost:
+                currentValues.reduce(0, +) / Double(daysWithData)
+            }
         } else {
             nil
         }
@@ -91,7 +103,14 @@ public struct WeeklyProjection: Sendable {
 
             // Only project future days (after today)
             let projectedValue: Double? = if day > isoDayOfWeek, let avgDailyRate {
-                avgDailyRate
+                switch metric {
+                case .percentage:
+                    // Cumulative: project what the running total will be on that day
+                    (latestValue ?? 0) + avgDailyRate * Double(day - isoDayOfWeek)
+                case .tokens, .cost:
+                    // Non-cumulative: flat daily rate per future day
+                    avgDailyRate
+                }
             } else {
                 nil
             }
