@@ -28,7 +28,8 @@ extension UsageStore {
         // Need at least some data to record
         guard snapshot?.secondary != nil || tokenSnapshot != nil else { return }
 
-        let cal = Calendar(identifier: .iso8601)
+        var cal = Calendar(identifier: .iso8601)
+        cal.timeZone = TimeZone.current
         let dayFormatter = DateFormatter()
         dayFormatter.locale = Locale(identifier: "en_US_POSIX")
         dayFormatter.timeZone = TimeZone.current
