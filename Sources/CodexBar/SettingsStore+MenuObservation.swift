@@ -16,6 +16,8 @@ extension SettingsStore {
         _ = self.menuBarShowsBrandIconWithPercent
         _ = self.menuBarShowsHighestUsage
         _ = self.menuBarDisplayMode
+        _ = self.menuBarPercentTimeWindow
+        _ = self.menuBarPaceTimeWindow
         _ = self.showAllTokenAccountsInMenu
         _ = self.menuBarMetricPreferencesRaw
         _ = self.costUsageEnabled

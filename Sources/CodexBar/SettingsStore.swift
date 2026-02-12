@@ -191,6 +191,10 @@ extension SettingsStore {
             ?? MenuBarDisplayMode.percent.rawValue
         let menuBarSeparatorStyleRaw = userDefaults.string(forKey: "menuBarSeparatorStyle")
             ?? MenuBarSeparatorStyle.dot.rawValue
+        let menuBarPercentTimeWindowRaw = userDefaults.string(forKey: "menuBarPercentTimeWindow")
+            ?? MenuBarTimeWindow.session.rawValue
+        let menuBarPaceTimeWindowRaw = userDefaults.string(forKey: "menuBarPaceTimeWindow")
+            ?? MenuBarTimeWindow.weekly.rawValue
         let showAllTokenAccountsInMenu = userDefaults.object(forKey: "showAllTokenAccountsInMenu") as? Bool ?? false
         let storedPreferences = userDefaults.dictionary(forKey: "menuBarMetricPreferences") as? [String: String] ?? [:]
         var resolvedPreferences = storedPreferences
@@ -235,6 +239,8 @@ extension SettingsStore {
             menuBarShowsBrandIconWithPercent: menuBarShowsBrandIconWithPercent,
             menuBarDisplayModeRaw: menuBarDisplayModeRaw,
             menuBarSeparatorStyleRaw: menuBarSeparatorStyleRaw,
+            menuBarPercentTimeWindowRaw: menuBarPercentTimeWindowRaw,
+            menuBarPaceTimeWindowRaw: menuBarPaceTimeWindowRaw,
             showAllTokenAccountsInMenu: showAllTokenAccountsInMenu,
             menuBarMetricPreferencesRaw: resolvedPreferences,
             costUsageEnabled: costUsageEnabled,
