@@ -33,7 +33,7 @@ public enum ClaudeProviderDescriptor {
                 supportsTokenCost: true,
                 noDataMessage: self.noDataMessage),
             fetchPlan: ProviderFetchPlan(
-                sourceModes: [.auto],
+                sourceModes: [.auto, .web, .cli, .oauth],
                 pipeline: ProviderFetchPipeline(resolveStrategies: self.resolveStrategies)),
             cli: ProviderCLIConfig(
                 name: "claude",
@@ -43,11 +43,55 @@ public enum ClaudeProviderDescriptor {
     }
 
     private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
-        switch context.sourceMode {
-        case .api:
-            []
-        case .auto, .oauth, .web, .cli:
-            [ClaudeKeychainCLIFetchStrategy()]
+        switch context.runtime {
+        case .cli:
+            switch context.sourceMode {
+            case .oauth:
+                return [ClaudeOAuthFetchStrategy()]
+            case .web:
+                return [ClaudeWebFetchStrategy(browserDetection: context.browserDetection)]
+            case .cli:
+                return [ClaudeCLIFetchStrategy(
+                    useWebExtras: false,
+                    manualCookieHeader: nil,
+                    browserDetection: context.browserDetection)]
+            case .api:
+                return []
+            case .auto:
+                return [
+                    ClaudeOAuthFetchStrategy(),
+                    ClaudeWebFetchStrategy(browserDetection: context.browserDetection),
+                    ClaudeCLIFetchStrategy(
+                        useWebExtras: false,
+                        manualCookieHeader: nil,
+                        browserDetection: context.browserDetection),
+                ]
+            }
+        case .app:
+            let webExtrasEnabled = context.settings?.claude?.webExtrasEnabled ?? false
+            let manualCookieHeader = CookieHeaderNormalizer.normalize(context.settings?.claude?.manualCookieHeader)
+            switch context.sourceMode {
+            case .oauth:
+                return [ClaudeOAuthFetchStrategy()]
+            case .web:
+                return [ClaudeWebFetchStrategy(browserDetection: context.browserDetection)]
+            case .cli:
+                return [ClaudeCLIFetchStrategy(
+                    useWebExtras: webExtrasEnabled,
+                    manualCookieHeader: manualCookieHeader,
+                    browserDetection: context.browserDetection)]
+            case .api:
+                return []
+            case .auto:
+                return [
+                    ClaudeOAuthFetchStrategy(),
+                    ClaudeCLIFetchStrategy(
+                        useWebExtras: webExtrasEnabled,
+                        manualCookieHeader: manualCookieHeader,
+                        browserDetection: context.browserDetection),
+                    ClaudeWebFetchStrategy(browserDetection: context.browserDetection),
+                ]
+            }
         }
     }
 
@@ -59,11 +103,15 @@ public enum ClaudeProviderDescriptor {
         selectedDataSource: ClaudeUsageDataSource,
         webExtrasEnabled: Bool,
         hasWebSession: Bool,
+        hasCLI: Bool,
         hasOAuthCredentials: Bool) -> ClaudeUsageStrategy
     {
         if selectedDataSource == .auto {
             if hasOAuthCredentials {
                 return ClaudeUsageStrategy(dataSource: .oauth, useWebExtras: false)
+            }
+            if hasCLI {
+                return ClaudeUsageStrategy(dataSource: .cli, useWebExtras: false)
             }
             if hasWebSession {
                 return ClaudeUsageStrategy(dataSource: .web, useWebExtras: false)
@@ -81,148 +129,217 @@ public struct ClaudeUsageStrategy: Equatable, Sendable {
     public let useWebExtras: Bool
 }
 
-/// Fetches Claude usage by reading OAuth credentials from the macOS Keychain via the `/usr/bin/security` CLI.
-/// This avoids Keychain permission prompts because the `security` binary is already in the keychain ACL,
-/// unlike direct `SecItemCopyMatching` calls which trigger macOS permission dialogs.
-struct ClaudeKeychainCLIFetchStrategy: ProviderFetchStrategy {
-    let id: String = "claude.keychain-cli"
+struct ClaudeOAuthFetchStrategy: ProviderFetchStrategy {
+    let id: String = "claude.oauth"
     let kind: ProviderFetchKind = .oauth
+
+    #if DEBUG
+    @TaskLocal static var nonInteractiveCredentialRecordOverride: ClaudeOAuthCredentialRecord?
+    @TaskLocal static var claudeCLIAvailableOverride: Bool?
+    #endif
+
+    private func loadNonInteractiveCredentialRecord(_ context: ProviderFetchContext) -> ClaudeOAuthCredentialRecord? {
+        #if DEBUG
+        if let override = Self.nonInteractiveCredentialRecordOverride { return override }
+        #endif
+
+        return try? ClaudeOAuthCredentialsStore.loadRecord(
+            environment: context.env,
+            allowKeychainPrompt: false,
+            respectKeychainPromptCooldown: true,
+            allowClaudeKeychainRepairWithoutPrompt: false)
+    }
+
+    private func isClaudeCLIAvailable() -> Bool {
+        #if DEBUG
+        if let override = Self.claudeCLIAvailableOverride { return override }
+        #endif
+        return ClaudeOAuthDelegatedRefreshCoordinator.isClaudeCLIAvailable()
+    }
+
+    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
+        let nonInteractiveRecord = self.loadNonInteractiveCredentialRecord(context)
+        let nonInteractiveCredentials = nonInteractiveRecord?.credentials
+        let hasRequiredScopeWithoutPrompt = nonInteractiveCredentials?.scopes.contains("user:profile") == true
+        if hasRequiredScopeWithoutPrompt, nonInteractiveCredentials?.isExpired == false {
+            // Gate controls refresh attempts, not use of already-valid access tokens.
+            return true
+        }
+
+        let hasEnvironmentOAuthToken = !(context.env[ClaudeOAuthCredentialsStore.environmentTokenKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty ?? true)
+        let claudeCLIAvailable = self.isClaudeCLIAvailable()
+
+        if hasEnvironmentOAuthToken {
+            return true
+        }
+
+        if let nonInteractiveRecord, hasRequiredScopeWithoutPrompt, nonInteractiveRecord.credentials.isExpired {
+            switch nonInteractiveRecord.owner {
+            case .codexbar:
+                let refreshToken = nonInteractiveRecord.credentials.refreshToken?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if context.sourceMode == .auto {
+                    return !refreshToken.isEmpty
+                }
+                return true
+            case .claudeCLI:
+                if context.sourceMode == .auto {
+                    return claudeCLIAvailable
+                }
+                return true
+            case .environment:
+                return context.sourceMode != .auto
+            }
+        }
+
+        guard context.sourceMode == .auto else { return true }
+
+        // Prefer OAuth in Auto mode only when it’s plausibly usable:
+        // - we can load credentials without prompting (env / CodexBar cache / credentials file) AND they meet the
+        //   scope requirement, or
+        // - Claude Code has stored OAuth creds in Keychain and we may be able to bootstrap (one prompt max).
+        //
+        // User actions should be able to recover immediately even if a prior background attempt tripped the
+        // keychain cooldown gate. Clear the cooldown before deciding availability so the fetch path can proceed.
+        let promptPolicyApplicable = ClaudeOAuthKeychainPromptPreference.isApplicable()
+        if promptPolicyApplicable, ProviderInteractionContext.current == .userInitiated {
+            _ = ClaudeOAuthKeychainAccessGate.clearDenied()
+        }
+
+        let shouldAllowStartupBootstrap = promptPolicyApplicable &&
+            context.runtime == .app &&
+            ProviderRefreshContext.current == .startup &&
+            ProviderInteractionContext.current == .background &&
+            ClaudeOAuthKeychainPromptPreference.current() == .onlyOnUserAction &&
+            !ClaudeOAuthCredentialsStore.hasCachedCredentials(environment: context.env)
+        if shouldAllowStartupBootstrap {
+            return ClaudeOAuthKeychainAccessGate.shouldAllowPrompt()
+        }
+
+        if promptPolicyApplicable,
+           !ClaudeOAuthKeychainAccessGate.shouldAllowPrompt()
+        {
+            return false
+        }
+        return ClaudeOAuthCredentialsStore.hasClaudeKeychainCredentialsWithoutPrompt()
+    }
+
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        let fetcher = ClaudeUsageFetcher(
+            browserDetection: context.browserDetection,
+            environment: context.env,
+            dataSource: .oauth,
+            oauthKeychainPromptCooldownEnabled: context.sourceMode == .auto,
+            allowBackgroundDelegatedRefresh: context.runtime == .cli,
+            allowStartupBootstrapPrompt: context.runtime == .app &&
+                (context.sourceMode == .auto || context.sourceMode == .oauth),
+            useWebExtras: false)
+        let usage = try await fetcher.loadLatestUsage(model: "sonnet")
+        return self.makeResult(
+            usage: Self.snapshot(from: usage),
+            sourceLabel: "oauth")
+    }
+
+    func shouldFallback(on _: Error, context: ProviderFetchContext) -> Bool {
+        // In Auto mode, fall back to the next strategy (cli/web) if OAuth fails (e.g. user cancels keychain prompt
+        // or auth breaks).
+        context.runtime == .app && context.sourceMode == .auto
+    }
+
+    fileprivate static func snapshot(from usage: ClaudeUsageSnapshot) -> UsageSnapshot {
+        let identity = ProviderIdentitySnapshot(
+            providerID: .claude,
+            accountEmail: usage.accountEmail,
+            accountOrganization: usage.accountOrganization,
+            loginMethod: usage.loginMethod)
+        return UsageSnapshot(
+            primary: usage.primary,
+            secondary: usage.secondary,
+            tertiary: usage.opus,
+            providerCost: usage.providerCost,
+            updatedAt: usage.updatedAt,
+            identity: identity)
+    }
+}
+
+struct ClaudeWebFetchStrategy: ProviderFetchStrategy {
+    let id: String = "claude.web"
+    let kind: ProviderFetchKind = .web
+    let browserDetection: BrowserDetection
+
+    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
+        Self.isAvailableForFallback(context: context, browserDetection: self.browserDetection)
+    }
+
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        let fetcher = ClaudeUsageFetcher(
+            browserDetection: browserDetection,
+            dataSource: .web,
+            useWebExtras: false,
+            manualCookieHeader: Self.manualCookieHeader(from: context))
+        let usage = try await fetcher.loadLatestUsage(model: "sonnet")
+        return self.makeResult(
+            usage: ClaudeOAuthFetchStrategy.snapshot(from: usage),
+            sourceLabel: "web")
+    }
+
+    func shouldFallback(on error: Error, context: ProviderFetchContext) -> Bool {
+        guard context.sourceMode == .auto else { return false }
+        _ = error
+        // In CLI runtime auto mode, web comes before CLI so fallback is required.
+        // In app runtime auto mode, web is terminal and should surface its concrete error.
+        return context.runtime == .cli
+    }
+
+    fileprivate static func isAvailableForFallback(
+        context: ProviderFetchContext,
+        browserDetection: BrowserDetection) -> Bool
+    {
+        if let header = self.manualCookieHeader(from: context) {
+            return ClaudeWebAPIFetcher.hasSessionKey(cookieHeader: header)
+        }
+        guard context.settings?.claude?.cookieSource != .off else { return false }
+        return ClaudeWebAPIFetcher.hasSessionKey(browserDetection: browserDetection)
+    }
+
+    private static func manualCookieHeader(from context: ProviderFetchContext) -> String? {
+        guard context.settings?.claude?.cookieSource == .manual else { return nil }
+        return CookieHeaderNormalizer.normalize(context.settings?.claude?.manualCookieHeader)
+    }
+}
+
+struct ClaudeCLIFetchStrategy: ProviderFetchStrategy {
+    let id: String = "claude.cli"
+    let kind: ProviderFetchKind = .cli
+    let useWebExtras: Bool
+    let manualCookieHeader: String?
+    let browserDetection: BrowserDetection
 
     func isAvailable(_: ProviderFetchContext) async -> Bool {
         true
     }
 
-    func fetch(_: ProviderFetchContext) async throws -> ProviderFetchResult {
-        let credentials = try Self.loadCredentialsViaCLI()
-        let usage = try await ClaudeOAuthUsageFetcher.fetchUsage(accessToken: credentials.accessToken)
-        let snapshot = try Self.mapUsage(usage, credentials: credentials)
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        let keepAlive = context.settings?.debugKeepCLISessionsAlive ?? false
+        let fetcher = ClaudeUsageFetcher(
+            browserDetection: browserDetection,
+            dataSource: .cli,
+            useWebExtras: self.useWebExtras,
+            manualCookieHeader: self.manualCookieHeader,
+            keepCLISessionsAlive: keepAlive)
+        let usage = try await fetcher.loadLatestUsage(model: "sonnet")
         return self.makeResult(
-            usage: snapshot,
-            sourceLabel: "keychain-cli")
+            usage: ClaudeOAuthFetchStrategy.snapshot(from: usage),
+            sourceLabel: "claude")
     }
 
-    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
-        false
-    }
-
-    // MARK: - Keychain CLI
-
-    private static func loadCredentialsViaCLI() throws -> ClaudeOAuthCredentials {
-        if let creds = try? self.runSecurityCLI(service: "Claude Code-credentials") {
-            return creds
-        }
-        return try self.runSecurityCLI(service: "Claude Code")
-    }
-
-    private static func runSecurityCLI(service: String) throws -> ClaudeOAuthCredentials {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", service, "-w"]
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-            let errorString = String(data: errorData, encoding: .utf8) ?? ""
-            throw ClaudeUsageError.oauthFailed(
-                "Keychain CLI failed for service \"\(service)\": "
-                    + errorString.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        guard let jsonString = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !jsonString.isEmpty,
-            let jsonData = jsonString.data(using: .utf8)
-        else {
-            throw ClaudeUsageError.oauthFailed("Empty keychain response for service \"\(service)\"")
-        }
-
-        return try ClaudeOAuthCredentials.parse(data: jsonData)
-    }
-
-    // MARK: - Usage mapping
-
-    private static func mapUsage(
-        _ usage: OAuthUsageResponse,
-        credentials: ClaudeOAuthCredentials) throws -> UsageSnapshot
-    {
-        func makeWindow(_ window: OAuthUsageWindow?, windowMinutes: Int?) -> RateWindow? {
-            guard let window, let utilization = window.utilization else { return nil }
-            let resetDate = ClaudeOAuthUsageFetcher.parseISO8601Date(window.resetsAt)
-            let resetDescription = resetDate.map { UsageFormatter.resetDescription(from: $0) }
-            return RateWindow(
-                usedPercent: utilization,
-                windowMinutes: windowMinutes,
-                resetsAt: resetDate,
-                resetDescription: resetDescription)
-        }
-
-        guard let primary = makeWindow(usage.fiveHour, windowMinutes: 5 * 60) else {
-            throw ClaudeUsageError.parseFailed("missing session data")
-        }
-
-        let weekly = makeWindow(usage.sevenDay, windowMinutes: 7 * 24 * 60)
-        let modelSpecific = makeWindow(
-            usage.sevenDaySonnet ?? usage.sevenDayOpus,
-            windowMinutes: 7 * 24 * 60)
-
-        let loginMethod = Self.inferPlan(rateLimitTier: credentials.rateLimitTier)
-        let providerCost = Self.mapExtraUsageCost(usage.extraUsage, loginMethod: loginMethod)
-
-        let identity = ProviderIdentitySnapshot(
-            providerID: .claude,
-            accountEmail: nil,
-            accountOrganization: nil,
-            loginMethod: loginMethod)
-
-        return UsageSnapshot(
-            primary: primary,
-            secondary: weekly,
-            tertiary: modelSpecific,
-            providerCost: providerCost,
-            updatedAt: Date(),
-            identity: identity)
-    }
-
-    private static func inferPlan(rateLimitTier: String?) -> String? {
-        let tier = rateLimitTier?.lowercased() ?? ""
-        if tier.contains("max") { return "Claude Max" }
-        if tier.contains("pro") { return "Claude Pro" }
-        if tier.contains("team") { return "Claude Team" }
-        if tier.contains("enterprise") { return "Claude Enterprise" }
-        return nil
-    }
-
-    private static func mapExtraUsageCost(
-        _ extra: OAuthExtraUsage?,
-        loginMethod: String?) -> ProviderCostSnapshot?
-    {
-        guard let extra, extra.isEnabled == true else { return nil }
-        guard let used = extra.usedCredits, let limit = extra.monthlyLimit else { return nil }
-        let currency = extra.currency?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let code = (currency?.isEmpty ?? true) ? "USD" : currency!
-        // Claude's OAuth API returns values in cents; convert to dollars.
-        var costUsed = used / 100.0
-        var costLimit = limit / 100.0
-        // Non-enterprise plans may report amounts 100x too high; rescale if limit looks implausible.
-        let normalized = loginMethod?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if !normalized.contains("enterprise"), costLimit >= 1000 {
-            costUsed /= 100.0
-            costLimit /= 100.0
-        }
-        return ProviderCostSnapshot(
-            used: costUsed,
-            limit: costLimit,
-            currencyCode: code,
-            period: "Monthly",
-            resetsAt: nil,
-            updatedAt: Date())
+    func shouldFallback(on _: Error, context: ProviderFetchContext) -> Bool {
+        guard context.runtime == .app, context.sourceMode == .auto else { return false }
+        // Only fall through when web is actually available; otherwise preserve actionable CLI errors.
+        return ClaudeWebFetchStrategy.isAvailableForFallback(
+            context: context,
+            browserDetection: self.browserDetection)
     }
 }
