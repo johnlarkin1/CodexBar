@@ -9,7 +9,11 @@
       "mcp__plugin_github_github__search_code",
       "mcp__plugin_github_github__search_pull_requests",
       "Bash(git log:*)",
-      "Bash(./Scripts/lint.sh lint:*)"
+      "Bash(./Scripts/lint.sh lint:*)",
+      "Bash(grep -r macOS /Users/johnlarkin/Documents/coding/macos-cc-usage-project/CodexBar/*.toml /Users/johnlarkin/Documents/coding/macos-cc-usage-project/CodexBar/Package.swift)",
+      "Bash(grep:*)",
+      "Bash(xargs cat:*)",
+      "Skill(generate-pr)"
     ]
   }
 }
