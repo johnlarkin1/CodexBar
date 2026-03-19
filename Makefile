@@ -12,9 +12,12 @@ APP_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null \
 	| grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
 export APP_IDENTITY
 
+# GitHub repo for fork releases (override: make sign-and-release GH_REPO="org/repo")
+GH_REPO ?= johnlarkin1/CodexBar
+
 .PHONY: help build build-release test run run-test lint format \
-        sign package release appcast check-release validate-changelog \
-        check-upstream clean
+        sign package release sign-and-release appcast check-release \
+        validate-changelog check-upstream clean
 
 # ── Default ──────────────────────────────────────────────────────────
 help: ## Show available targets
@@ -51,8 +54,39 @@ sign: ## Sign + notarize for distribution
 package: ## Build release binary and create CodexBar.app bundle
 	./Scripts/package_app.sh
 
-release: ## Full release pipeline
-	./Scripts/release.sh
+release: ## Full release pipeline (DISABLED — use sign-and-release instead)
+	@echo "ERROR: 'make release' is disabled to prevent accidental pushes to upstream (steipete/CodexBar)." >&2; \
+	echo "Use 'make sign-and-release' to release to $(GH_REPO)." >&2; \
+	exit 1
+
+_guard-no-upstream: ## (internal) Block releases targeting upstream
+	@if echo "$(GH_REPO)" | grep -qi 'steipete/CodexBar'; then \
+		echo "ERROR: Refusing to release to upstream steipete/CodexBar. Set GH_REPO to your fork." >&2; \
+		exit 1; \
+	fi
+
+sign-and-release: _guard-no-upstream sign ## Sign, notarize, tag, and create GitHub release on fork
+	@TAG="v$(MARKETING_VERSION)"; \
+	ZIP="CodexBar-$(MARKETING_VERSION).zip"; \
+	DSYM_ZIP="CodexBar-$(MARKETING_VERSION).dSYM.zip"; \
+	if [ ! -f "$$ZIP" ]; then \
+		echo "ERROR: $$ZIP not found. Did sign-and-notarize.sh succeed?" >&2; \
+		exit 1; \
+	fi; \
+	echo "Tagging $$TAG and pushing to $(GH_REPO)..."; \
+	git tag -f "$$TAG"; \
+	git push -f origin "$$TAG"; \
+	echo "Creating GitHub release on $(GH_REPO)..."; \
+	NOTES="CodexBar $(MARKETING_VERSION) (build $(BUILD_NUMBER))"; \
+	if [ -f CHANGELOG.md ]; then \
+		SECTION=$$(awk '/^## \[?$(MARKETING_VERSION)\]?/{found=1;next} /^## /{if(found)exit} found' CHANGELOG.md); \
+		if [ -n "$$SECTION" ]; then NOTES="$$SECTION"; fi; \
+	fi; \
+	gh release create "$$TAG" "$$ZIP" "$$DSYM_ZIP" \
+		--repo "$(GH_REPO)" \
+		--title "CodexBar $(MARKETING_VERSION)" \
+		--notes "$$NOTES"; \
+	echo "Release $(MARKETING_VERSION) published to $(GH_REPO)."
 
 appcast: ## Generate Sparkle appcast (requires args: make appcast ARGS="<zip> <url>")
 	@if [ -z "$(ARGS)" ]; then \
