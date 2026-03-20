@@ -125,8 +125,9 @@ enum IconRenderer {
         let shouldCache = blink <= 0.0001 && wiggle <= 0.0001 && tilt <= 0.0001
         let render = {
             self.renderImage(tintColor: tintColor) {
-                // Keep monochrome template icons; Claude uses subtle shape cues only.
-                let baseFill = NSColor.labelColor
+                // When a tintColor is provided (macOS 26+), draw shapes directly in that color
+                // so the image is inherently colored. Otherwise use labelColor for template rendering.
+                let baseFill = tintColor ?? NSColor.labelColor
                 let trackFillAlpha: CGFloat = stale ? 0.18 : 0.28
                 let trackStrokeAlpha: CGFloat = stale ? 0.28 : 0.44
                 let fillColor = baseFill.withAlphaComponent(stale ? 0.55 : 1.0)
@@ -740,7 +741,7 @@ enum IconRenderer {
                     drawBar(rectPx: creditsBottomRectPx, remaining: bottomValue)
                 }
 
-                Self.drawStatusOverlay(indicator: statusIndicator)
+                Self.drawStatusOverlay(indicator: statusIndicator, tintColor: tintColor)
             }
         }
 
@@ -950,9 +951,9 @@ enum IconRenderer {
         path.fill()
     }
 
-    private static func drawStatusOverlay(indicator: ProviderStatusIndicator) {
+    private static func drawStatusOverlay(indicator: ProviderStatusIndicator, tintColor: NSColor? = nil) {
         guard indicator.hasIssue else { return }
-        let color = NSColor.labelColor
+        let color = tintColor ?? NSColor.labelColor
 
         switch indicator {
         case .minor, .maintenance:
@@ -1028,20 +1029,6 @@ enum IconRenderer {
             if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
                 NSGraphicsContext.current = ctx
                 Self.withScaledContext(draw)
-
-                // On macOS 26+, bake the tint color into the image pixels using sourceIn compositing
-                // so the color survives Liquid Glass's template-image pipeline.
-                if let tintColor {
-                    let cgCtx = ctx.cgContext
-                    let scaledSize = CGSize(
-                        width: Self.outputSize.width * Self.outputScale,
-                        height: Self.outputSize.height * Self.outputScale)
-                    cgCtx.saveGState()
-                    cgCtx.setBlendMode(.sourceIn)
-                    tintColor.setFill()
-                    cgCtx.fill(CGRect(origin: .zero, size: scaledSize))
-                    cgCtx.restoreGState()
-                }
             }
             NSGraphicsContext.restoreGraphicsState()
         }
