@@ -121,8 +121,13 @@ if [[ -f "$ICON_SOURCE" ]]; then
 fi
 
 BUNDLE_ID="com.steipete.codexbar"
-FEED_URL="https://raw.githubusercontent.com/steipete/CodexBar/main/appcast.xml"
-AUTO_CHECKS=true
+# Fork builds intentionally do NOT auto-update. The upstream Sparkle feed
+# (steipete/CodexBar) would otherwise replace this fork — color-coded icons,
+# separator style, etc. — with steipete's vanilla build, since both share the
+# com.steipete.codexbar bundle ID. Update manually from johnlarkin1/CodexBar
+# releases. To re-enable, set FEED_URL to the fork's appcast and AUTO_CHECKS=true.
+FEED_URL=""
+AUTO_CHECKS=false
 LOWER_CONF=$(printf "%s" "$CONF" | tr '[:upper:]' '[:lower:]')
 if [[ "$LOWER_CONF" == "debug" ]]; then
   BUNDLE_ID="com.steipete.codexbar.debug"
