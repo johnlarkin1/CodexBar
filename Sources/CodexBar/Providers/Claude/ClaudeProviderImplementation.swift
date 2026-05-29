@@ -21,6 +21,7 @@ struct ClaudeProviderImplementation: ProviderImplementation {
     @MainActor
     func observeSettings(_ settings: SettingsStore) {
         _ = settings.claudeUsageDataSource
+        _ = settings.claudeAdminAPIKey
         _ = settings.claudeCookieSource
         _ = settings.claudeCookieHeader
         _ = settings.claudeOAuthKeychainPromptMode
@@ -56,6 +57,7 @@ struct ClaudeProviderImplementation: ProviderImplementation {
     func sourceMode(context: ProviderSourceModeContext) -> ProviderSourceMode {
         switch context.settings.claudeUsageDataSource {
         case .auto: .auto
+        case .api: .api
         case .oauth: .oauth
         case .web: .web
         case .cli: .cli
@@ -80,7 +82,7 @@ struct ClaudeProviderImplementation: ProviderImplementation {
         return [
             ProviderSettingsToggleDescriptor(
                 id: "claude-oauth-prompt-free-credentials",
-                title: "Avoid Keychain prompts (experimental)",
+                title: "Avoid Keychain prompts",
                 subtitle: subtitle,
                 binding: promptFreeBinding,
                 statusText: nil,
@@ -140,7 +142,7 @@ struct ClaudeProviderImplementation: ProviderImplementation {
             if context.settings.debugDisableKeychainAccess {
                 return "Global Keychain access is disabled in Advanced, so this setting is currently inactive."
             }
-            return "Controls Claude OAuth Keychain prompts when experimental reader mode is off. Choosing " +
+            return "Controls Claude OAuth Keychain prompts when the standard reader is active. Choosing " +
                 "\"Never prompt\" can make OAuth unavailable; use Web/CLI when needed."
         }
 
@@ -187,20 +189,29 @@ struct ClaudeProviderImplementation: ProviderImplementation {
 
     @MainActor
     func settingsFields(context: ProviderSettingsContext) -> [ProviderSettingsFieldDescriptor] {
-        _ = context
-        return []
+        [
+            ProviderSettingsFieldDescriptor(
+                id: "claude-admin-api-key",
+                title: "Admin API key",
+                subtitle: "Stored in ~/.codexbar/config.json. Requires an Anthropic Admin API key.",
+                kind: .secure,
+                placeholder: "sk-ant-admin...",
+                binding: context.stringBinding(\.claudeAdminAPIKey),
+                actions: [],
+                isVisible: nil,
+                onActivate: nil),
+        ]
     }
 
     @MainActor
     func runLoginFlow(context: ProviderLoginContext) async -> Bool {
         await context.controller.runClaudeLoginFlow()
-        return true
     }
 
     @MainActor
     func appendUsageMenuEntries(context: ProviderMenuUsageContext, entries: inout [ProviderMenuEntry]) {
         if context.snapshot?.secondary == nil {
-            entries.append(.text("Weekly usage unavailable for this account.", .secondary))
+            entries.append(.text(L("Weekly usage unavailable for this account."), .secondary))
         }
 
         if let cost = context.snapshot?.providerCost,
@@ -209,7 +220,7 @@ struct ClaudeProviderImplementation: ProviderImplementation {
         {
             let used = UsageFormatter.currencyString(cost.used, currencyCode: cost.currencyCode)
             let limit = UsageFormatter.currencyString(cost.limit, currencyCode: cost.currencyCode)
-            entries.append(.text("Extra usage: \(used) / \(limit)", .primary))
+            entries.append(.text(String(format: L("extra_usage_format"), used, limit), .primary))
         }
     }
 

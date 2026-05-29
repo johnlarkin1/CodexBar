@@ -77,6 +77,62 @@ private enum TTYCommandRunnerActiveProcessRegistry {
     }
 }
 
+enum TTYProcessTreeTerminator {
+    static func descendantPIDs(
+        of rootPID: pid_t,
+        childResolver: (pid_t) -> [pid_t] = Self.currentChildPIDs(of:)) -> [pid_t]
+    {
+        guard rootPID > 0 else { return [] }
+
+        var seen: Set<pid_t> = [rootPID]
+        var pending = childResolver(rootPID)
+        var descendants: [pid_t] = []
+
+        while let pid = pending.popLast() {
+            guard pid > 0, seen.insert(pid).inserted else { continue }
+            descendants.append(pid)
+            pending.append(contentsOf: childResolver(pid))
+        }
+
+        return descendants
+    }
+
+    static func currentChildPIDs(of parentPID: pid_t) -> [pid_t] {
+        guard parentPID > 0 else { return [] }
+
+        #if canImport(Darwin)
+        var pids = [pid_t](repeating: 0, count: 128)
+        let byteCount = Int32(pids.count * MemoryLayout<pid_t>.stride)
+        let childCount = proc_listchildpids(parentPID, &pids, byteCount)
+        guard childCount > 0 else { return [] }
+        return Array(pids.prefix(min(Int(childCount), pids.count))).filter { $0 > 0 }
+        #else
+        return []
+        #endif
+    }
+
+    static func terminateProcessTree(
+        rootPID: pid_t,
+        processGroup: pid_t?,
+        signal: Int32,
+        knownDescendants: [pid_t] = [],
+        childResolver: (pid_t) -> [pid_t] = Self.currentChildPIDs(of:),
+        signalSender: (pid_t, Int32) -> Void = { kill($0, $1) })
+    {
+        guard rootPID > 0 else { return }
+
+        var seen: Set<pid_t> = [rootPID]
+        let descendants = knownDescendants + self.descendantPIDs(of: rootPID, childResolver: childResolver)
+        for pid in descendants where pid > 0 && seen.insert(pid).inserted {
+            signalSender(pid, signal)
+        }
+        if let processGroup {
+            signalSender(-processGroup, signal)
+        }
+        signalSender(rootPID, signal)
+    }
+}
+
 /// Executes an interactive CLI inside a pseudo-terminal and returns all captured text.
 /// Keeps it minimal so we can reuse for Codex and Claude without tmux.
 public struct TTYCommandRunner {
@@ -95,12 +151,15 @@ public struct TTYCommandRunner {
         public var idleTimeout: TimeInterval?
         public var workingDirectory: URL?
         public var extraArgs: [String] = []
+        public var baseEnvironment: [String: String]?
         public var initialDelay: TimeInterval = 0.4
         public var sendEnterEvery: TimeInterval?
         public var sendOnSubstrings: [String: String]
         public var stopOnURL: Bool
         public var stopOnSubstrings: [String]
         public var settleAfterStop: TimeInterval
+        public var forceCodexStatusMode: Bool
+        public var useClaudeProbeWorkingDirectory: Bool
 
         public init(
             rows: UInt16 = 50,
@@ -109,12 +168,15 @@ public struct TTYCommandRunner {
             idleTimeout: TimeInterval? = nil,
             workingDirectory: URL? = nil,
             extraArgs: [String] = [],
+            baseEnvironment: [String: String]? = nil,
             initialDelay: TimeInterval = 0.4,
             sendEnterEvery: TimeInterval? = nil,
             sendOnSubstrings: [String: String] = [:],
             stopOnURL: Bool = false,
             stopOnSubstrings: [String] = [],
-            settleAfterStop: TimeInterval = 0.25)
+            settleAfterStop: TimeInterval = 0.25,
+            forceCodexStatusMode: Bool = false,
+            useClaudeProbeWorkingDirectory: Bool = false)
         {
             self.rows = rows
             self.cols = cols
@@ -122,12 +184,15 @@ public struct TTYCommandRunner {
             self.idleTimeout = idleTimeout
             self.workingDirectory = workingDirectory
             self.extraArgs = extraArgs
+            self.baseEnvironment = baseEnvironment
             self.initialDelay = initialDelay
             self.sendEnterEvery = sendEnterEvery
             self.sendOnSubstrings = sendOnSubstrings
             self.stopOnURL = stopOnURL
             self.stopOnSubstrings = stopOnSubstrings
             self.settleAfterStop = settleAfterStop
+            self.forceCodexStatusMode = forceCodexStatusMode
+            self.useClaudeProbeWorkingDirectory = useClaudeProbeWorkingDirectory
         }
     }
 
@@ -158,18 +223,31 @@ public struct TTYCommandRunner {
             groupResolver: { getpgid($0) })
 
         for target in resolvedTargets where target.pid > 0 {
-            if let pgid = target.processGroup {
-                kill(-pgid, SIGTERM)
-            }
-            kill(target.pid, SIGTERM)
+            TTYProcessTreeTerminator.terminateProcessTree(
+                rootPID: target.pid,
+                processGroup: target.processGroup,
+                signal: SIGTERM)
         }
 
         for target in resolvedTargets where target.pid > 0 {
-            if let pgid = target.processGroup {
-                kill(-pgid, SIGKILL)
-            }
-            kill(target.pid, SIGKILL)
+            TTYProcessTreeTerminator.terminateProcessTree(
+                rootPID: target.pid,
+                processGroup: target.processGroup,
+                signal: SIGKILL)
         }
+    }
+
+    @discardableResult
+    static func registerActiveProcessForAppShutdown(pid: pid_t, binary: String) -> Bool {
+        TTYCommandRunnerActiveProcessRegistry.register(pid: pid, binary: binary)
+    }
+
+    static func updateActiveProcessGroupForAppShutdown(pid: pid_t, processGroup: pid_t?) {
+        TTYCommandRunnerActiveProcessRegistry.updateProcessGroup(pid: pid, processGroup: processGroup)
+    }
+
+    static func unregisterActiveProcessForAppShutdown(pid: pid_t) {
+        TTYCommandRunnerActiveProcessRegistry.unregister(pid: pid)
     }
 
     private static func resolveShutdownTargets(
@@ -196,7 +274,7 @@ public struct TTYCommandRunner {
         return resolvedTargets
     }
 
-    struct RollingBuffer: Sendable {
+    struct RollingBuffer {
         private let maxNeedle: Int
         private var tail = Data()
 
@@ -230,6 +308,12 @@ public struct TTYCommandRunner {
         }
     }
 
+    enum DrainReadResult {
+        case data(Data)
+        case wouldBlock
+        case closed
+    }
+
     static func lowercasedASCII(_ data: Data) -> Data {
         guard !data.isEmpty else { return data }
         var out = Data(count: data.count)
@@ -245,6 +329,43 @@ public struct TTYCommandRunner {
             }
         }
         return out
+    }
+
+    static func drainRemainingOutput(
+        until drainDeadline: Date,
+        readChunk: () -> DrainReadResult,
+        processChunk: (Data) -> Void,
+        sleep: (UInt32) -> Void = { usleep($0) })
+    {
+        while Date() < drainDeadline {
+            switch readChunk() {
+            case let .data(newData):
+                processChunk(newData)
+            case .wouldBlock:
+                sleep(20000)
+            case .closed:
+                return
+            }
+        }
+    }
+
+    static func drainReadResult(for data: Data, terminalRead: Int, errno err: Int32) -> DrainReadResult {
+        if !data.isEmpty { return .data(data) }
+
+        if terminalRead == 0 {
+            return .closed
+        }
+
+        if terminalRead < 0 {
+            if err == EAGAIN || err == EWOULDBLOCK || err == EINTR {
+                return .wouldBlock
+            }
+            if err == EIO {
+                return .closed
+            }
+        }
+
+        return .closed
     }
 
     static func locateBundledHelper(_ name: String) -> String? {
@@ -359,9 +480,11 @@ public struct TTYCommandRunner {
             }
         }
 
+        let baseEnv = options.baseEnvironment ?? ProcessInfo.processInfo.environment
         let proc = Process()
         let resolvedURL = URL(fileURLWithPath: resolved)
-        if resolvedURL.lastPathComponent == "claude",
+        let isClaudeCLI = Self.isClaudeBinary(requested: binary, resolved: resolved, environment: baseEnv)
+        if isClaudeCLI,
            let watchdog = Self.locateBundledHelper("CodexBarClaudeWatchdog")
         {
             proc.executableURL = URL(fileURLWithPath: watchdog)
@@ -375,8 +498,12 @@ public struct TTYCommandRunner {
         proc.standardError = secondaryHandle
         // Use login-shell PATH when available, but keep the caller’s environment (HOME, LANG, etc.) so
         // the CLIs can find their auth/config files.
-        var env = Self.enrichedEnvironment()
-        if let workingDirectory = options.workingDirectory {
+        var env = Self.enrichedEnvironment(baseEnv: baseEnv, home: baseEnv["HOME"] ?? NSHomeDirectory())
+        let workingDirectory = options.workingDirectory
+            ?? (options.useClaudeProbeWorkingDirectory && isClaudeCLI
+                ? ClaudeStatusProbe.preparedProbeWorkingDirectoryURL()
+                : nil)
+        if let workingDirectory {
             proc.currentDirectoryURL = workingDirectory
             env["PWD"] = workingDirectory.path
         }
@@ -401,21 +528,29 @@ public struct TTYCommandRunner {
 
             guard didLaunch else { return }
 
+            let descendants = TTYProcessTreeTerminator.descendantPIDs(of: proc.processIdentifier)
             if proc.isRunning {
                 proc.terminate()
             }
-            if let pgid = processGroup {
-                kill(-pgid, SIGTERM)
-            }
+            TTYProcessTreeTerminator.terminateProcessTree(
+                rootPID: proc.processIdentifier,
+                processGroup: processGroup,
+                signal: SIGTERM,
+                knownDescendants: descendants)
             let waitDeadline = Date().addingTimeInterval(2.0)
             while proc.isRunning, Date() < waitDeadline {
                 usleep(100_000)
             }
             if proc.isRunning {
-                if let pgid = processGroup {
-                    kill(-pgid, SIGKILL)
+                TTYProcessTreeTerminator.terminateProcessTree(
+                    rootPID: proc.processIdentifier,
+                    processGroup: processGroup,
+                    signal: SIGKILL,
+                    knownDescendants: descendants)
+            } else {
+                for pid in descendants where pid > 0 {
+                    kill(pid, SIGKILL)
                 }
-                kill(proc.processIdentifier, SIGKILL)
             }
             if didLaunch {
                 proc.waitUntilExit()
@@ -463,14 +598,17 @@ public struct TTYCommandRunner {
 
         let deadline = Date().addingTimeInterval(options.timeout)
         let trimmed = script.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isCodex = (binaryName == "codex")
+        let isCodex = (binaryName == "codex") || options.forceCodexStatusMode
         let isCodexStatus = isCodex && trimmed == "/status"
 
         var buffer = Data()
-        func readChunk() -> Data {
+        func readChunkResult() -> (data: Data, terminalRead: Int, errno: Int32) {
             var appended = Data()
+            var terminalRead = 0
+            var terminalErrno: Int32 = 0
             while true {
                 var tmp = [UInt8](repeating: 0, count: 8192)
+                errno = 0
                 let n = read(primaryFD, &tmp, tmp.count)
                 if n > 0 {
                     let slice = tmp.prefix(n)
@@ -478,9 +616,20 @@ public struct TTYCommandRunner {
                     appended.append(contentsOf: slice)
                     continue
                 }
+                terminalRead = Int(n)
+                terminalErrno = errno
                 break
             }
-            return appended
+            return (appended, terminalRead, terminalErrno)
+        }
+
+        func readChunk() -> Data {
+            readChunkResult().data
+        }
+
+        func readDrainChunk() -> DrainReadResult {
+            let result = readChunkResult()
+            return Self.drainReadResult(for: result.data, terminalRead: result.terminalRead, errno: result.errno)
         }
 
         func firstLink(in data: Data) -> String? {
@@ -532,27 +681,26 @@ public struct TTYCommandRunner {
             var recentText = ""
             var lastOutputAt = Date()
 
-            while Date() < deadline {
-                let newData = readChunk()
-                if !newData.isEmpty {
-                    lastOutputAt = Date()
-                    if let chunkText = String(bytes: newData, encoding: .utf8) {
-                        recentText += chunkText
-                        if recentText.count > 8192 {
-                            recentText.removeFirst(recentText.count - 8192)
-                        }
+            func processNonCodexChunk(_ newData: Data, allowSends: Bool, allowStop: Bool) -> Bool {
+                guard !newData.isEmpty else { return false }
+
+                lastOutputAt = Date()
+                if let chunkText = String(bytes: newData, encoding: .utf8) {
+                    recentText += chunkText
+                    if recentText.count > 8192 {
+                        recentText.removeFirst(recentText.count - 8192)
                     }
                 }
+
                 let scanData = scanBuffer.append(newData)
                 if Date() >= nextCursorCheckAt,
-                   !scanData.isEmpty,
                    scanData.range(of: cursorQuery) != nil
                 {
                     try? send("\u{1b}[1;1R")
                     nextCursorCheckAt = Date().addingTimeInterval(1.0)
                 }
 
-                if !sendNeedles.isEmpty {
+                if allowSends, !sendNeedles.isEmpty {
                     let recentTextCollapsed = recentText.replacingOccurrences(of: "\r", with: "")
                     for item in sendNeedles where !triggeredSends.contains(item.needle) {
                         let matched = scanData.range(of: item.needle) != nil ||
@@ -570,16 +718,31 @@ public struct TTYCommandRunner {
                 }
 
                 if urlNeedles.contains(where: { scanData.range(of: $0) != nil }) {
-                    urlSeen = true
-                    if urlSeen {
+                    if !urlSeen {
+                        urlSeen = true
                         onURLDetected?()
                     }
-                    if options.stopOnURL {
-                        stoppedEarly = true
-                        break
+                    if allowStop, options.stopOnURL {
+                        return true
                     }
                 }
-                if !stopNeedles.isEmpty, stopNeedles.contains(where: { scanData.range(of: $0) != nil }) {
+
+                if allowStop, !stopNeedles.isEmpty, stopNeedles.contains(where: { scanData.range(of: $0) != nil }) {
+                    return true
+                }
+
+                return false
+            }
+
+            while Date() < deadline {
+                let readResult = readDrainChunk()
+                let newData = switch readResult {
+                case let .data(data):
+                    data
+                case .wouldBlock, .closed:
+                    Data()
+                }
+                if processNonCodexChunk(newData, allowSends: true, allowStop: true) {
                     stoppedEarly = true
                     break
                 }
@@ -596,6 +759,7 @@ public struct TTYCommandRunner {
                     lastEnter = Date()
                 }
 
+                if case .closed = readResult, !proc.isRunning { break }
                 if !proc.isRunning { break }
                 usleep(60000)
             }
@@ -616,6 +780,16 @@ public struct TTYCommandRunner {
                         }
                         usleep(50000)
                     }
+                }
+            } else if !proc.isRunning {
+                // PTY-backed scripts can exit before their final echo becomes readable on the parent side.
+                // Give the kernel a brief non-blocking drain window so we don't lose the last line of output.
+                let drainFor = max(0, min(0.2, deadline.timeIntervalSinceNow))
+                if drainFor > 0 {
+                    Self.drainRemainingOutput(
+                        until: Date().addingTimeInterval(drainFor),
+                        readChunk: readDrainChunk,
+                        processChunk: { _ = processNonCodexChunk($0, allowSends: false, allowStop: false) })
                 }
             }
 
@@ -777,6 +951,31 @@ public struct TTYCommandRunner {
         return self.runWhich(tool)
     }
 
+    private static func isClaudeBinary(requested: String, resolved: String, environment: [String: String]) -> Bool {
+        let requestedName = URL(fileURLWithPath: requested).lastPathComponent
+        let resolvedName = URL(fileURLWithPath: resolved).lastPathComponent
+        if requested == "claude" || requestedName == "claude" || resolvedName == "claude" {
+            return true
+        }
+
+        guard let override = environment["CLAUDE_CLI_PATH"], !override.isEmpty else { return false }
+        let normalizedOverride = self.normalizedExecutablePath(override)
+        return self.normalizedExecutablePath(resolved) == normalizedOverride
+            || self.normalizedExecutablePath(requested) == normalizedOverride
+    }
+
+    private static func normalizedExecutablePath(_ path: String) -> String {
+        let expanded = NSString(string: path).expandingTildeInPath
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        if realpath(expanded, &buffer) != nil {
+            return buffer.withUnsafeBufferPointer { rawBuffer in
+                guard let baseAddress = rawBuffer.baseAddress else { return expanded }
+                return String(cString: baseAddress)
+            }
+        }
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
     private static func runWhich(_ tool: String) -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/which")
@@ -831,7 +1030,9 @@ public struct TTYCommandRunner {
         }
         return env
     }
+}
 
+extension TTYCommandRunner {
     static func _test_resetTrackedProcesses() {
         TTYCommandRunnerActiveProcessRegistry.reset()
     }

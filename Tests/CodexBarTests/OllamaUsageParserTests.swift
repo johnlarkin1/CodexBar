@@ -2,10 +2,9 @@ import Foundation
 import Testing
 @testable import CodexBarCore
 
-@Suite
 struct OllamaUsageParserTests {
     @Test
-    func parsesCloudUsageFromSettingsHTML() throws {
+    func `parses cloud usage from settings HTML`() throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let html = """
         <div>
@@ -44,10 +43,12 @@ struct OllamaUsageParserTests {
         let usage = snapshot.toUsageSnapshot()
         #expect(usage.identity?.loginMethod == "free")
         #expect(usage.identity?.accountEmail == "user@example.com")
+        #expect(usage.primary?.windowMinutes == 5 * 60)
+        #expect(usage.secondary?.windowMinutes == 7 * 24 * 60)
     }
 
     @Test
-    func missingUsageThrowsParseFailed() {
+    func `missing usage throws parse failed`() {
         let html = "<html><body>No usage here. login status unknown.</body></html>"
 
         #expect {
@@ -59,7 +60,7 @@ struct OllamaUsageParserTests {
     }
 
     @Test
-    func classifiedParseMissingUsageReturnsTypedFailure() {
+    func `classified parse missing usage returns typed failure`() {
         let html = "<html><body>No usage here. login status unknown.</body></html>"
         let result = OllamaUsageParser.parseClassified(html: html)
 
@@ -72,7 +73,7 @@ struct OllamaUsageParserTests {
     }
 
     @Test
-    func signedOutThrowsNotLoggedIn() {
+    func `signed out throws not logged in`() {
         let html = """
         <html>
           <body>
@@ -94,7 +95,7 @@ struct OllamaUsageParserTests {
     }
 
     @Test
-    func classifiedParseSignedOutReturnsTypedFailure() {
+    func `classified parse signed out returns typed failure`() {
         let html = """
         <html>
           <body>
@@ -117,7 +118,7 @@ struct OllamaUsageParserTests {
     }
 
     @Test
-    func genericSignInTextWithoutAuthMarkersThrowsParseFailed() {
+    func `generic sign in text without auth markers throws parse failed`() {
         let html = """
         <html>
           <body>
@@ -137,7 +138,7 @@ struct OllamaUsageParserTests {
     }
 
     @Test
-    func parsesHourlyUsageAsPrimaryWindow() throws {
+    func `parses hourly usage as primary window`() throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let html = """
         <div>
@@ -154,10 +155,39 @@ struct OllamaUsageParserTests {
 
         #expect(snapshot.sessionUsedPercent == 2.5)
         #expect(snapshot.weeklyUsedPercent == 4.2)
+
+        let usage = snapshot.toUsageSnapshot()
+        #expect(usage.primary?.windowMinutes == nil)
+        #expect(usage.secondary?.windowMinutes == 7 * 24 * 60)
     }
 
     @Test
-    func parsesUsageWhenUsedIsCapitalized() throws {
+    func `weekly usage parser finds reset timestamp in long usage block`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let filler = String(repeating: "<span class=\"grid-cell\"></span>", count: 40)
+        let html = """
+        <div>
+          <span>Session usage</span>
+          <span>0.1% used</span>
+          <span>Weekly usage</span>
+          <span>0.7% used</span>
+          \(filler)
+          <div class=\"local-time\" data-time=\"2026-02-02T00:00:00Z\">Resets in 2 days</div>
+        </div>
+        """
+
+        let snapshot = try OllamaUsageParser.parse(html: html, now: now)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let expectedWeekly = formatter.date(from: "2026-02-02T00:00:00Z")
+        let usage = snapshot.toUsageSnapshot()
+        #expect(usage.primary?.resetsAt == nil)
+        #expect(usage.secondary?.resetsAt == expectedWeekly)
+    }
+
+    @Test
+    func `parses usage when used is capitalized`() throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let html = """
         <div>

@@ -12,8 +12,8 @@ public enum ZaiProviderDescriptor {
                 displayName: "z.ai",
                 sessionLabel: "Tokens",
                 weeklyLabel: "MCP",
-                opusLabel: nil,
-                supportsOpus: false,
+                opusLabel: "5-hour",
+                supportsOpus: true,
                 supportsCredits: false,
                 creditsHint: "",
                 toggleTitle: "Show z.ai usage",
@@ -53,7 +53,7 @@ struct ZaiAPIFetchStrategy: ProviderFetchStrategy {
             throw ZaiSettingsError.missingToken
         }
         let region = context.settings?.zai?.apiRegion ?? .global
-        let usage = try await ZaiUsageFetcher.fetchUsage(
+        let usage = try await ZaiUsageFetcher.fetchUsageWithModelUsage(
             apiKey: apiKey,
             region: region,
             environment: context.env)

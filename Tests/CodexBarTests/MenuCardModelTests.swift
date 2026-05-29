@@ -4,10 +4,710 @@ import SwiftUI
 import Testing
 @testable import CodexBar
 
-@Suite
+struct OverviewMenuCardVisibilityTests {
+    @Test
+    func `overview hides cards that only contain an error`() throws {
+        let metadata = try #require(ProviderDefaults.metadata[.cursor])
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .cursor,
+            metadata: metadata,
+            snapshot: nil,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: "No Cursor session found.",
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: Date()))
+
+        #expect(model.isOverviewErrorOnly)
+    }
+
+    @Test
+    func `overview keeps cards with graceful unavailable placeholders`() throws {
+        let metadata = try #require(ProviderDefaults.metadata[.codex])
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .codex,
+            metadata: metadata,
+            snapshot: nil,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: "user@example.com", plan: "pro"),
+            isRefreshing: false,
+            lastError: UsageError.noRateLimitsFound.errorDescription,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: Date()))
+
+        #expect(model.placeholder == "Limits not available")
+        #expect(!model.isOverviewErrorOnly)
+    }
+}
+
+struct ProviderInlineDashboardModelTests {
+    @Test
+    func `claude admin api usage gets inline dashboard`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_179_200)
+        let metadata = try #require(ProviderDefaults.metadata[.claude])
+        let usage = ClaudeAdminAPIUsageSnapshot(
+            daily: [
+                ClaudeAdminAPIUsageSnapshot.DailyBucket(
+                    day: "2023-11-14",
+                    startTime: now,
+                    endTime: now.addingTimeInterval(86400),
+                    costUSD: 1.25,
+                    inputTokens: 1000,
+                    cacheCreationInputTokens: 400,
+                    cacheReadInputTokens: 300,
+                    outputTokens: 250,
+                    totalTokens: 1950,
+                    costItems: [
+                        ClaudeAdminAPIUsageSnapshot.CostBreakdown(name: "Claude Sonnet Usage", costUSD: 1.25),
+                    ],
+                    models: [
+                        ClaudeAdminAPIUsageSnapshot.ModelBreakdown(
+                            name: "claude-sonnet-4-20250514",
+                            inputTokens: 1000,
+                            cacheCreationInputTokens: 400,
+                            cacheReadInputTokens: 300,
+                            outputTokens: 250,
+                            totalTokens: 1950),
+                    ]),
+            ],
+            updatedAt: now)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .claude,
+            metadata: metadata,
+            snapshot: usage.toUsageSnapshot(),
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.metrics.isEmpty)
+        #expect(model.inlineUsageDashboard?.kpis.first?.value == "$1.25")
+        #expect(model.inlineUsageDashboard?.points.first?.accessibilityValue == "2023-11-14: $1.25")
+        #expect(model.inlineUsageDashboard?.detailLines
+            .contains { $0.hasPrefix("30d:") && $0.contains("tokens") } == true)
+        #expect(model.inlineUsageDashboard?.detailLines.contains("Top model: claude-sonnet-4-20250514") == true)
+        #expect(model.planText == "Admin API")
+    }
+
+    @Test
+    func `openrouter period usage gets inline dashboard`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_179_200)
+        let metadata = try #require(ProviderDefaults.metadata[.openrouter])
+        let usage = OpenRouterUsageSnapshot(
+            totalCredits: 100,
+            totalUsage: 40,
+            balance: 60,
+            usedPercent: 40,
+            keyDataFetched: true,
+            keyLimit: 25,
+            keyUsage: 10,
+            keyUsageDaily: 1.25,
+            keyUsageWeekly: 7.5,
+            keyUsageMonthly: 18.75,
+            rateLimit: OpenRouterRateLimit(requests: 100, interval: "10s"),
+            updatedAt: now)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .openrouter,
+            metadata: metadata,
+            snapshot: usage.toUsageSnapshot(),
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard?.kpis.first?.value == "$60.00")
+        #expect(model.inlineUsageDashboard?.points.map(\.label) == ["Today", "Week", "Month"])
+        #expect(model.inlineUsageDashboard?.detailLines.contains("Rate limit: 100 / 10s") == true)
+    }
+
+    @Test
+    func `local cost history gets inline dashboard`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_179_200)
+        let metadata = try #require(ProviderDefaults.metadata[.claude])
+        let daily = [
+            CostUsageDailyReport.Entry(
+                date: "2023-11-14",
+                inputTokens: 100,
+                outputTokens: 50,
+                totalTokens: 150,
+                costUSD: 0.12,
+                modelsUsed: ["claude-sonnet-4"],
+                modelBreakdowns: [
+                    CostUsageDailyReport.ModelBreakdown(
+                        modelName: "claude-sonnet-4",
+                        costUSD: 0.12,
+                        totalTokens: 150),
+                ]),
+            CostUsageDailyReport.Entry(
+                date: "2023-11-15",
+                inputTokens: 200,
+                outputTokens: 75,
+                totalTokens: 275,
+                costUSD: 0.25,
+                modelsUsed: ["claude-opus-4"],
+                modelBreakdowns: [
+                    CostUsageDailyReport.ModelBreakdown(
+                        modelName: "claude-opus-4",
+                        costUSD: 0.25,
+                        totalTokens: 275),
+                ]),
+        ]
+        let tokenSnapshot = CostUsageTokenSnapshot(
+            sessionTokens: 275,
+            sessionCostUSD: 0.25,
+            last30DaysTokens: 425,
+            last30DaysCostUSD: 0.37,
+            daily: daily,
+            updatedAt: now)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .claude,
+            metadata: metadata,
+            snapshot: UsageSnapshot(
+                primary: RateWindow(usedPercent: 10, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+                secondary: nil,
+                updatedAt: now),
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: tokenSnapshot,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard?.kpis.first?.value == "$0.25")
+        #expect(model.inlineUsageDashboard?.points.count == 2)
+        #expect(model.inlineUsageDashboard?.detailLines.contains { $0.contains("claude-opus-4") } == true)
+        #expect(model.tokenUsage?.sessionLine.contains("$0.25") == true)
+        #expect(model.tokenUsage?.monthLine.contains("$0.37") == true)
+    }
+
+    @Test
+    func `mistral daily buckets get inline dashboard`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_179_200)
+        let metadata = try #require(ProviderDefaults.metadata[.mistral])
+        let snapshot = MistralUsageSnapshot(
+            totalCost: 1.5,
+            currency: "EUR",
+            currencySymbol: "€",
+            totalInputTokens: 100,
+            totalOutputTokens: 50,
+            totalCachedTokens: 0,
+            modelCount: 1,
+            daily: [
+                MistralDailyUsageBucket(
+                    day: "2023-11-14",
+                    cost: 1.5,
+                    inputTokens: 100,
+                    cachedTokens: 0,
+                    outputTokens: 50,
+                    models: [
+                        MistralDailyUsageBucket.ModelBreakdown(
+                            name: "mistral-large",
+                            cost: 1.5,
+                            inputTokens: 100,
+                            cachedTokens: 0,
+                            outputTokens: 50),
+                    ]),
+            ],
+            startDate: nil,
+            endDate: nil,
+            updatedAt: now)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .mistral,
+            metadata: metadata,
+            snapshot: snapshot.toUsageSnapshot(),
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard?.kpis.first?.value == "€1.50")
+        #expect(model.inlineUsageDashboard?.points.first?.accessibilityValue == "2023-11-14: €1.50")
+        #expect(model.inlineUsageDashboard?.detailLines.contains("Top model: mistral-large") == true)
+    }
+
+    @Test
+    func `mistral billing usage can show cost card summary`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_179_200)
+        let metadata = try #require(ProviderDefaults.metadata[.mistral])
+        let snapshot = MistralUsageSnapshot(
+            totalCost: 1.5,
+            currency: "EUR",
+            currencySymbol: "€",
+            totalInputTokens: 100,
+            totalOutputTokens: 50,
+            totalCachedTokens: 25,
+            modelCount: 1,
+            daily: [
+                MistralDailyUsageBucket(
+                    day: "2023-11-14",
+                    cost: 1.5,
+                    inputTokens: 100,
+                    cachedTokens: 25,
+                    outputTokens: 50,
+                    models: [
+                        MistralDailyUsageBucket.ModelBreakdown(
+                            name: "mistral-large",
+                            cost: 1.5,
+                            inputTokens: 100,
+                            cachedTokens: 25,
+                            outputTokens: 50),
+                    ]),
+            ],
+            startDate: nil,
+            endDate: nil,
+            updatedAt: now)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .mistral,
+            metadata: metadata,
+            snapshot: snapshot.toUsageSnapshot(),
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: snapshot.toCostUsageTokenSnapshot(historyDays: 30),
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(ProviderDescriptorRegistry.descriptor(for: .mistral).tokenCost.supportsTokenCost)
+        #expect(model.tokenUsage?.sessionLine == "Latest billing day (Nov 14): €1.50 · 175 tokens")
+        #expect(model.tokenUsage?.monthLine == "This month: €1.50 · 175 tokens")
+        #expect(model.tokenUsage?.hintLine == "Reported by Mistral billing usage.")
+    }
+
+    @Test
+    func `zai hourly usage gets inline dashboard`() throws {
+        let now = try #require(Self.zaiDate("2023-11-15 12:00"))
+        let metadata = try #require(ProviderDefaults.metadata[.zai])
+        let usage = ZaiUsageSnapshot(
+            tokenLimit: nil,
+            timeLimit: nil,
+            planName: "Pro",
+            modelUsage: ZaiModelUsageData(
+                xTime: ["2023-11-14 12:00", "2023-11-15 12:00"],
+                modelDataList: [
+                    ZaiModelDataItem(modelName: "glm-4.5", tokensUsage: [100, 200]),
+                ]),
+            updatedAt: now)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .zai,
+            metadata: metadata,
+            snapshot: usage.toUsageSnapshot(),
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard?.kpis.first?.value == "300")
+        #expect(model.inlineUsageDashboard?.points.map(\.label) == ["12", "12"])
+        #expect(Set(model.inlineUsageDashboard?.points.map(\.id) ?? []).count == 2)
+        #expect(model.inlineUsageDashboard?.detailLines.contains("Top model: glm-4.5") == true)
+    }
+
+    private static func zaiDate(_ text: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.date(from: text)
+    }
+}
+
+struct FactoryMenuCardModelTests {
+    @Test
+    func `factory token rate billing uses time window labels`() throws {
+        let now = Date()
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 12, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 34, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            tertiary: RateWindow(usedPercent: 56, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            updatedAt: now,
+            identity: nil)
+        let metadata = try #require(ProviderDefaults.metadata[.factory])
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .factory,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: true,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.metrics.map(\.title) == ["5-hour", "Weekly", "Monthly"])
+    }
+
+    @Test
+    func `factory legacy billing keeps pool labels`() throws {
+        let now = Date()
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 12, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 34, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            updatedAt: now,
+            identity: nil)
+        let metadata = try #require(ProviderDefaults.metadata[.factory])
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .factory,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: true,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.metrics.map(\.title) == ["Standard", "Premium"])
+    }
+
+    @Test
+    func `factory extra usage balance renders as optional balance`() throws {
+        let now = Date()
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 12, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 34, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            tertiary: RateWindow(usedPercent: 56, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            providerCost: ProviderCostSnapshot(
+                used: 25,
+                limit: 0,
+                currencyCode: "USD",
+                period: "Extra usage balance",
+                updatedAt: now),
+            updatedAt: now,
+            identity: nil)
+        let metadata = try #require(ProviderDefaults.metadata[.factory])
+
+        let visible = UsageMenuCardView.Model.make(.init(
+            provider: .factory,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: true,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+        #expect(visible.providerCost?.title == "Extra usage")
+        #expect(visible.providerCost?.spendLine == "Balance: $25.00")
+        #expect(visible.providerCost?.percentUsed == nil)
+        #expect(visible.providerCost?.percentLine == nil)
+
+        let hidden = UsageMenuCardView.Model.make(.init(
+            provider: .factory,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: true,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: false,
+            hidePersonalInfo: false,
+            now: now))
+        #expect(hidden.providerCost == nil)
+    }
+}
+
+struct MiniMaxMenuCardModelTests {
+    @Test
+    func `minimax service metrics use quota card copy`() throws {
+        let now = Date()
+        let minimax = MiniMaxUsageSnapshot(
+            planName: "Max",
+            availablePrompts: nil,
+            currentPrompts: nil,
+            remainingPrompts: nil,
+            windowMinutes: nil,
+            usedPercent: nil,
+            resetsAt: nil,
+            updatedAt: now,
+            services: [
+                MiniMaxServiceUsage(
+                    serviceType: "text-generation",
+                    windowType: "5 hours",
+                    timeRange: "10:00-15:00(UTC+8)",
+                    usage: 2,
+                    limit: 10,
+                    percent: 20,
+                    resetsAt: now.addingTimeInterval(3600),
+                    resetDescription: "Resets in 1 hour"),
+            ])
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 20, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            minimaxUsage: minimax,
+            updatedAt: now,
+            identity: ProviderIdentitySnapshot(
+                providerID: .minimax,
+                accountEmail: nil,
+                accountOrganization: nil,
+                loginMethod: "Max"))
+        let metadata = try #require(ProviderDefaults.metadata[.minimax])
+
+        let used = UsageMenuCardView.Model.make(.init(
+            provider: .minimax,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: true,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(used.metrics.first?.title == "Text Generation")
+        #expect(used.metrics.first?.detailLeftText == "Usage: 2 / 10")
+        #expect(used.metrics.first?.detailRightText == "Used 20%")
+        #expect(used.metrics.first?.detailText == "10:00-15:00(UTC+8)")
+        #expect(used.metrics.first?.percent == 20)
+        #expect(used.metrics.first?.cardStyle == true)
+    }
+
+    @Test
+    func `text generation badge uses real window type when multiple windows exist`() throws {
+        let now = Date()
+        let minimax = MiniMaxUsageSnapshot(
+            planName: "Max",
+            availablePrompts: nil,
+            currentPrompts: nil,
+            remainingPrompts: nil,
+            windowMinutes: nil,
+            usedPercent: nil,
+            resetsAt: nil,
+            updatedAt: now,
+            services: [
+                MiniMaxServiceUsage(
+                    serviceType: "text-generation",
+                    windowType: "Today",
+                    timeRange: "2026/05/16 00:00 - 2026/05/17 00:00",
+                    usage: 2,
+                    limit: 10,
+                    percent: 20,
+                    resetsAt: now.addingTimeInterval(3600),
+                    resetDescription: "Resets in 1 hour"),
+                MiniMaxServiceUsage(
+                    serviceType: "text-generation",
+                    windowType: "Weekly",
+                    timeRange: "05/11 00:00 - 05/18 00:00(UTC+8)",
+                    usage: 20,
+                    limit: 100,
+                    percent: 20,
+                    resetsAt: now.addingTimeInterval(7200),
+                    resetDescription: "Resets in 2 hours"),
+            ])
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 20, windowMinutes: 1440, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            minimaxUsage: minimax,
+            updatedAt: now,
+            identity: ProviderIdentitySnapshot(
+                providerID: .minimax,
+                accountEmail: nil,
+                accountOrganization: nil,
+                loginMethod: "Max"))
+        let metadata = try #require(ProviderDefaults.metadata[.minimax])
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .minimax,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: true,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.metrics.count == 2)
+        #expect(model.metrics[0].title == "Text Generation · Today")
+        #expect(model.metrics[1].title == "Text Generation · Weekly")
+    }
+}
+
+struct ClaudeMenuCardCostTests {
+    @Test
+    func `claude extra usage labels monthly denominator as cap`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.claude])
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 0, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            tertiary: nil,
+            providerCost: ProviderCostSnapshot(
+                used: 5,
+                limit: 20,
+                currencyCode: "USD",
+                period: "Monthly cap",
+                updatedAt: now),
+            updatedAt: now,
+            identity: nil)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .claude,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.providerCost?.spendLine == "Monthly cap: $5.00 / $20.00")
+    }
+}
+
 struct MenuCardModelTests {
     @Test
-    func buildsMetricsUsingRemainingPercent() throws {
+    func `builds metrics using remaining percent`() throws {
         let now = Date()
         let identity = ProviderIdentitySnapshot(
             providerID: .codex,
@@ -38,11 +738,24 @@ struct MenuCardModelTests {
             tertiary: snapshot.tertiary,
             updatedAt: now,
             identity: identity)
+        let codexProjection = CodexConsumerProjection.make(
+            surface: .liveCard,
+            context: CodexConsumerProjection.Context(
+                snapshot: updatedSnap,
+                rawUsageError: nil,
+                liveCredits: nil,
+                rawCreditsError: nil,
+                liveDashboard: nil,
+                rawDashboardError: nil,
+                dashboardAttachmentAuthorized: false,
+                dashboardRequiresLogin: false,
+                now: now))
 
         let model = UsageMenuCardView.Model.make(.init(
             provider: .codex,
             metadata: metadata,
             snapshot: updatedSnap,
+            codexProjection: codexProjection,
             credits: CreditsSnapshot(remaining: 12, events: [], updatedAt: now),
             creditsError: nil,
             dashboard: nil,
@@ -57,11 +770,14 @@ struct MenuCardModelTests {
             tokenCostUsageEnabled: false,
             showOptionalCreditsAndExtraUsage: true,
             hidePersonalInfo: false,
+            quotaWarningThresholds: [.session: [50, 20], .weekly: [25, 0]],
             now: now))
 
         #expect(model.providerName == "Codex")
         #expect(model.metrics.count == 2)
         #expect(model.metrics.first?.percent == 78)
+        #expect(model.metrics.first?.warningMarkerPercents == [50, 20])
+        #expect(model.metrics[1].warningMarkerPercents == [25])
         #expect(model.planText == "Plus")
         #expect(model.subtitleText.hasPrefix("Updated"))
         #expect(model.progressColor != Color.clear)
@@ -69,112 +785,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func buildsMetricsUsingUsedPercentWhenEnabled() throws {
-        let now = Date()
-        let identity = ProviderIdentitySnapshot(
-            providerID: .codex,
-            accountEmail: "codex@example.com",
-            accountOrganization: nil,
-            loginMethod: "Plus Plan")
-        let snapshot = UsageSnapshot(
-            primary: RateWindow(
-                usedPercent: 22,
-                windowMinutes: 300,
-                resetsAt: now.addingTimeInterval(3000),
-                resetDescription: nil),
-            secondary: RateWindow(
-                usedPercent: 40,
-                windowMinutes: 10080,
-                resetsAt: now.addingTimeInterval(6000),
-                resetDescription: nil),
-            updatedAt: now,
-            identity: identity)
-        let metadata = try #require(ProviderDefaults.metadata[.codex])
-
-        let dashboard = OpenAIDashboardSnapshot(
-            signedInEmail: "codex@example.com",
-            codeReviewRemainingPercent: 73,
-            creditEvents: [],
-            dailyBreakdown: [],
-            usageBreakdown: [],
-            creditsPurchaseURL: nil,
-            updatedAt: now)
-
-        let model = UsageMenuCardView.Model.make(.init(
-            provider: .codex,
-            metadata: metadata,
-            snapshot: snapshot,
-            credits: nil,
-            creditsError: nil,
-            dashboard: dashboard,
-            dashboardError: nil,
-            tokenSnapshot: nil,
-            tokenError: nil,
-            account: AccountInfo(email: "codex@example.com", plan: "Plus Plan"),
-            isRefreshing: false,
-            lastError: nil,
-            usageBarsShowUsed: true,
-            resetTimeDisplayStyle: .countdown,
-            tokenCostUsageEnabled: false,
-            showOptionalCreditsAndExtraUsage: true,
-            hidePersonalInfo: false,
-            now: now))
-
-        #expect(model.metrics.first?.title == "Session")
-        #expect(model.metrics.first?.percent == 22)
-        #expect(model.metrics.first?.percentLabel.contains("used") == true)
-        #expect(model.metrics.contains { $0.title == "Code review" && $0.percent == 27 })
-    }
-
-    @Test
-    func showsCodeReviewMetricWhenDashboardPresent() throws {
-        let now = Date()
-        let identity = ProviderIdentitySnapshot(
-            providerID: .codex,
-            accountEmail: "codex@example.com",
-            accountOrganization: nil,
-            loginMethod: nil)
-        let snapshot = UsageSnapshot(
-            primary: RateWindow(usedPercent: 0, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
-            secondary: nil,
-            tertiary: nil,
-            updatedAt: now,
-            identity: identity)
-        let metadata = try #require(ProviderDefaults.metadata[.codex])
-
-        let dashboard = OpenAIDashboardSnapshot(
-            signedInEmail: "codex@example.com",
-            codeReviewRemainingPercent: 73,
-            creditEvents: [],
-            dailyBreakdown: [],
-            usageBreakdown: [],
-            creditsPurchaseURL: nil,
-            updatedAt: now)
-        let model = UsageMenuCardView.Model.make(.init(
-            provider: .codex,
-            metadata: metadata,
-            snapshot: snapshot,
-            credits: nil,
-            creditsError: nil,
-            dashboard: dashboard,
-            dashboardError: nil,
-            tokenSnapshot: nil,
-            tokenError: nil,
-            account: AccountInfo(email: "codex@example.com", plan: nil),
-            isRefreshing: false,
-            lastError: nil,
-            usageBarsShowUsed: false,
-            resetTimeDisplayStyle: .countdown,
-            tokenCostUsageEnabled: false,
-            showOptionalCreditsAndExtraUsage: true,
-            hidePersonalInfo: false,
-            now: now))
-
-        #expect(model.metrics.contains { $0.title == "Code review" && $0.percent == 73 })
-    }
-
-    @Test
-    func claudeModelHidesWeeklyWhenUnavailable() throws {
+    func `claude model hides weekly when unavailable`() throws {
         let now = Date()
         let identity = ProviderIdentitySnapshot(
             providerID: .claude,
@@ -218,7 +829,67 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func showsErrorSubtitleWhenPresent() throws {
+    func `claude model includes routines bar when present`() throws {
+        let now = Date()
+        let identity = ProviderIdentitySnapshot(
+            providerID: .claude,
+            accountEmail: nil,
+            accountOrganization: nil,
+            loginMethod: "Max")
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 2,
+                windowMinutes: nil,
+                resetsAt: now.addingTimeInterval(3600),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 8,
+                windowMinutes: 10080,
+                resetsAt: now.addingTimeInterval(7200),
+                resetDescription: nil),
+            tertiary: RateWindow(
+                usedPercent: 16,
+                windowMinutes: 10080,
+                resetsAt: now.addingTimeInterval(7800),
+                resetDescription: nil),
+            extraRateWindows: [
+                NamedRateWindow(
+                    id: "claude-routines",
+                    title: "Daily Routines",
+                    window: RateWindow(
+                        usedPercent: 7,
+                        windowMinutes: 10080,
+                        resetsAt: now.addingTimeInterval(9200),
+                        resetDescription: nil)),
+            ],
+            updatedAt: now,
+            identity: identity)
+        let metadata = try #require(ProviderDefaults.metadata[.claude])
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .claude,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: "codex@example.com", plan: "plus"),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.metrics.map(\.title) == ["Session", "Weekly", "Sonnet", "Daily Routines"])
+    }
+
+    @Test
+    func `shows error subtitle when present`() throws {
         let metadata = try #require(ProviderDefaults.metadata[.codex])
         let model = UsageMenuCardView.Model.make(.init(
             provider: .codex,
@@ -246,7 +917,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func costSectionIncludesLast30DaysTokens() throws {
+    func `cost section includes last30 days tokens`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.codex])
         let snapshot = UsageSnapshot(
@@ -283,10 +954,11 @@ struct MenuCardModelTests {
 
         #expect(model.tokenUsage?.monthLine.contains("456") == true)
         #expect(model.tokenUsage?.monthLine.contains("tokens") == true)
+        #expect(model.tokenUsage?.hintLine == "Estimated from local Codex logs for the selected account.")
     }
 
     @Test
-    func claudeModelDoesNotLeakCodexPlan() throws {
+    func `claude model does not leak codex plan`() throws {
         let metadata = try #require(ProviderDefaults.metadata[.claude])
         let model = UsageMenuCardView.Model.make(.init(
             provider: .claude,
@@ -313,46 +985,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func hidesCodexCreditsWhenDisabled() throws {
-        let now = Date()
-        let identity = ProviderIdentitySnapshot(
-            providerID: .codex,
-            accountEmail: "codex@example.com",
-            accountOrganization: nil,
-            loginMethod: nil)
-        let snapshot = UsageSnapshot(
-            primary: RateWindow(usedPercent: 0, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
-            secondary: nil,
-            tertiary: nil,
-            updatedAt: now,
-            identity: identity)
-        let metadata = try #require(ProviderDefaults.metadata[.codex])
-
-        let model = UsageMenuCardView.Model.make(.init(
-            provider: .codex,
-            metadata: metadata,
-            snapshot: snapshot,
-            credits: CreditsSnapshot(remaining: 12, events: [], updatedAt: now),
-            creditsError: nil,
-            dashboard: nil,
-            dashboardError: nil,
-            tokenSnapshot: nil,
-            tokenError: nil,
-            account: AccountInfo(email: "codex@example.com", plan: nil),
-            isRefreshing: false,
-            lastError: nil,
-            usageBarsShowUsed: false,
-            resetTimeDisplayStyle: .countdown,
-            tokenCostUsageEnabled: false,
-            showOptionalCreditsAndExtraUsage: false,
-            hidePersonalInfo: false,
-            now: now))
-
-        #expect(model.creditsText == nil)
-    }
-
-    @Test
-    func hidesClaudeExtraUsageWhenDisabled() throws {
+    func `hides claude extra usage when disabled`() throws {
         let now = Date()
         let identity = ProviderIdentitySnapshot(
             providerID: .claude,
@@ -393,7 +1026,7 @@ struct MenuCardModelTests {
 
     @Test
     @MainActor
-    func openRouterModel_usesAPIKeyQuotaBarAndQuotaDetail() throws {
+    func `open router model uses API key quota bar and quota detail`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.openrouter])
         let snapshot = OpenRouterUsageSnapshot(
@@ -439,7 +1072,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func openRouterModel_withoutKeyLimitShowsTextOnlySummary() throws {
+    func `open router model without key limit shows text only summary`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.openrouter])
         let snapshot = OpenRouterUsageSnapshot(
@@ -480,7 +1113,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func openRouterModel_whenKeyFetchUnavailableShowsUnavailableNote() throws {
+    func `open router model when key fetch unavailable shows unavailable note`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.openrouter])
         let snapshot = OpenRouterUsageSnapshot(
@@ -519,7 +1152,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func hidesEmailWhenPersonalInfoHidden() throws {
+    func `hides email when personal info hidden`() throws {
         let now = Date()
         let identity = ProviderIdentitySnapshot(
             providerID: .codex,
@@ -561,7 +1194,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func kiloModelSplitsPassAndActivityAndShowsFallbackNote() throws {
+    func `kilo model splits pass and activity and shows fallback note`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.kilo])
         let snapshot = UsageSnapshot(
@@ -607,7 +1240,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func kiloModelTreatsAutoTopUpOnlyLoginAsActivity() throws {
+    func `kilo model treats auto top up only login as activity`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.kilo])
         let snapshot = UsageSnapshot(
@@ -646,7 +1279,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func kiloModelDoesNotShowFallbackNoteWhenNotAutoToCLI() throws {
+    func `kilo model does not show fallback note when not auto to CLI`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.kilo])
         let snapshot = UsageSnapshot(
@@ -713,7 +1346,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func kiloModelShowsPrimaryDetailWhenResetDateMissing() throws {
+    func `kilo model shows primary detail when reset date missing`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.kilo])
         let snapshot = UsageSnapshot(
@@ -757,7 +1390,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func kiloModelKeepsZeroTotalEdgeStateVisible() throws {
+    func `kilo model keeps zero total edge state visible`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.kilo])
         let snapshot = KiloUsageSnapshot(
@@ -796,7 +1429,7 @@ struct MenuCardModelTests {
     }
 
     @Test
-    func warpModelShowsPrimaryDetailWhenResetDateMissing() throws {
+    func `warp model shows primary detail when reset date missing`() throws {
         let now = Date()
         let identity = ProviderIdentitySnapshot(
             providerID: .warp,
@@ -838,5 +1471,51 @@ struct MenuCardModelTests {
         let primary = try #require(model.metrics.first)
         #expect(primary.resetText == nil)
         #expect(primary.detailText == "10/100 credits")
+    }
+
+    @Test
+    func `mistral model surfaces monthly cost as primary detail text`() throws {
+        let now = Date()
+        let resetsAt = now.addingTimeInterval(3 * 24 * 60 * 60)
+        let identity = ProviderIdentitySnapshot(
+            providerID: .mistral,
+            accountEmail: nil,
+            accountOrganization: nil,
+            loginMethod: nil)
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 0,
+                windowMinutes: nil,
+                resetsAt: resetsAt,
+                resetDescription: "€1.2345 this month"),
+            secondary: nil,
+            tertiary: nil,
+            updatedAt: now,
+            identity: identity)
+        let metadata = try #require(ProviderDefaults.metadata[.mistral])
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .mistral,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: true,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        let primary = try #require(model.metrics.first)
+        #expect(primary.detailText == "€1.2345 this month")
+        #expect(primary.resetText?.hasPrefix("Resets") == true)
     }
 }

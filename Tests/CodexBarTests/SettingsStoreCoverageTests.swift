@@ -4,10 +4,9 @@ import Testing
 @testable import CodexBar
 
 @MainActor
-@Suite
 struct SettingsStoreCoverageTests {
     @Test
-    func providerOrderingAndCaching() throws {
+    func `provider ordering and caching`() throws {
         let suite = "SettingsStoreCoverageTests-ordering"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -37,7 +36,22 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func menuBarMetricPreferencesAndDisplayModes() {
+    func `disabling selected provider clears menu selection`() throws {
+        let settings = Self.makeSettingsStore()
+        let metadata = ProviderRegistry.shared.metadata
+
+        try settings.setProviderEnabled(provider: .codex, metadata: #require(metadata[.codex]), enabled: true)
+        try settings.setProviderEnabled(provider: .claude, metadata: #require(metadata[.claude]), enabled: true)
+        settings.selectedMenuProvider = .claude
+
+        try settings.setProviderEnabled(provider: .claude, metadata: #require(metadata[.claude]), enabled: false)
+
+        #expect(settings.selectedMenuProvider == nil)
+        #expect(settings.enabledProvidersOrdered(metadataByProvider: metadata) == [.codex])
+    }
+
+    @Test
+    func `menu bar metric preferences and display modes`() {
         let settings = Self.makeSettingsStore()
 
         settings.setMenuBarMetricPreference(.average, for: .codex)
@@ -48,7 +62,7 @@ struct SettingsStoreCoverageTests {
         #expect(settings.menuBarMetricSupportsAverage(for: .gemini))
 
         settings.setMenuBarMetricPreference(.secondary, for: .zai)
-        #expect(settings.menuBarMetricPreference(for: .zai) == .primary)
+        #expect(settings.menuBarMetricPreference(for: .zai) == .secondary)
 
         settings.menuBarDisplayMode = .pace
         #expect(settings.menuBarDisplayMode == .pace)
@@ -61,7 +75,40 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func tokenAccountMutationsApplySideEffects() {
+    func `multi account menu layout persists and bridges legacy show all token accounts`() throws {
+        let suite = "SettingsStoreCoverageTests-multi-account-layout"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let configStore = testConfigStore(suiteName: suite)
+
+        let initial = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(initial.multiAccountMenuLayout == .segmented)
+
+        initial.multiAccountMenuLayout = .stacked
+        #expect(defaults.string(forKey: "multiAccountMenuLayout") == MultiAccountMenuLayout.stacked.rawValue)
+        #expect(initial.showAllTokenAccountsInMenu)
+
+        let reloaded = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloaded.multiAccountMenuLayout == .stacked)
+        reloaded.showAllTokenAccountsInMenu = false
+        #expect(reloaded.multiAccountMenuLayout == .segmented)
+    }
+
+    @Test
+    func `legacy show all token accounts migrates to stacked layout`() throws {
+        let suite = "SettingsStoreCoverageTests-legacy-token-account-layout"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(true, forKey: "showAllTokenAccountsInMenu")
+        let configStore = testConfigStore(suiteName: suite)
+
+        let settings = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+
+        #expect(settings.multiAccountMenuLayout == .stacked)
+    }
+
+    @Test
+    func `token account mutations apply side effects`() {
         let settings = Self.makeSettingsStore()
 
         settings.addTokenAccount(provider: .claude, label: "Primary", token: "token")
@@ -83,7 +130,159 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func tokenCostUsageSourceDetection() throws {
+    func `token account update preserves identity and selection`() throws {
+        let settings = Self.makeSettingsStore()
+
+        settings.addTokenAccount(provider: .copilot, label: "Primary", token: "token-1")
+        settings.addTokenAccount(provider: .copilot, label: "Secondary", token: "token-2")
+        settings.setActiveTokenAccountIndex(0, for: .copilot)
+
+        let original = try #require(settings.selectedTokenAccount(for: .copilot))
+        settings.updateTokenAccount(
+            provider: .copilot,
+            accountID: original.id,
+            label: "Primary (Pro)",
+            token: "token-1b")
+
+        let updated = try #require(settings.selectedTokenAccount(for: .copilot))
+        #expect(updated.id == original.id)
+        #expect(updated.label == "Primary (Pro)")
+        #expect(updated.token == "token-1b")
+        #expect(settings.tokenAccounts(for: .copilot).count == 2)
+    }
+
+    @Test
+    func `copilot token accounts clear legacy api key fallback`() throws {
+        let settings = Self.makeSettingsStore()
+        settings.copilotAPIToken = "legacy-token"
+
+        settings.addTokenAccount(provider: .copilot, label: "Primary", token: "token-1")
+
+        #expect(settings.copilotAPIToken.isEmpty)
+        #expect(settings.copilotSettingsSnapshot(tokenOverride: nil).apiToken == "token-1")
+
+        settings.copilotAPIToken = "legacy-token"
+        let account = try #require(settings.selectedTokenAccount(for: .copilot))
+        settings.removeTokenAccount(provider: .copilot, accountID: account.id)
+
+        #expect(settings.tokenAccounts(for: .copilot).isEmpty)
+        #expect(settings.copilotAPIToken.isEmpty)
+        #expect(settings.copilotSettingsSnapshot(tokenOverride: nil).apiToken == nil)
+    }
+
+    @Test
+    func `copilot enterprise host persists in provider config`() throws {
+        let suite = "SettingsStoreCoverageTests-copilot-enterprise-host"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let configStore = testConfigStore(suiteName: suite)
+        let first = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+
+        first.copilotEnterpriseHost = "https://octocorp.ghe.com/login"
+        #expect(first.copilotEnterpriseHost == "https://octocorp.ghe.com/login")
+        #expect(first.copilotSettingsSnapshot(tokenOverride: nil).enterpriseHost == "octocorp.ghe.com")
+
+        let second = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(second.copilotEnterpriseHost == "https://octocorp.ghe.com/login")
+
+        second.copilotEnterpriseHost = "github.com"
+        #expect(second.copilotEnterpriseHost == "github.com")
+        #expect(second.copilotSettingsSnapshot(tokenOverride: nil).enterpriseHost == nil)
+    }
+
+    @Test
+    func `removing another token account preserves active selection`() throws {
+        let settings = Self.makeSettingsStore()
+
+        settings.addTokenAccount(provider: .copilot, label: "A", token: "token-a")
+        settings.addTokenAccount(provider: .copilot, label: "B", token: "token-b")
+        settings.addTokenAccount(provider: .copilot, label: "C", token: "token-c")
+        settings.setActiveTokenAccountIndex(1, for: .copilot)
+
+        let activeBefore = try #require(settings.selectedTokenAccount(for: .copilot))
+        let accountToRemove = try #require(settings.tokenAccounts(for: .copilot).first)
+        settings.removeTokenAccount(provider: .copilot, accountID: accountToRemove.id)
+
+        let activeAfter = try #require(settings.selectedTokenAccount(for: .copilot))
+        #expect(activeAfter.id == activeBefore.id)
+        #expect(activeAfter.label == "B")
+        #expect(settings.tokenAccounts(for: .copilot).map(\.label) == ["B", "C"])
+    }
+
+    @Test
+    func `claude snapshot uses OAuth routing for OAuth token accounts`() {
+        let settings = Self.makeSettingsStore()
+        settings.addTokenAccount(provider: .claude, label: "OAuth", token: "Bearer sk-ant-oat-account-token")
+
+        let snapshot = settings.claudeSettingsSnapshot(tokenOverride: nil)
+
+        #expect(snapshot.usageDataSource == .auto)
+        #expect(snapshot.cookieSource == .off)
+        #expect(snapshot.manualCookieHeader?.isEmpty == true)
+    }
+
+    @Test
+    func `claude snapshot uses manual cookie routing for session key accounts`() {
+        let settings = Self.makeSettingsStore()
+        settings.addTokenAccount(provider: .claude, label: "Cookie", token: "sk-ant-session-token")
+
+        let snapshot = settings.claudeSettingsSnapshot(tokenOverride: nil)
+
+        #expect(snapshot.usageDataSource == .auto)
+        #expect(snapshot.cookieSource == .manual)
+        #expect(snapshot.manualCookieHeader == "sessionKey=sk-ant-session-token")
+    }
+
+    @Test
+    func `claude snapshot normalizes config manual cookie input through shared route`() {
+        let settings = Self.makeSettingsStore()
+        settings.claudeCookieSource = .manual
+        settings.claudeCookieHeader = "Cookie: sessionKey=sk-ant-session-token; foo=bar"
+
+        let snapshot = settings.claudeSettingsSnapshot(tokenOverride: nil)
+
+        #expect(snapshot.usageDataSource == .auto)
+        #expect(snapshot.cookieSource == .manual)
+        #expect(snapshot.manualCookieHeader == "sessionKey=sk-ant-session-token; foo=bar")
+    }
+
+    @Test
+    func `claude snapshot does not fall back to config cookie for malformed selected token account`() {
+        let settings = Self.makeSettingsStore()
+        settings.claudeCookieSource = .manual
+        settings.claudeCookieHeader = "Cookie: sessionKey=sk-ant-config-cookie"
+        settings.addTokenAccount(provider: .claude, label: "Malformed", token: "Cookie:")
+
+        let snapshot = settings.claudeSettingsSnapshot(tokenOverride: nil)
+
+        #expect(snapshot.cookieSource == .manual)
+        #expect(snapshot.manualCookieHeader?.isEmpty == true)
+    }
+
+    @Test
+    func `opencode go token accounts force manual cookie routing`() {
+        let settings = Self.makeSettingsStore()
+        settings.addTokenAccount(provider: .opencodego, label: "Go", token: "auth=go-cookie")
+
+        let snapshot = settings.opencodegoSettingsSnapshot(tokenOverride: nil)
+
+        #expect(settings.opencodegoCookieSource == .manual)
+        #expect(snapshot.cookieSource == .manual)
+        #expect(snapshot.manualCookieHeader == "auth=go-cookie")
+    }
+
+    @Test
+    func `opencode go snapshot preserves nil workspace id when settings are unset`() {
+        let settings = Self.makeSettingsStore()
+
+        let snapshot = settings.opencodegoSettingsSnapshot(tokenOverride: nil)
+
+        #expect(settings.opencodegoWorkspaceID.isEmpty)
+        #expect(snapshot.workspaceID == nil)
+    }
+
+    @Test
+    func `token cost usage source detection`() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory.appendingPathComponent(
             "token-cost-\(UUID().uuidString)",
@@ -111,7 +310,7 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func ensureTokenLoadersExecute() {
+    func `ensure token loaders execute`() {
         let settings = Self.makeSettingsStore()
 
         settings.ensureZaiAPITokenLoaded()
@@ -136,7 +335,7 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func keychainDisableForcesManualCookieSources() throws {
+    func `keychain disable forces manual cookie sources`() throws {
         let suite = "SettingsStoreCoverageTests-keychain"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -154,13 +353,13 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func claudeKeychainPromptMode_defaultsToOnlyOnUserAction() {
+    func `claude keychain prompt mode defaults to only on user action`() {
         let settings = Self.makeSettingsStore()
         #expect(settings.claudeOAuthKeychainPromptMode == .onlyOnUserAction)
     }
 
     @Test
-    func claudeKeychainPromptMode_persistsAcrossStoreReload() throws {
+    func `claude keychain prompt mode persists across store reload`() throws {
         let suite = "SettingsStoreCoverageTests-claude-keychain-prompt-mode"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -177,7 +376,7 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func claudeKeychainPromptMode_invalidRawFallsBackToOnlyOnUserAction() throws {
+    func `claude keychain prompt mode invalid raw falls back to only on user action`() throws {
         let suite = "SettingsStoreCoverageTests-claude-keychain-prompt-mode-invalid"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -189,30 +388,30 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func claudeKeychainReadStrategy_defaultsToSecurityFramework() {
+    func `claude keychain read strategy defaults to security CLI experimental`() {
         let settings = Self.makeSettingsStore()
-        #expect(settings.claudeOAuthKeychainReadStrategy == .securityFramework)
+        #expect(settings.claudeOAuthKeychainReadStrategy == .securityCLIExperimental)
     }
 
     @Test
-    func claudeKeychainReadStrategy_persistsAcrossStoreReload() throws {
+    func `claude keychain read strategy persists across store reload`() throws {
         let suite = "SettingsStoreCoverageTests-claude-keychain-read-strategy"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
         let configStore = testConfigStore(suiteName: suite)
 
         let first = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
-        first.claudeOAuthKeychainReadStrategy = .securityCLI
+        first.claudeOAuthKeychainReadStrategy = .securityCLIExperimental
         #expect(
             defaults.string(forKey: "claudeOAuthKeychainReadStrategy")
-                == ClaudeOAuthKeychainReadStrategy.securityCLI.rawValue)
+                == ClaudeOAuthKeychainReadStrategy.securityCLIExperimental.rawValue)
 
         let second = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
-        #expect(second.claudeOAuthKeychainReadStrategy == .securityCLI)
+        #expect(second.claudeOAuthKeychainReadStrategy == .securityCLIExperimental)
     }
 
     @Test
-    func claudeKeychainReadStrategy_invalidRawFallsBackToSecurityFramework() throws {
+    func `claude keychain read strategy invalid raw falls back to security framework`() throws {
         let suite = "SettingsStoreCoverageTests-claude-keychain-read-strategy-invalid"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -224,15 +423,98 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func claudePromptFreeCredentialsToggle_mapsToReadStrategy() {
+    func `claude prompt free credentials toggle maps to read strategy`() {
         let settings = Self.makeSettingsStore()
-        #expect(settings.claudeOAuthPromptFreeCredentialsEnabled == false)
-
-        settings.claudeOAuthPromptFreeCredentialsEnabled = true
-        #expect(settings.claudeOAuthKeychainReadStrategy == .securityCLI)
+        #expect(settings.claudeOAuthPromptFreeCredentialsEnabled == true)
 
         settings.claudeOAuthPromptFreeCredentialsEnabled = false
         #expect(settings.claudeOAuthKeychainReadStrategy == .securityFramework)
+
+        settings.claudeOAuthPromptFreeCredentialsEnabled = true
+        #expect(settings.claudeOAuthKeychainReadStrategy == .securityCLIExperimental)
+    }
+
+    @Test
+    func `upsert antigravity oauth account adds and updates active token account`() throws {
+        let settings = Self.makeSettingsStore()
+        let first = AntigravityOAuthCredentials(
+            accessToken: "first-access",
+            refreshToken: "first-refresh",
+            expiryDate: Date(timeIntervalSince1970: 1_700_000_000),
+            email: "user@example.com")
+        let updated = AntigravityOAuthCredentials(
+            accessToken: "updated-access",
+            refreshToken: "first-refresh",
+            expiryDate: Date(timeIntervalSince1970: 1_700_000_100),
+            email: "user@example.com")
+
+        settings.upsertAntigravityOAuthAccount(first)
+        settings.upsertAntigravityOAuthAccount(updated)
+
+        let accounts = settings.tokenAccounts(for: .antigravity)
+        #expect(accounts.count == 1)
+        let account = try #require(accounts.first)
+        #expect(account.label == "user@example.com")
+        #expect(account.externalIdentifier == "user@example.com")
+        #expect(settings.selectedTokenAccount(for: .antigravity)?.id == account.id)
+
+        let decoded = try #require(AntigravityOAuthCredentialsStore.credentials(fromTokenAccountValue: account.token))
+        #expect(decoded.accessToken == "updated-access")
+    }
+
+    @Test
+    func `upsert antigravity oauth account does not merge missing email accounts by fallback label`() {
+        let settings = Self.makeSettingsStore()
+        let first = AntigravityOAuthCredentials(
+            accessToken: "first-access",
+            refreshToken: "first-refresh",
+            expiryDate: Date(timeIntervalSince1970: 1_700_000_000),
+            email: nil)
+        let second = AntigravityOAuthCredentials(
+            accessToken: "second-access",
+            refreshToken: "second-refresh",
+            expiryDate: Date(timeIntervalSince1970: 1_700_000_100),
+            email: nil)
+
+        settings.upsertAntigravityOAuthAccount(first)
+        settings.upsertAntigravityOAuthAccount(second)
+
+        let accounts = settings.tokenAccounts(for: .antigravity)
+        #expect(accounts.count == 2)
+        #expect(accounts.map(\.label) == ["Google Account 1", "Google Account 2"])
+        #expect(settings.selectedTokenAccount(for: .antigravity)?.id == accounts.last?.id)
+    }
+
+    @Test
+    func `weekly progress work days defaults to nil and persists across store reload`() throws {
+        let suite = "SettingsStoreCoverageTests-weekly-progress-work-days"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let configStore = testConfigStore(suiteName: suite)
+
+        let fresh = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(fresh.weeklyProgressWorkDays == nil)
+
+        fresh.weeklyProgressWorkDays = 5
+        #expect(defaults.object(forKey: "weeklyProgressWorkDays") as? Int == 5)
+
+        let reloaded = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloaded.weeklyProgressWorkDays == 5)
+
+        fresh.weeklyProgressWorkDays = 4
+        #expect(reloaded.weeklyProgressWorkDays == 5)
+
+        let reloaded2 = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloaded2.weeklyProgressWorkDays == 4)
+
+        reloaded2.weeklyProgressWorkDays = 7
+        let reloaded3 = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloaded3.weeklyProgressWorkDays == 7)
+
+        reloaded3.weeklyProgressWorkDays = nil
+        #expect(defaults.object(forKey: "weeklyProgressWorkDays") == nil)
+        let reloaded4 = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloaded4.weeklyProgressWorkDays == nil)
     }
 
     private static func makeSettingsStore(suiteName: String = "SettingsStoreCoverageTests") -> SettingsStore {

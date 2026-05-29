@@ -3,8 +3,8 @@ import Darwin
 import Foundation
 
 struct CodexLoginRunner {
-    struct Result {
-        enum Outcome {
+    struct Result: Equatable {
+        enum Outcome: Equatable {
             case success
             case timedOut
             case failed(status: Int32)
@@ -16,13 +16,14 @@ struct CodexLoginRunner {
         let output: String
     }
 
-    static func run(timeout: TimeInterval = 120) async -> Result {
+    static func run(homePath: String? = nil, timeout: TimeInterval = 120) async -> Result {
         await Task(priority: .userInitiated) {
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = PathBuilder.effectivePATH(
                 purposes: [.rpc, .tty, .nodeTooling],
                 env: env,
                 loginPATH: LoginShellPathCache.shared.current)
+            env = CodexHomeScope.scopedEnvironment(base: env, codexHome: homePath)
 
             guard let executable = BinaryLocator.resolveCodexBinary(
                 env: env,
@@ -123,7 +124,7 @@ struct CodexLoginRunner {
         }
         let trimmed = merged.trimmingCharacters(in: .whitespacesAndNewlines)
         let limited = trimmed.prefix(4000)
-        return limited.isEmpty ? "No output captured." : String(limited)
+        return limited.isEmpty ? L("No output captured.") : String(limited)
     }
 
     private static func readToEnd(_ pipe: Pipe, timeout: TimeInterval = 3.0) async -> String {

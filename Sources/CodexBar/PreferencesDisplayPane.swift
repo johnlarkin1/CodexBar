@@ -5,6 +5,10 @@ import SwiftUI
 struct DisplayPane: View {
     private static let maxOverviewProviders = SettingsStore.mergedOverviewProviderLimit
 
+    static func overviewProviderLimitText(limit: Int = Self.maxOverviewProviders) -> String {
+        L("overview_choose_providers", String(limit))
+    }
+
     @State private var isOverviewProviderPopoverPresented = false
     @Bindable var settings: SettingsStore
     @Bindable var store: UsageStore
@@ -13,40 +17,40 @@ struct DisplayPane: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 16) {
                 SettingsSection(contentSpacing: 12) {
-                    Text("Menu bar")
+                    Text(L("section_menu_bar"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
                     PreferenceToggleRow(
-                        title: "Merge Icons",
-                        subtitle: "Use a single menu bar icon with a provider switcher.",
+                        title: L("merge_icons_title"),
+                        subtitle: L("merge_icons_subtitle"),
                         binding: self.$settings.mergeIcons)
                     PreferenceToggleRow(
-                        title: "Switcher shows icons",
-                        subtitle: "Show provider icons in the switcher (otherwise show a weekly progress line).",
+                        title: L("switcher_shows_icons_title"),
+                        subtitle: L("switcher_shows_icons_subtitle"),
                         binding: self.$settings.switcherShowsIcons)
                         .disabled(!self.settings.mergeIcons)
                         .opacity(self.settings.mergeIcons ? 1 : 0.5)
                     PreferenceToggleRow(
-                        title: "Show most-used provider",
-                        subtitle: "Menu bar auto-shows the provider closest to its rate limit.",
+                        title: L("show_most_used_provider_title"),
+                        subtitle: L("show_most_used_provider_subtitle"),
                         binding: self.$settings.menuBarShowsHighestUsage)
                         .disabled(!self.settings.mergeIcons)
                         .opacity(self.settings.mergeIcons ? 1 : 0.5)
                     PreferenceToggleRow(
-                        title: "Menu bar shows percent",
-                        subtitle: "Replace critter bars with provider branding icons and a percentage.",
+                        title: L("menu_bar_shows_percent_title"),
+                        subtitle: L("menu_bar_shows_percent_subtitle"),
                         binding: self.$settings.menuBarShowsBrandIconWithPercent)
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Display mode")
+                            Text(L("display_mode_title"))
                                 .font(.body)
-                            Text("Choose what to show in the menu bar (Pace shows usage vs. expected).")
+                            Text(L("display_mode_subtitle"))
                                 .font(.footnote)
                                 .foregroundStyle(.tertiary)
                         }
                         Spacer()
-                        Picker("Display mode", selection: self.$settings.menuBarDisplayMode) {
+                        Picker(L("Display mode"), selection: self.$settings.menuBarDisplayMode) {
                             ForEach(MenuBarDisplayMode.allCases) { mode in
                                 Text(mode.label).tag(mode)
                             }
@@ -57,98 +61,72 @@ struct DisplayPane: View {
                     }
                     .disabled(!self.settings.menuBarShowsBrandIconWithPercent)
                     .opacity(self.settings.menuBarShowsBrandIconWithPercent ? 1 : 0.5)
+                }
+
+                Divider()
+
+                SettingsSection(contentSpacing: 12) {
+                    Text(L("section_menu_content"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    PreferenceToggleRow(
+                        title: L("show_usage_as_used_title"),
+                        subtitle: L("show_usage_as_used_subtitle"),
+                        binding: self.$settings.usageBarsShowUsed)
+                    PreferenceToggleRow(
+                        title: L("show_quota_warning_markers_title"),
+                        subtitle: L("show_quota_warning_markers_subtitle"),
+                        binding: self.$settings.quotaWarningMarkersVisible)
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Separator")
+                            Text(L("weekly_progress_work_days_title"))
                                 .font(.body)
-                            Text("Character between percent and pace (e.g. 45% | +5%).")
+                            Text(L("weekly_progress_work_days_subtitle"))
                                 .font(.footnote)
                                 .foregroundStyle(.tertiary)
                         }
                         Spacer()
-                        Picker("Separator", selection: self.$settings.menuBarSeparatorStyle) {
-                            ForEach(MenuBarSeparatorStyle.allCases) { style in
-                                Text(style.label).tag(style)
+                        Picker(L("weekly_progress_work_days_title"), selection: self.$settings.weeklyProgressWorkDays) {
+                            Text(L("Off")).tag(nil as Int?)
+                            Text(L("4 days")).tag(4 as Int?)
+                            Text(L("5 days")).tag(5 as Int?)
+                            Text(L("7 days")).tag(7 as Int?)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 100)
+                    }
+                    PreferenceToggleRow(
+                        title: L("show_reset_time_as_clock_title"),
+                        subtitle: L("show_reset_time_as_clock_subtitle"),
+                        binding: self.$settings.resetTimesShowAbsolute)
+                    PreferenceToggleRow(
+                        title: L("show_provider_changelog_links_title"),
+                        subtitle: L("show_provider_changelog_links_subtitle"),
+                        binding: self.$settings.providerChangelogLinksEnabled)
+                    PreferenceToggleRow(
+                        title: L("show_credits_extra_usage_title"),
+                        subtitle: L("show_credits_extra_usage_subtitle"),
+                        binding: self.$settings.showOptionalCreditsAndExtraUsage)
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(L("multi_account_layout_title"))
+                                .font(.body)
+                            Text(L("multi_account_layout_subtitle"))
+                                .font(.footnote)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer()
+                        Picker(L("multi_account_layout_title"), selection: self.$settings.multiAccountMenuLayout) {
+                            ForEach(MultiAccountMenuLayout.allCases) { layout in
+                                Text(layout.label).tag(layout)
                             }
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(maxWidth: 200)
                     }
-                    .disabled(!self.settings.menuBarShowsBrandIconWithPercent ||
-                        self.settings.menuBarDisplayMode != .both)
-                    .opacity(self.settings.menuBarShowsBrandIconWithPercent &&
-                        self.settings.menuBarDisplayMode == .both ? 1 : 0.5)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Time windows")
-                            .font(.body)
-                        Text("Choose which time window drives the percent and pace values.")
-                            .font(.footnote)
-                            .foregroundStyle(.tertiary)
-                        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
-                            GridRow {
-                                Text("Percent:")
-                                    .font(.callout)
-                                Picker(
-                                    "Percent time window",
-                                    selection: self.$settings.menuBarPercentTimeWindow)
-                                {
-                                    ForEach(MenuBarTimeWindow.allCases) { window in
-                                        Text(window.label).tag(window)
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.segmented)
-                                .frame(maxWidth: 160)
-                            }
-                            .disabled(self.settings.menuBarDisplayMode == .pace)
-                            .opacity(self.settings.menuBarDisplayMode == .pace ? 0.5 : 1)
-                            GridRow {
-                                Text("Pace:")
-                                    .font(.callout)
-                                Picker(
-                                    "Pace time window",
-                                    selection: self.$settings.menuBarPaceTimeWindow)
-                                {
-                                    ForEach(MenuBarTimeWindow.allCases) { window in
-                                        Text(window.label).tag(window)
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.segmented)
-                                .frame(maxWidth: 160)
-                            }
-                            .disabled(self.settings.menuBarDisplayMode == .percent)
-                            .opacity(self.settings.menuBarDisplayMode == .percent ? 0.5 : 1)
-                        }
-                    }
-                    .disabled(!self.settings.menuBarShowsBrandIconWithPercent)
-                    .opacity(self.settings.menuBarShowsBrandIconWithPercent ? 1 : 0.5)
-                }
-
-                Divider()
-
-                SettingsSection(contentSpacing: 12) {
-                    Text("Menu content")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                    PreferenceToggleRow(
-                        title: "Show usage as used",
-                        subtitle: "Progress bars fill as you consume quota (instead of showing remaining).",
-                        binding: self.$settings.usageBarsShowUsed)
-                    PreferenceToggleRow(
-                        title: "Show reset time as clock",
-                        subtitle: "Display reset times as absolute clock values instead of countdowns.",
-                        binding: self.$settings.resetTimesShowAbsolute)
-                    PreferenceToggleRow(
-                        title: "Show credits + extra usage",
-                        subtitle: "Show Codex Credits and Claude Extra usage sections in the menu.",
-                        binding: self.$settings.showOptionalCreditsAndExtraUsage)
-                    PreferenceToggleRow(
-                        title: "Show all token accounts",
-                        subtitle: "Stack token accounts in the menu (otherwise show an account switcher bar).",
-                        binding: self.$settings.showAllTokenAccountsInMenu)
                     self.overviewProviderSelector
                 }
             }
@@ -177,11 +155,11 @@ struct DisplayPane: View {
     private var overviewProviderSelector: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 12) {
-                Text("Overview tab providers")
+                Text(L("overview_tab_providers_title"))
                     .font(.body)
                 Spacer(minLength: 0)
                 if self.showsOverviewConfigureButton {
-                    Button("Configure…") {
+                    Button(L("configure")) {
                         self.isOverviewProviderPopoverPresented = true
                     }
                     .offset(y: 1)
@@ -192,11 +170,11 @@ struct DisplayPane: View {
             }
 
             if !self.settings.mergeIcons {
-                Text("Enable Merge Icons to configure Overview tab providers.")
+                Text(L("overview_enable_merge_icons_hint"))
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
             } else if self.activeProvidersInOrder.isEmpty {
-                Text("No enabled providers available for Overview.")
+                Text(L("overview_no_providers_hint"))
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
             } else {
@@ -211,9 +189,9 @@ struct DisplayPane: View {
 
     private var overviewProviderPopover: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Choose up to \(Self.maxOverviewProviders) providers")
+            Text(Self.overviewProviderLimitText())
                 .font(.headline)
-            Text("Overview rows always follow provider order.")
+            Text(L("overview_rows_follow_order"))
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
 
@@ -258,7 +236,7 @@ struct DisplayPane: View {
 
     private var overviewProviderSelectionSummary: String {
         let selectedNames = self.overviewSelectedProviders.map(self.providerDisplayName)
-        guard !selectedNames.isEmpty else { return "No providers selected" }
+        guard !selectedNames.isEmpty else { return L("overview_no_providers_selected") }
         return selectedNames.joined(separator: ", ")
     }
 

@@ -51,14 +51,14 @@ public enum ClaudeOAuthKeychainPromptPreference {
         readStrategy: ClaudeOAuthKeychainReadStrategy = ClaudeOAuthKeychainReadStrategyPreference.current())
         -> ClaudeOAuthKeychainPromptMode
     {
-        if readStrategy == .securityCLI {
+        if readStrategy == .securityCLIExperimental {
             return self.storedMode(userDefaults: userDefaults)
         }
         return self.effectiveMode(userDefaults: userDefaults, readStrategy: readStrategy)
     }
 
     #if DEBUG
-    static func withTaskOverrideForTesting<T>(
+    public static func withTaskOverrideForTesting<T>(
         _ mode: ClaudeOAuthKeychainPromptMode?,
         operation: () throws -> T) rethrows -> T
     {
@@ -67,13 +67,17 @@ public enum ClaudeOAuthKeychainPromptPreference {
         }
     }
 
-    static func withTaskOverrideForTesting<T>(
+    public static func withTaskOverrideForTesting<T>(
         _ mode: ClaudeOAuthKeychainPromptMode?,
         operation: () async throws -> T) async rethrows -> T
     {
         try await self.$taskOverride.withValue(mode) {
             try await operation()
         }
+    }
+
+    public static var currentTaskOverrideForTesting: ClaudeOAuthKeychainPromptMode? {
+        self.taskOverride
     }
     #endif
 }

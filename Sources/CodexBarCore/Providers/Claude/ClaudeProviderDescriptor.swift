@@ -24,6 +24,7 @@ public enum ClaudeProviderDescriptor {
                 browserCookieOrder: ProviderBrowserCookieDefaults.defaultImportOrder,
                 dashboardURL: "https://console.anthropic.com/settings/billing",
                 subscriptionDashboardURL: "https://claude.ai/settings/usage",
+                changelogURL: "https://github.com/anthropics/claude-code/releases",
                 statusPageURL: "https://status.claude.com/"),
             branding: ProviderBranding(
                 iconStyle: .claude,
@@ -33,7 +34,7 @@ public enum ClaudeProviderDescriptor {
                 supportsTokenCost: true,
                 noDataMessage: self.noDataMessage),
             fetchPlan: ProviderFetchPlan(
-                sourceModes: [.auto, .web, .cli, .oauth],
+                sourceModes: [.auto, .api, .web, .cli, .oauth],
                 pipeline: ProviderFetchPipeline(resolveStrategies: self.resolveStrategies)),
             cli: ProviderCLIConfig(
                 name: "claude",
@@ -43,56 +44,63 @@ public enum ClaudeProviderDescriptor {
     }
 
     private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
-        switch context.runtime {
-        case .cli:
-            switch context.sourceMode {
-            case .oauth:
-                return [ClaudeOAuthFetchStrategy()]
-            case .web:
-                return [ClaudeWebFetchStrategy(browserDetection: context.browserDetection)]
-            case .cli:
-                return [ClaudeCLIFetchStrategy(
-                    useWebExtras: false,
-                    manualCookieHeader: nil,
-                    browserDetection: context.browserDetection)]
-            case .api:
-                return []
-            case .auto:
-                return [
-                    ClaudeOAuthFetchStrategy(),
-                    ClaudeWebFetchStrategy(browserDetection: context.browserDetection),
-                    ClaudeCLIFetchStrategy(
-                        useWebExtras: false,
-                        manualCookieHeader: nil,
-                        browserDetection: context.browserDetection),
-                ]
-            }
-        case .app:
-            let webExtrasEnabled = context.settings?.claude?.webExtrasEnabled ?? false
-            let manualCookieHeader = CookieHeaderNormalizer.normalize(context.settings?.claude?.manualCookieHeader)
-            switch context.sourceMode {
-            case .oauth:
-                return [ClaudeOAuthFetchStrategy()]
-            case .web:
-                return [ClaudeWebFetchStrategy(browserDetection: context.browserDetection)]
-            case .cli:
-                return [ClaudeCLIFetchStrategy(
-                    useWebExtras: webExtrasEnabled,
-                    manualCookieHeader: manualCookieHeader,
-                    browserDetection: context.browserDetection)]
-            case .api:
-                return []
-            case .auto:
-                return [
-                    ClaudeOAuthFetchStrategy(),
-                    ClaudeCLIFetchStrategy(
-                        useWebExtras: webExtrasEnabled,
-                        manualCookieHeader: manualCookieHeader,
-                        browserDetection: context.browserDetection),
-                    ClaudeWebFetchStrategy(browserDetection: context.browserDetection),
-                ]
-            }
+        if context.sourceMode == .api || self.hasAutoAdminAPIKey(context: context) {
+            return [ClaudeAdminAPIFetchStrategy()]
         }
+        if ClaudeAdminAPIFetchStrategy.isSelectedAdminAPIAccount(context: context) {
+            return [ClaudeAdminAPIFetchStrategy()]
+        }
+
+        let planningInput = await Self.makePlanningInput(context: context)
+        let plan = ClaudeSourcePlanner.resolve(input: planningInput)
+        let manualCookieHeader = Self.manualCookieHeader(from: context)
+
+        return plan.orderedSteps.map { step in
+            let strategy: any ProviderFetchStrategy = switch step.dataSource {
+            case .api:
+                ClaudeAdminAPIFetchStrategy()
+            case .oauth:
+                ClaudeOAuthFetchStrategy()
+            case .web:
+                ClaudeWebFetchStrategy(browserDetection: context.browserDetection)
+            case .cli:
+                ClaudeCLIFetchStrategy(
+                    useWebExtras: context.runtime == .app
+                        && planningInput.webExtrasEnabled,
+                    manualCookieHeader: manualCookieHeader,
+                    browserDetection: context.browserDetection)
+            case .auto:
+                fatalError("Planner must not emit .auto as an executable step.")
+            }
+            return ClaudePlannedFetchStrategy(base: strategy, plannedStep: step)
+        }
+    }
+
+    private static func hasAutoAdminAPIKey(context: ProviderFetchContext) -> Bool {
+        context.sourceMode == .auto && ClaudeAdminAPISettingsReader.apiKey(environment: context.env) != nil
+    }
+
+    private static func makePlanningInput(context: ProviderFetchContext) async -> ClaudeSourcePlanningInput {
+        let webExtrasEnabled = context.settings?.claude?.webExtrasEnabled ?? false
+        let needsOAuthAvailability = context.runtime == .app && context.sourceMode == .auto
+
+        return ClaudeSourcePlanningInput(
+            runtime: context.runtime,
+            selectedDataSource: Self.sourceDataSource(from: context.sourceMode),
+            webExtrasEnabled: webExtrasEnabled,
+            hasWebSession: ClaudeWebFetchStrategy.isAvailableForFallback(
+                context: context,
+                browserDetection: context.browserDetection),
+            hasCLI: ClaudeCLIResolver.isAvailable(environment: context.env),
+            hasOAuthCredentials: needsOAuthAvailability && ClaudeOAuthPlanningAvailability.isAvailable(
+                runtime: context.runtime,
+                sourceMode: context.sourceMode,
+                environment: context.env))
+    }
+
+    private static func manualCookieHeader(from context: ProviderFetchContext) -> String? {
+        guard context.settings?.claude?.cookieSource == .manual else { return nil }
+        return CookieHeaderNormalizer.normalize(context.settings?.claude?.manualCookieHeader)
     }
 
     private static func noDataMessage() -> String {
@@ -106,27 +114,119 @@ public enum ClaudeProviderDescriptor {
         hasCLI: Bool,
         hasOAuthCredentials: Bool) -> ClaudeUsageStrategy
     {
-        if selectedDataSource == .auto {
-            if hasOAuthCredentials {
-                return ClaudeUsageStrategy(dataSource: .oauth, useWebExtras: false)
-            }
-            if hasCLI {
-                return ClaudeUsageStrategy(dataSource: .cli, useWebExtras: false)
-            }
-            if hasWebSession {
-                return ClaudeUsageStrategy(dataSource: .web, useWebExtras: false)
-            }
-            return ClaudeUsageStrategy(dataSource: .cli, useWebExtras: false)
-        }
+        let plan = ClaudeSourcePlanner.resolve(input: ClaudeSourcePlanningInput(
+            runtime: .app,
+            selectedDataSource: selectedDataSource,
+            webExtrasEnabled: webExtrasEnabled,
+            hasWebSession: hasWebSession,
+            hasCLI: hasCLI,
+            hasOAuthCredentials: hasOAuthCredentials))
+        return plan.compatibilityStrategy ?? ClaudeUsageStrategy(dataSource: selectedDataSource, useWebExtras: false)
+    }
 
-        let useWebExtras = selectedDataSource == .cli && webExtrasEnabled && hasWebSession
-        return ClaudeUsageStrategy(dataSource: selectedDataSource, useWebExtras: useWebExtras)
+    private static func sourceDataSource(from mode: ProviderSourceMode) -> ClaudeUsageDataSource {
+        switch mode {
+        case .auto:
+            .auto
+        case .api:
+            .api
+        case .web:
+            .web
+        case .cli:
+            .cli
+        case .oauth:
+            .oauth
+        }
     }
 }
 
 public struct ClaudeUsageStrategy: Equatable, Sendable {
     public let dataSource: ClaudeUsageDataSource
     public let useWebExtras: Bool
+}
+
+public enum ClaudeOAuthPlanningAvailability {
+    public static func isAvailable(
+        runtime: ProviderRuntime,
+        sourceMode: ProviderSourceMode,
+        environment: [String: String]) -> Bool
+    {
+        ClaudeOAuthFetchStrategy.isPlausiblyAvailable(
+            runtime: runtime,
+            sourceMode: sourceMode,
+            environment: environment)
+    }
+}
+
+private struct ClaudePlannedFetchStrategy: ProviderFetchStrategy {
+    let base: any ProviderFetchStrategy
+    let plannedStep: ClaudeFetchPlanStep
+
+    var id: String {
+        self.base.id
+    }
+
+    var kind: ProviderFetchKind {
+        self.base.kind
+    }
+
+    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
+        if context.sourceMode == .auto {
+            return self.plannedStep.isPlausiblyAvailable
+        }
+        return await self.base.isAvailable(context)
+    }
+
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        try await self.base.fetch(context)
+    }
+
+    func shouldFallback(on error: Error, context: ProviderFetchContext) -> Bool {
+        self.base.shouldFallback(on: error, context: context)
+    }
+}
+
+struct ClaudeAdminAPIFetchStrategy: ProviderFetchStrategy {
+    let id: String = "claude.admin-api"
+    let kind: ProviderFetchKind = .apiToken
+    let usageFetcher: @Sendable (String) async throws -> ClaudeAdminAPIUsageSnapshot
+
+    init(
+        usageFetcher: @escaping @Sendable (String) async throws -> ClaudeAdminAPIUsageSnapshot = { apiKey in
+            try await ClaudeAdminAPIUsageFetcher.fetchUsage(apiKey: apiKey)
+        })
+    {
+        self.usageFetcher = usageFetcher
+    }
+
+    static func isSelectedAdminAPIAccount(context: ProviderFetchContext) -> Bool {
+        guard context.selectedTokenAccountID != nil else { return false }
+        return self.resolveToken(environment: context.env) != nil
+    }
+
+    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
+        Self.resolveToken(environment: context.env) != nil
+    }
+
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        guard let apiKey = Self.resolveToken(environment: context.env) else {
+            throw ClaudeAdminAPISettingsError.missingToken
+        }
+        let usage = try await self.usageFetcher(apiKey)
+        return self.makeResult(
+            usage: usage.toUsageSnapshot(),
+            sourceLabel: "admin-api")
+    }
+
+    func shouldFallback(on _: Error, context: ProviderFetchContext) -> Bool {
+        context.runtime == .app &&
+            context.sourceMode == .auto &&
+            !Self.isSelectedAdminAPIAccount(context: context)
+    }
+
+    private static func resolveToken(environment: [String: String]) -> String? {
+        ProviderTokenResolver.claudeAdminAPIToken(environment: environment)
+    }
 }
 
 struct ClaudeOAuthFetchStrategy: ProviderFetchStrategy {
@@ -138,82 +238,79 @@ struct ClaudeOAuthFetchStrategy: ProviderFetchStrategy {
     @TaskLocal static var claudeCLIAvailableOverride: Bool?
     #endif
 
-    private func loadNonInteractiveCredentialRecord(_ context: ProviderFetchContext) -> ClaudeOAuthCredentialRecord? {
+    private func loadNonInteractiveCredentialRecord(environment: [String: String]) -> ClaudeOAuthCredentialRecord? {
         #if DEBUG
         if let override = Self.nonInteractiveCredentialRecordOverride { return override }
         #endif
 
         return try? ClaudeOAuthCredentialsStore.loadRecord(
-            environment: context.env,
+            environment: environment,
             allowKeychainPrompt: false,
             respectKeychainPromptCooldown: true,
             allowClaudeKeychainRepairWithoutPrompt: false)
     }
 
-    private func isClaudeCLIAvailable() -> Bool {
+    private func isClaudeCLIAvailable(environment: [String: String]) -> Bool {
         #if DEBUG
         if let override = Self.claudeCLIAvailableOverride { return override }
         #endif
-        return ClaudeOAuthDelegatedRefreshCoordinator.isClaudeCLIAvailable()
+        return ClaudeCLIResolver.isAvailable(environment: environment)
     }
 
-    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
-        let nonInteractiveRecord = self.loadNonInteractiveCredentialRecord(context)
-        let nonInteractiveCredentials = nonInteractiveRecord?.credentials
-        let hasRequiredScopeWithoutPrompt = nonInteractiveCredentials?.scopes.contains("user:profile") == true
-        if hasRequiredScopeWithoutPrompt, nonInteractiveCredentials?.isExpired == false {
-            // Gate controls refresh attempts, not use of already-valid access tokens.
-            return true
-        }
-
-        let hasEnvironmentOAuthToken = !(context.env[ClaudeOAuthCredentialsStore.environmentTokenKey]?
+    static func isPlausiblyAvailable(
+        runtime: ProviderRuntime,
+        sourceMode: ProviderSourceMode,
+        environment: [String: String]) -> Bool
+    {
+        let hasEnvironmentOAuthToken = !(environment[ClaudeOAuthCredentialsStore.environmentTokenKey]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty ?? true)
-        let claudeCLIAvailable = self.isClaudeCLIAvailable()
-
         if hasEnvironmentOAuthToken {
             return true
         }
+
+        let strategy = ClaudeOAuthFetchStrategy()
+        let nonInteractiveRecord = strategy.loadNonInteractiveCredentialRecord(environment: environment)
+        let nonInteractiveCredentials = nonInteractiveRecord?.credentials
+        let hasRequiredScopeWithoutPrompt = nonInteractiveCredentials?.scopes.contains("user:profile") == true
+        if hasRequiredScopeWithoutPrompt, nonInteractiveCredentials?.isExpired == false {
+            return true
+        }
+
+        let claudeCLIAvailable = strategy.isClaudeCLIAvailable(environment: environment)
 
         if let nonInteractiveRecord, hasRequiredScopeWithoutPrompt, nonInteractiveRecord.credentials.isExpired {
             switch nonInteractiveRecord.owner {
             case .codexbar:
                 let refreshToken = nonInteractiveRecord.credentials.refreshToken?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if context.sourceMode == .auto {
+                if sourceMode == .auto {
                     return !refreshToken.isEmpty
                 }
                 return true
             case .claudeCLI:
-                if context.sourceMode == .auto {
+                if sourceMode == .auto {
                     return claudeCLIAvailable
                 }
                 return true
             case .environment:
-                return context.sourceMode != .auto
+                return sourceMode != .auto
             }
         }
 
-        guard context.sourceMode == .auto else { return true }
+        guard sourceMode == .auto else { return true }
 
-        // Prefer OAuth in Auto mode only when it’s plausibly usable:
-        // - we can load credentials without prompting (env / CodexBar cache / credentials file) AND they meet the
-        //   scope requirement, or
-        // - Claude Code has stored OAuth creds in Keychain and we may be able to bootstrap (one prompt max).
-        //
-        // User actions should be able to recover immediately even if a prior background attempt tripped the
-        // keychain cooldown gate. Clear the cooldown before deciding availability so the fetch path can proceed.
+        let fallbackPromptMode = ClaudeOAuthKeychainPromptPreference.securityFrameworkFallbackMode()
         let promptPolicyApplicable = ClaudeOAuthKeychainPromptPreference.isApplicable()
-        if promptPolicyApplicable, ProviderInteractionContext.current == .userInitiated {
+        if ProviderInteractionContext.current == .userInitiated {
             _ = ClaudeOAuthKeychainAccessGate.clearDenied()
         }
 
-        let shouldAllowStartupBootstrap = promptPolicyApplicable &&
-            context.runtime == .app &&
+        let shouldAllowStartupBootstrap = runtime == .app &&
             ProviderRefreshContext.current == .startup &&
             ProviderInteractionContext.current == .background &&
-            ClaudeOAuthKeychainPromptPreference.current() == .onlyOnUserAction &&
-            !ClaudeOAuthCredentialsStore.hasCachedCredentials(environment: context.env)
+            fallbackPromptMode == .onlyOnUserAction &&
+            !ClaudeOAuthCredentialsStore.hasCachedCredentials(environment: environment)
         if shouldAllowStartupBootstrap {
             return ClaudeOAuthKeychainAccessGate.shouldAllowPrompt()
         }
@@ -224,6 +321,13 @@ struct ClaudeOAuthFetchStrategy: ProviderFetchStrategy {
             return false
         }
         return ClaudeOAuthCredentialsStore.hasClaudeKeychainCredentialsWithoutPrompt()
+    }
+
+    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
+        Self.isPlausiblyAvailable(
+            runtime: context.runtime,
+            sourceMode: context.sourceMode,
+            environment: context.env)
     }
 
     func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
@@ -254,13 +358,19 @@ struct ClaudeOAuthFetchStrategy: ProviderFetchStrategy {
             accountEmail: usage.accountEmail,
             accountOrganization: usage.accountOrganization,
             loginMethod: usage.loginMethod)
+        let primary = usage.primaryWindowKind == .spendLimit ? nil : usage.primary
         return UsageSnapshot(
-            primary: usage.primary,
+            primary: primary,
             secondary: usage.secondary,
             tertiary: usage.opus,
+            extraRateWindows: usage.extraRateWindows.isEmpty ? nil : usage.extraRateWindows,
             providerCost: usage.providerCost,
             updatedAt: usage.updatedAt,
             identity: identity)
+    }
+
+    static func _snapshotForTesting(from usage: ClaudeUsageSnapshot) -> UsageSnapshot {
+        self.snapshot(from: usage)
     }
 }
 
@@ -278,7 +388,8 @@ struct ClaudeWebFetchStrategy: ProviderFetchStrategy {
             browserDetection: browserDetection,
             dataSource: .web,
             useWebExtras: false,
-            manualCookieHeader: Self.manualCookieHeader(from: context))
+            manualCookieHeader: Self.manualCookieHeader(from: context),
+            webOrganizationID: context.settings?.claude?.organizationID)
         let usage = try await fetcher.loadLatestUsage(model: "sonnet")
         return self.makeResult(
             usage: ClaudeOAuthFetchStrategy.snapshot(from: usage),
@@ -325,9 +436,11 @@ struct ClaudeCLIFetchStrategy: ProviderFetchStrategy {
         let keepAlive = context.settings?.debugKeepCLISessionsAlive ?? false
         let fetcher = ClaudeUsageFetcher(
             browserDetection: browserDetection,
+            environment: context.env,
             dataSource: .cli,
             useWebExtras: self.useWebExtras,
             manualCookieHeader: self.manualCookieHeader,
+            webOrganizationID: context.settings?.claude?.organizationID,
             keepCLISessionsAlive: keepAlive)
         let usage = try await fetcher.loadLatestUsage(model: "sonnet")
         return self.makeResult(

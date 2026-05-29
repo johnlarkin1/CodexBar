@@ -2,12 +2,11 @@ import Foundation
 import Testing
 @testable import CodexBarCore
 
-@Suite
 struct KiroStatusProbeTests {
     // MARK: - Happy Path Parsing
 
     @Test
-    func parsesBasicUsageOutput() throws {
+    func `parses basic usage output`() throws {
         let output = """
         | KIRO FREE                                          |
         ████████████████████████████████████████████████████ 25%
@@ -18,6 +17,7 @@ struct KiroStatusProbeTests {
         let snapshot = try probe.parse(output: output)
 
         #expect(snapshot.planName == "KIRO FREE")
+        #expect(snapshot.displayPlanName == "Kiro Free")
         #expect(snapshot.creditsPercent == 25)
         #expect(snapshot.creditsUsed == 12.50)
         #expect(snapshot.creditsTotal == 50)
@@ -28,7 +28,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func parsesOutputWithBonusCredits() throws {
+    func `parses output with bonus credits`() throws {
         let output = """
         | KIRO PRO                                           |
         ████████████████████████████████████████████████████ 80%
@@ -40,6 +40,7 @@ struct KiroStatusProbeTests {
         let snapshot = try probe.parse(output: output)
 
         #expect(snapshot.planName == "KIRO PRO")
+        #expect(snapshot.displayPlanName == "Kiro Pro")
         #expect(snapshot.creditsPercent == 80)
         #expect(snapshot.creditsUsed == 40.00)
         #expect(snapshot.creditsTotal == 50)
@@ -49,7 +50,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func parsesOutputWithoutPercentFallbacksToCreditsRatio() throws {
+    func `parses output without percent fallbacks to credits ratio`() throws {
         let output = """
         | KIRO FREE                                          |
         (12.50 of 50 covered in plan), resets on 01/15
@@ -62,7 +63,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func parsesBonusCreditsWithoutExpiry() throws {
+    func `parses bonus credits without expiry`() throws {
         let output = """
         | KIRO FREE                                          |
         ████████████████████████████████████████████████████ 60%
@@ -79,7 +80,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func parsesOutputWithANSICodes() throws {
+    func `parses output with ANSI codes`() throws {
         let output = """
         \u{001B}[32m| KIRO FREE                                          |\u{001B}[0m
         \u{001B}[38;5;11m████████████████████████████████████████████████████\u{001B}[0m 50%
@@ -96,7 +97,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func parsesOutputWithSingleDay() throws {
+    func `parses output with single day`() throws {
         let output = """
         | KIRO FREE                                          |
         ████████████████████████████████████████████████████ 10%
@@ -111,7 +112,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func rejectsOutputMissingUsageMarkers() throws {
+    func `rejects output missing usage markers`() throws {
         let output = """
         | KIRO FREE                                          |
         """
@@ -125,7 +126,7 @@ struct KiroStatusProbeTests {
     // MARK: - New Format (kiro-cli 1.24+, Q Developer)
 
     @Test
-    func parsesQDeveloperManagedPlan() throws {
+    func `parses Q developer managed plan`() throws {
         let output = """
         Plan: Q Developer Pro
         Your plan is managed by admin
@@ -145,7 +146,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func parsesQDeveloperFreePlan() throws {
+    func `parses Q developer free plan`() throws {
         let output = """
         Plan: Q Developer Free
         Your plan is managed by admin
@@ -159,7 +160,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func parsesNewFormatWithANSICodes() throws {
+    func `parses new format with ANSI codes`() throws {
         let output = """
         \u{001B}[38;5;141mPlan: Q Developer Pro\u{001B}[0m
         Your plan is managed by admin
@@ -172,7 +173,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func rejectsHeaderOnlyNewFormatWithoutManagedMarker() {
+    func `rejects header only new format without managed marker`() {
         let output = """
         Plan: Q Developer Pro
         Tip: to see context window usage, run /context
@@ -185,7 +186,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func preservesParsedUsageForManagedPlanWithMetrics() throws {
+    func `preserves parsed usage for managed plan with metrics`() throws {
         let output = """
         Plan: Q Developer Enterprise
         Your plan is managed by admin
@@ -203,10 +204,94 @@ struct KiroStatusProbeTests {
         #expect(snapshot.resetsAt != nil)
     }
 
+    @Test
+    func `parses kiro cli two usage format`() throws {
+        let output = """
+        \u{001B}[1mEstimated Usage\u{001B}[0m | resets on 2026-06-01 | \u{001B}[mKIRO FREE\u{001B}[0m
+
+        🎁 Bonus credits: 45.53/2000 credits used, expires in 19 days
+
+        \u{001B}[1mCredits\u{001B}[0m (0.17 of 50 covered in plan)
+        ████████████████████████████████████████████████████████████████████████████████ 0%
+
+        Overages: \u{001B}[1mDisabled\u{001B}[0m
+
+        To manage your plan or configure overages navigate to https://app.kiro.dev/account/usage
+        """
+
+        let probe = KiroStatusProbe()
+        let snapshot = try probe.parse(
+            output: output,
+            accountEmail: "person@example.com",
+            authMethod: "Google")
+
+        #expect(snapshot.planName == "KIRO FREE")
+        #expect(snapshot.displayPlanName == "Kiro Free")
+        #expect(snapshot.accountEmail == "person@example.com")
+        #expect(snapshot.authMethod == "Google")
+        #expect(snapshot.creditsUsed == 0.17)
+        #expect(snapshot.creditsTotal == 50)
+        #expect(snapshot.creditsRemaining == 49.83)
+        #expect(snapshot.bonusCreditsUsed == 45.53)
+        #expect(snapshot.bonusCreditsTotal == 2000)
+        #expect(snapshot.bonusCreditsRemaining == 1954.47)
+        #expect(snapshot.bonusExpiryDays == 19)
+        #expect(snapshot.overagesStatus == "Disabled")
+        #expect(snapshot.manageURL == "https://app.kiro.dev/account/usage")
+        #expect(snapshot.resetsAt != nil)
+    }
+
+    @Test
+    func `parses kiro overage credits and estimated cost`() throws {
+        let output = """
+        Estimated Usage | resets on 2026-06-01 | KIRO PRO
+        Credits (1000.00 of 1000 covered in plan)
+        ████████████████████████████████████████████████████████████████████████████████ 100%
+
+        Overages: Enabled  billed at $0.04 per request
+        Credits used: 40.29
+        Est. cost: $1.61 USD
+
+        To manage your plan or configure overages navigate to https://app.kiro.dev/account/usage
+        """
+
+        let probe = KiroStatusProbe()
+        let snapshot = try probe.parse(output: output)
+
+        #expect(snapshot.planName == "KIRO PRO")
+        #expect(snapshot.creditsUsed == 1000)
+        #expect(snapshot.creditsTotal == 1000)
+        #expect(snapshot.overagesStatus == "Enabled  billed at $0.04 per request")
+        #expect(snapshot.overageCreditsUsed == 40.29)
+        #expect(snapshot.estimatedOverageCostUSD == 1.61)
+    }
+
+    @Test
+    func `parses context usage`() throws {
+        let output = """
+        Context window: 1.3% used (estimated)
+        ██████████████████████████████████████████████████████████████████████████████ 1.3%
+
+        █ Context files 0.5% (estimated)
+        █ Tools 0.8% (estimated)
+        █ Kiro responses 0.0% (estimated)
+        █ Your prompts 0.0% (estimated)
+        """
+
+        let probe = KiroStatusProbe()
+        let context = try #require(probe.parseContextUsage(output: output))
+
+        #expect(context.totalPercentUsed == 1.3)
+        #expect(context.contextFilesPercent == 0.5)
+        #expect(context.toolsPercent == 0.8)
+        #expect(context.kiroResponsesPercent == 0)
+        #expect(context.promptsPercent == 0)
+    }
+
     // MARK: - Snapshot Conversion
 
     @Test
-    func convertsSnapshotToUsageSnapshot() throws {
+    func `converts snapshot to usage snapshot`() throws {
         let now = Date()
         let resetDate = try #require(Calendar.current.date(byAdding: .day, value: 7, to: now))
 
@@ -226,12 +311,14 @@ struct KiroStatusProbeTests {
         #expect(usage.primary?.usedPercent == 25.0)
         #expect(usage.primary?.resetsAt == resetDate)
         #expect(usage.secondary?.usedPercent == 25.0) // 5/20 * 100
-        #expect(usage.loginMethod(for: .kiro) == "KIRO PRO")
-        #expect(usage.accountOrganization(for: .kiro) == "KIRO PRO")
+        #expect(usage.loginMethod(for: .kiro) == nil)
+        #expect(usage.accountOrganization(for: .kiro) == nil)
+        #expect(usage.kiroUsage?.displayPlanName == "Kiro Pro")
+        #expect(usage.kiroUsage?.creditsRemaining == 75)
     }
 
     @Test
-    func convertsSnapshotWithoutBonusCredits() {
+    func `converts snapshot without bonus credits`() {
         let snapshot = KiroUsageSnapshot(
             planName: "KIRO FREE",
             creditsUsed: 10.0,
@@ -252,7 +339,7 @@ struct KiroStatusProbeTests {
     // MARK: - Error Cases
 
     @Test
-    func emptyOutputThrowsParseError() {
+    func `empty output throws parse error`() {
         let probe = KiroStatusProbe()
 
         #expect(throws: KiroStatusProbeError.self) {
@@ -261,7 +348,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func warningOutputThrowsParseError() {
+    func `warning output throws parse error`() {
         let output = """
         \u{001B}[38;5;11m⚠️  Warning: Could not retrieve usage information from backend
         \u{001B}[38;5;8mError: dispatch failure (io error): an i/o error occurred
@@ -275,7 +362,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func unrecognizedFormatThrowsParseError() {
+    func `unrecognized format throws parse error`() {
         // Simulates a CLI format change where none of the expected patterns match
         let output = """
         Welcome to Kiro!
@@ -294,7 +381,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func loginPromptThrowsNotLoggedIn() {
+    func `login prompt throws not logged in`() {
         let output = """
         Failed to initialize auth portal.
         Please try again with: kiro-cli login --use-device-flow
@@ -314,7 +401,7 @@ struct KiroStatusProbeTests {
     // MARK: - WhoAmI Validation
 
     @Test
-    func whoamiNotLoggedInThrows() {
+    func `whoami not logged in throws`() {
         let probe = KiroStatusProbe()
 
         #expect {
@@ -326,7 +413,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func whoamiLoginRequiredThrows() {
+    func `whoami login required throws`() {
         let probe = KiroStatusProbe()
 
         #expect {
@@ -338,7 +425,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func whoamiEmptyOutputWithZeroStatusThrows() {
+    func `whoami empty output with zero status throws`() {
         let probe = KiroStatusProbe()
 
         #expect {
@@ -350,7 +437,7 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func whoamiNonZeroStatusWithMessageThrows() {
+    func `whoami non zero status with message throws`() {
         let probe = KiroStatusProbe()
 
         #expect {
@@ -362,12 +449,31 @@ struct KiroStatusProbeTests {
     }
 
     @Test
-    func whoamiSuccessDoesNotThrow() throws {
+    func `whoami success does not throw`() throws {
         let probe = KiroStatusProbe()
 
-        try probe.validateWhoAmIOutput(
+        let account = try probe.validateWhoAmIOutput(
+            stdout: """
+            Logged in with Google
+            Email: user@example.com
+            """,
+            stderr: "",
+            terminationStatus: 0)
+
+        #expect(account.authMethod == "Google")
+        #expect(account.email == "user@example.com")
+    }
+
+    @Test
+    func `whoami legacy bare email parses account`() throws {
+        let probe = KiroStatusProbe()
+
+        let account = try probe.validateWhoAmIOutput(
             stdout: "user@example.com",
             stderr: "",
             terminationStatus: 0)
+
+        #expect(account.authMethod == nil)
+        #expect(account.email == "user@example.com")
     }
 }

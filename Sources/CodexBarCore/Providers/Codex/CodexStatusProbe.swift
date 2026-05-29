@@ -6,6 +6,8 @@ public struct CodexStatusSnapshot: Sendable {
     public let weeklyPercentLeft: Int?
     public let fiveHourResetDescription: String?
     public let weeklyResetDescription: String?
+    public let fiveHourResetsAt: Date?
+    public let weeklyResetsAt: Date?
     public let rawText: String
 
     public init(
@@ -14,6 +16,8 @@ public struct CodexStatusSnapshot: Sendable {
         weeklyPercentLeft: Int?,
         fiveHourResetDescription: String?,
         weeklyResetDescription: String?,
+        fiveHourResetsAt: Date?,
+        weeklyResetsAt: Date?,
         rawText: String)
     {
         self.credits = credits
@@ -21,12 +25,15 @@ public struct CodexStatusSnapshot: Sendable {
         self.weeklyPercentLeft = weeklyPercentLeft
         self.fiveHourResetDescription = fiveHourResetDescription
         self.weeklyResetDescription = weeklyResetDescription
+        self.fiveHourResetsAt = fiveHourResetsAt
+        self.weeklyResetsAt = weeklyResetsAt
         self.rawText = rawText
     }
 }
 
 public enum CodexStatusProbeError: LocalizedError, Sendable {
     case codexNotInstalled
+    case launchBlocked(String)
     case parseFailed(String)
     case timedOut
     case updateRequired(String)
@@ -35,6 +42,8 @@ public enum CodexStatusProbeError: LocalizedError, Sendable {
         switch self {
         case .codexNotInstalled:
             "Codex CLI missing. Install via `npm i -g @openai/codex` (or bun install) and restart."
+        case let .launchBlocked(message):
+            message
         case .parseFailed:
             "Could not parse Codex status; will retry shortly."
         case .timedOut:
@@ -53,25 +62,31 @@ public struct CodexStatusProbe {
     public var codexBinary: String = "codex"
     public var timeout: TimeInterval = Self.defaultTimeoutSeconds
     public var keepCLISessionsAlive: Bool = false
+    public var environment: [String: String] = ProcessInfo.processInfo.environment
 
     public init() {}
 
     public init(
         codexBinary: String = "codex",
         timeout: TimeInterval = 8.0,
-        keepCLISessionsAlive: Bool = false)
+        keepCLISessionsAlive: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment)
     {
         self.codexBinary = codexBinary
         self.timeout = timeout
         self.keepCLISessionsAlive = keepCLISessionsAlive
+        self.environment = environment
     }
 
     public func fetch() async throws -> CodexStatusSnapshot {
-        let env = ProcessInfo.processInfo.environment
+        let env = self.environment
         let resolved = BinaryLocator.resolveCodexBinary(env: env, loginPATH: LoginShellPathCache.shared.current)
             ?? self.codexBinary
         guard FileManager.default.isExecutableFile(atPath: resolved) || TTYCommandRunner.which(resolved) != nil else {
             throw CodexStatusProbeError.codexNotInstalled
+        }
+        if let message = CodexCLILaunchGate.shared.backgroundSkipMessage(binary: resolved) {
+            throw CodexStatusProbeError.launchBlocked(message)
         }
         do {
             return try await self.runAndParse(binary: resolved, rows: 60, cols: 200, timeout: self.timeout)
@@ -87,12 +102,14 @@ public struct CodexStatusProbe {
             default:
                 throw error
             }
+        } catch {
+            throw error
         }
     }
 
     // MARK: - Parsing
 
-    public static func parse(text: String) throws -> CodexStatusSnapshot {
+    public static func parse(text: String, now: Date = .init()) throws -> CodexStatusSnapshot {
         let clean = TextParsing.stripANSICodes(text)
         guard !clean.isEmpty else { throw CodexStatusProbeError.timedOut }
         if clean.localizedCaseInsensitiveContains("data not available yet") {
@@ -119,7 +136,66 @@ public struct CodexStatusProbe {
             weeklyPercentLeft: weekPct,
             fiveHourResetDescription: fiveReset,
             weeklyResetDescription: weekReset,
+            fiveHourResetsAt: self.parseResetDate(from: fiveReset, now: now),
+            weeklyResetsAt: self.parseResetDate(from: weekReset, now: now),
             rawText: clean)
+    }
+
+    private static func parseResetDate(from text: String?, now: Date) -> Date? {
+        guard var raw = text?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        raw = raw.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+        raw = raw.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let calendar = Calendar(identifier: .gregorian)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.defaultDate = now
+
+        if let match = raw.firstMatch(of: /^([0-9]{1,2}:[0-9]{2}) on ([0-9]{1,2} [A-Za-z]{3})$/) {
+            raw = "\(match.output.2) \(match.output.1)"
+            formatter.dateFormat = "d MMM HH:mm"
+            if let date = formatter.date(from: raw) {
+                return self.bumpYearIfNeeded(date, now: now, calendar: calendar)
+            }
+        }
+
+        if let match = raw.firstMatch(of: /^([0-9]{1,2}:[0-9]{2}) on ([A-Za-z]{3} [0-9]{1,2})$/) {
+            raw = "\(match.output.2) \(match.output.1)"
+            formatter.dateFormat = "MMM d HH:mm"
+            if let date = formatter.date(from: raw) {
+                return self.bumpYearIfNeeded(date, now: now, calendar: calendar)
+            }
+        }
+
+        for format in ["HH:mm", "H:mm"] {
+            formatter.dateFormat = format
+            if let time = formatter.date(from: raw) {
+                let components = calendar.dateComponents([.hour, .minute], from: time)
+                guard let anchored = calendar.date(
+                    bySettingHour: components.hour ?? 0,
+                    minute: components.minute ?? 0,
+                    second: 0,
+                    of: now)
+                else {
+                    return nil
+                }
+                if anchored >= now {
+                    return anchored
+                }
+                return calendar.date(byAdding: .day, value: 1, to: anchored)
+            }
+        }
+
+        return nil
+    }
+
+    private static func bumpYearIfNeeded(_ date: Date, now: Date, calendar: Calendar) -> Date? {
+        if date >= now {
+            return date
+        }
+        return calendar.date(byAdding: .year, value: 1, to: date)
     }
 
     private func runAndParse(
@@ -128,32 +204,53 @@ public struct CodexStatusProbe {
         cols: UInt16,
         timeout: TimeInterval) async throws -> CodexStatusSnapshot
     {
+        let stateHome = try CodexStatusProbeIsolation.supportDirectory(environment: self.environment)
+        let extraArgs = CodexStatusProbeIsolation.codexArguments(stateHome: stateHome)
+        let workingDirectory = CodexStatusProbeIsolation.workingDirectory(environment: self.environment)
         let text: String
         if self.keepCLISessionsAlive {
             do {
                 text = try await CodexCLISession.shared.captureStatus(
                     binary: binary,
-                    timeout: timeout,
-                    rows: rows,
-                    cols: cols)
+                    options: .init(
+                        timeout: timeout,
+                        rows: rows,
+                        cols: cols,
+                        environment: self.environment,
+                        extraArgs: extraArgs,
+                        workingDirectory: workingDirectory))
             } catch CodexCLISession.SessionError.processExited {
                 throw CodexStatusProbeError.timedOut
             } catch CodexCLISession.SessionError.timedOut {
                 throw CodexStatusProbeError.timedOut
-            } catch CodexCLISession.SessionError.launchFailed(_) {
+            } catch let CodexCLISession.SessionError.launchFailed(message) {
+                if let throttled = CodexCLILaunchGate.shared.recordLaunchFailure(binary: binary, message: message) {
+                    throw CodexStatusProbeError.launchBlocked(throttled)
+                }
                 throw CodexStatusProbeError.codexNotInstalled
             }
         } else {
             let runner = TTYCommandRunner()
-            let script = "/status\n"
-            let result = try runner.run(
-                binary: binary,
-                send: script,
-                options: .init(
-                    rows: rows,
-                    cols: cols,
-                    timeout: timeout,
-                    extraArgs: ["-s", "read-only", "-a", "untrusted"]))
+            let script = "/status"
+            let result: TTYCommandRunner.Result
+            do {
+                result = try runner.run(
+                    binary: binary,
+                    send: script,
+                    options: .init(
+                        rows: rows,
+                        cols: cols,
+                        timeout: timeout,
+                        workingDirectory: workingDirectory,
+                        extraArgs: extraArgs,
+                        baseEnvironment: self.environment,
+                        forceCodexStatusMode: true))
+            } catch let TTYCommandRunner.Error.launchFailed(message) {
+                if let throttled = CodexCLILaunchGate.shared.recordLaunchFailure(binary: binary, message: message) {
+                    throw CodexStatusProbeError.launchBlocked(throttled)
+                }
+                throw CodexStatusProbeError.codexNotInstalled
+            }
             text = result.text
         }
         return try Self.parse(text: text)
