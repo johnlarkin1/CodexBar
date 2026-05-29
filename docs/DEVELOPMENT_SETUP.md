@@ -8,15 +8,24 @@ read_when:
 
 # Development Setup Guide
 
-## Keychain Permission Prompts
+## Reducing Keychain Permission Prompts
 
-As of v0.18.0-beta.3-jl.2, CodexBar defaults to reading Claude credentials via `/usr/bin/security` CLI, which **does not trigger keychain prompts**. No special setup is needed.
-
-If you've switched to the Security.framework reader (via Preferences), you may see prompts like:
+When developing CodexBar, you may see frequent keychain permission prompts like:
 
 > **CodexBar wants to access key "Claude Code-credentials" in your keychain.**
 
-This happens because each rebuild creates a new code signature, and macOS treats it as a "different" app. To reduce these prompts with the Security.framework reader:
+This happens because each rebuild creates a new code signature, and macOS treats it as a "different" app.
+That can affect both CodexBar-owned entries (`com.steipete.CodexBar`, `com.steipete.codexbar.cache`) and
+third-party items such as `Claude Code-credentials`, so an ad-hoc-signed rebuild can keep re-triggering
+password/keychain approval dialogs even after you previously chose **Always Allow**.
+
+### Quick Fix (Temporary)
+
+When the prompt appears, click **"Always Allow"** instead of just "Allow". This grants access to the current build.
+
+### Permanent Fix (Recommended)
+
+Use a stable development certificate that doesn't change between rebuilds:
 
 #### 1. Create Development Certificate
 
@@ -95,6 +104,13 @@ This script:
 5. Launches `CodexBar.app`
 6. Verifies it stays running
 
+When the script falls back to ad-hoc signing, it preserves CodexBar-owned keychain state by default.
+That means you may still see keychain prompts for existing CodexBar cache entries, but allowing those prompts keeps the
+cached browser/OAuth state available across normal rebuilds.
+If you want a clean reset of CodexBar-owned keychain state for an ad-hoc build, run
+`./Scripts/compile_and_run.sh --clear-adhoc-keychain` before relaunching.
+Third-party keychain items still need stable signing if you want macOS to remember **Always Allow** across rebuilds.
+
 ### Quick Build (No Tests)
 
 ```bash
@@ -129,7 +145,7 @@ pkill -x CodexBar || pkill -f CodexBar.app || true
 
 ### "Permission denied" when accessing keychain
 
-With the default `/usr/bin/security` CLI reader, this should not happen. If using the Security.framework reader, make sure you clicked **"Always Allow"** or set up the development certificate (see above).
+Make sure you clicked **"Always Allow"** or set up the development certificate (see above).
 
 ### Multiple app bundles keep appearing
 

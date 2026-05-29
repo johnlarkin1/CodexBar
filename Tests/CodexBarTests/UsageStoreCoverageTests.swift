@@ -4,10 +4,9 @@ import Testing
 @testable import CodexBar
 
 @MainActor
-@Suite
 struct UsageStoreCoverageTests {
     @Test
-    func providerWithHighestUsageAndIconStyle() throws {
+    func `provider with highest usage and icon style`() throws {
         let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-highest")
         let store = Self.makeUsageStore(settings: settings)
         let metadata = ProviderRegistry.shared.metadata
@@ -50,7 +49,7 @@ struct UsageStoreCoverageTests {
     }
 
     @Test
-    func sourceLabelAddsOpenAIWeb() {
+    func `source label adds open AI web`() {
         let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-source")
         settings.debugDisableKeychainAccess = false
         settings.codexUsageDataSource = .oauth
@@ -72,7 +71,7 @@ struct UsageStoreCoverageTests {
     }
 
     @Test
-    func sourceLabelUsesConfiguredKiloSource() {
+    func `source label uses configured kilo source`() {
         let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-kilo-source")
         settings.kiloUsageDataSource = .api
 
@@ -81,7 +80,20 @@ struct UsageStoreCoverageTests {
     }
 
     @Test
-    func providerWithHighestUsagePrefersKimiRateLimitWindow() throws {
+    func `permission prompt errors are detected for notifications`() {
+        let errors: [LocalizedTestError] = [
+            LocalizedTestError("Waiting for folder trust prompt"),
+            LocalizedTestError("Permission prompt is waiting in the CLI"),
+        ]
+
+        for error in errors {
+            #expect(UsageStore.isPermissionPromptWaiting(error))
+        }
+        #expect(!UsageStore.isPermissionPromptWaiting(LocalizedTestError("network timeout")))
+    }
+
+    @Test
+    func `provider with highest usage prefers kimi rate limit window`() throws {
         let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-kimi-highest")
         let store = Self.makeUsageStore(settings: settings)
         let metadata = ProviderRegistry.shared.metadata
@@ -109,7 +121,7 @@ struct UsageStoreCoverageTests {
     }
 
     @Test
-    func providerAvailabilityAndSubscriptionDetection() {
+    func `provider availability and subscription detection`() {
         let zaiStore = InMemoryZaiTokenStore(value: "zai-token")
         let syntheticStore = InMemorySyntheticTokenStore(value: "synthetic-token")
         let settings = Self.makeSettingsStore(
@@ -135,10 +147,288 @@ struct UsageStoreCoverageTests {
     }
 
     @Test
-    func statusIndicatorsAndFailureGate() {
+    func `background refresh only tracks enabled providers`() throws {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-background-refresh")
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = false
+
+        let metadata = ProviderRegistry.shared.metadata
+        for provider in UsageProvider.allCases {
+            try settings.setProviderEnabled(
+                provider: provider,
+                metadata: #require(metadata[provider]),
+                enabled: false)
+        }
+        try settings.setProviderEnabled(provider: .codex, metadata: #require(metadata[.codex]), enabled: true)
+
+        let store = Self.makeUsageStore(settings: settings)
+        let staleSnapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 25, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            updatedAt: Date())
+        store._setSnapshotForTesting(staleSnapshot, provider: .claude)
+        store._setErrorForTesting("stale", provider: .claude)
+        store.statuses[.claude] = ProviderStatus(indicator: .major, description: "Outage", updatedAt: Date())
+
+        #expect(store.enabledProviders() == [.codex])
+
+        store.clearDisabledProviderState(enabledProviders: Set(store.enabledProvidersForDisplay()))
+
+        #expect(store.snapshot(for: .claude) == nil)
+        #expect(store.errors[.claude] == nil)
+        #expect(store.statuses[.claude] == nil)
+    }
+
+    @Test
+    func `cleanup preserves enabled but unavailable provider state`() throws {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-preserve-unavailable")
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = false
+
+        let metadata = ProviderRegistry.shared.metadata
+        for provider in UsageProvider.allCases {
+            try settings.setProviderEnabled(
+                provider: provider,
+                metadata: #require(metadata[provider]),
+                enabled: false)
+        }
+        try settings.setProviderEnabled(
+            provider: .synthetic,
+            metadata: #require(metadata[.synthetic]),
+            enabled: true)
+
+        let store = Self.makeUsageStore(settings: settings)
+        let staleSnapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 25, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            updatedAt: Date())
+        store._setSnapshotForTesting(staleSnapshot, provider: .synthetic)
+        store._setErrorForTesting("stale", provider: .synthetic)
+        store.statuses[.synthetic] = ProviderStatus(indicator: .major, description: "Outage", updatedAt: Date())
+
+        #expect(store.enabledProviders().isEmpty)
+        #expect(store.enabledProvidersForDisplay() == [.synthetic])
+
+        store.clearDisabledProviderState(enabledProviders: Set(store.enabledProvidersForDisplay()))
+
+        #expect(store.snapshot(for: .synthetic) != nil)
+        #expect(store.errors[.synthetic] == "stale")
+        #expect(store.statuses[.synthetic]?.indicator == .major)
+    }
+
+    @Test
+    func `background work excludes enabled but unavailable providers`() throws {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-background-unavailable")
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = false
+
+        let metadata = ProviderRegistry.shared.metadata
+        for provider in UsageProvider.allCases {
+            try settings.setProviderEnabled(
+                provider: provider,
+                metadata: #require(metadata[provider]),
+                enabled: false)
+        }
+        try settings.setProviderEnabled(
+            provider: .synthetic,
+            metadata: #require(metadata[.synthetic]),
+            enabled: true)
+
+        let store = Self.makeUsageStore(settings: settings)
+
+        #expect(store.enabledProvidersForDisplay() == [.synthetic])
+        #expect(store.enabledProviders().isEmpty)
+        #expect(store.enabledProvidersForBackgroundWork().isEmpty)
+    }
+
+    @Test
+    func `visible unavailable provider gets explicit user facing state`() throws {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-unavailable-message")
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = false
+
+        let metadata = ProviderRegistry.shared.metadata
+        for provider in UsageProvider.allCases {
+            try settings.setProviderEnabled(
+                provider: provider,
+                metadata: #require(metadata[provider]),
+                enabled: false)
+        }
+        try settings.setProviderEnabled(
+            provider: .synthetic,
+            metadata: #require(metadata[.synthetic]),
+            enabled: true)
+
+        let store = Self.makeUsageStore(settings: settings)
+
+        #expect(store.errors[.synthetic] == nil)
+        #expect(store.enabledProvidersForDisplay() == [.synthetic])
+        #expect(store.isProviderAvailable(.synthetic) == false)
+        #expect(store.userFacingError(for: .synthetic) == SyntheticSettingsError.missingToken.errorDescription)
+        #expect(store.unavailableMessage(for: .synthetic) == SyntheticSettingsError.missingToken.errorDescription)
+    }
+
+    @Test
+    func `refresh clears enabled but unavailable cached state`() async throws {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-background-cleanup")
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = false
+
+        let metadata = ProviderRegistry.shared.metadata
+        for provider in UsageProvider.allCases {
+            try settings.setProviderEnabled(
+                provider: provider,
+                metadata: #require(metadata[provider]),
+                enabled: false)
+        }
+        try settings.setProviderEnabled(
+            provider: .synthetic,
+            metadata: #require(metadata[.synthetic]),
+            enabled: true)
+
+        let store = Self.makeUsageStore(settings: settings)
+        let cachedSnapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 25, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            updatedAt: Date())
+        store._setSnapshotForTesting(cachedSnapshot, provider: .synthetic)
+        let account = ProviderTokenAccount(id: UUID(), label: "Account", token: "token", addedAt: 0, lastUsed: nil)
+        store.accountSnapshots[.synthetic] = [
+            TokenAccountUsageSnapshot(account: account, snapshot: cachedSnapshot, error: nil, sourceLabel: "api"),
+        ]
+        store._setTokenSnapshotForTesting(
+            CostUsageTokenSnapshot(
+                sessionTokens: 10,
+                sessionCostUSD: 1.23,
+                last30DaysTokens: 100,
+                last30DaysCostUSD: 4.56,
+                daily: [],
+                updatedAt: Date()),
+            provider: .synthetic)
+
+        #expect(store.enabledProvidersForDisplay() == [.synthetic])
+        #expect(store.enabledProviders().isEmpty)
+        #expect(store.enabledProvidersForBackgroundWork().isEmpty)
+
+        await store.refresh()
+        #expect(store.snapshot(for: .synthetic) == nil)
+        #expect((store.accountSnapshots[.synthetic] ?? []).isEmpty)
+        #expect(store.tokenSnapshots[.synthetic] == nil)
+        #expect(store.enabledProvidersForBackgroundWork().isEmpty)
+    }
+
+    @Test
+    func `refresh clears enabled but unavailable failure state`() async throws {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-background-failure-cleanup")
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = false
+
+        let metadata = ProviderRegistry.shared.metadata
+        for provider in UsageProvider.allCases {
+            try settings.setProviderEnabled(
+                provider: provider,
+                metadata: #require(metadata[provider]),
+                enabled: false)
+        }
+        try settings.setProviderEnabled(
+            provider: .synthetic,
+            metadata: #require(metadata[.synthetic]),
+            enabled: true)
+
+        let store = Self.makeUsageStore(settings: settings)
+        store._setErrorForTesting("stale", provider: .synthetic)
+        store.statuses[.synthetic] = ProviderStatus(indicator: .major, description: "Outage", updatedAt: Date())
+        store.tokenErrors[.synthetic] = "token stale"
+
+        #expect(store.enabledProvidersForDisplay() == [.synthetic])
+        #expect(store.enabledProviders().isEmpty)
+        #expect(store.enabledProvidersForBackgroundWork().isEmpty)
+
+        await store.refresh()
+
+        #expect(store.errors[.synthetic] == nil)
+        #expect(store.tokenErrors[.synthetic] == nil)
+        #expect(store.statuses[.synthetic] == nil)
+        #expect(store.enabledProvidersForBackgroundWork().isEmpty)
+    }
+
+    @Test
+    func `widget snapshot projects provider derived token usage`() async throws {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-widget-provider-cost")
+        let store = Self.makeUsageStore(settings: settings)
+        let day = MistralDailyUsageBucket(
+            day: "2026-05-26",
+            cost: 1.2,
+            inputTokens: 10,
+            cachedTokens: 0,
+            outputTokens: 5,
+            models: [])
+        store._setSnapshotForTesting(MistralUsageSnapshot(
+            totalCost: 9,
+            currency: "eur",
+            currencySymbol: "€",
+            totalInputTokens: 10,
+            totalOutputTokens: 5,
+            totalCachedTokens: 0,
+            modelCount: 1,
+            daily: [day],
+            startDate: nil,
+            endDate: nil,
+            updatedAt: Date()).toUsageSnapshot(), provider: .mistral)
+
+        var widgetSnapshots: [WidgetSnapshot] = []
+        store._test_widgetSnapshotSaveOverride = { widgetSnapshots.append($0) }
+        defer { store._test_widgetSnapshotSaveOverride = nil }
+
+        store.persistWidgetSnapshot(reason: "provider-cost")
+        await store.widgetSnapshotPersistTask?.value
+
+        let mistralEntry = try #require(widgetSnapshots.last?.entries.first { $0.provider == .mistral })
+        #expect(mistralEntry.tokenUsage?.currencyCode == "EUR")
+        #expect(mistralEntry.tokenUsage?.sessionLabel == "Latest billing day")
+        #expect(mistralEntry.tokenUsage?.last30DaysLabel == "This month")
+        #expect(mistralEntry.tokenUsage?.last30DaysCostUSD == 9)
+    }
+
+    @Test
+    func `unavailable provider with only cached status gets single cleanup pass`() async throws {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-background-status-cleanup")
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = true
+
+        let metadata = ProviderRegistry.shared.metadata
+
+        for provider in UsageProvider.allCases {
+            try settings.setProviderEnabled(
+                provider: provider,
+                metadata: #require(metadata[provider]),
+                enabled: false)
+        }
+        try settings.setProviderEnabled(
+            provider: .synthetic,
+            metadata: #require(metadata[.synthetic]),
+            enabled: true)
+
+        let store = Self.makeUsageStore(settings: settings)
+        store.statuses[.synthetic] = ProviderStatus(indicator: .major, description: "Outage", updatedAt: Date())
+
+        #expect(store.enabledProvidersForDisplay() == [.synthetic])
+        #expect(store.enabledProviders().isEmpty)
+        #expect(store.enabledProvidersForBackgroundWork().isEmpty)
+
+        await store.refresh()
+
+        #expect(store.statuses[.synthetic] == nil)
+        #expect(store.enabledProvidersForBackgroundWork().isEmpty)
+    }
+
+    @Test
+    func `status indicators and failure gate`() {
         #expect(!ProviderStatusIndicator.none.hasIssue)
         #expect(ProviderStatusIndicator.maintenance.hasIssue)
-        #expect(ProviderStatusIndicator.unknown.label == "Status unknown")
+        CodexBarLocalizationOverride.$appLanguage.withValue("en") {
+            #expect(ProviderStatusIndicator.unknown.label == "Status unknown")
+        }
 
         var gate = ConsecutiveFailureGate()
         let first = gate.shouldSurfaceError(onFailureWithPriorData: true)
@@ -152,6 +442,35 @@ struct UsageStoreCoverageTests {
         #expect(gate.streak == 0)
     }
 
+    @Test
+    func `token account error message ignores cancellation`() {
+        let settings = Self.makeSettingsStore(suite: "UsageStoreCoverageTests-token-account-cancel")
+        let store = Self.makeUsageStore(settings: settings)
+
+        #expect(store.tokenAccountErrorMessage(CancellationError()) == nil)
+        #expect(store.tokenAccountErrorMessage(ProviderFetchError.noAvailableStrategy(.copilot)) != nil)
+    }
+
+    @Test
+    func `isPreservableNetworkTransportError classifies transport failures correctly`() {
+        #expect(UsageStore.isPreservableNetworkTransportError(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotFindHost)))
+        #expect(UsageStore.isPreservableNetworkTransportError(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost)))
+        #expect(UsageStore.isPreservableNetworkTransportError(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorDNSLookupFailed)))
+        #expect(UsageStore.isPreservableNetworkTransportError(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)))
+        #expect(UsageStore.isPreservableNetworkTransportError(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)))
+        #expect(UsageStore.isPreservableNetworkTransportError(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost)))
+        #expect(UsageStore.isPreservableNetworkTransportError(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)))
+        #expect(!UsageStore.isPreservableNetworkTransportError(
+            NSError(domain: NSCocoaErrorDomain, code: 0)))
+    }
+
     private static func makeSettingsStore(
         suite: String,
         zaiTokenStore: any ZaiTokenStoring = NoopZaiTokenStore(),
@@ -162,7 +481,7 @@ struct UsageStoreCoverageTests {
         defaults.removePersistentDomain(forName: suite)
         let configStore = testConfigStore(suiteName: suite)
 
-        return SettingsStore(
+        let settings = SettingsStore(
             userDefaults: defaults,
             configStore: configStore,
             zaiTokenStore: zaiTokenStore,
@@ -180,13 +499,16 @@ struct UsageStoreCoverageTests {
             ampCookieStore: InMemoryCookieHeaderStore(),
             copilotTokenStore: InMemoryCopilotTokenStore(),
             tokenAccountStore: InMemoryTokenAccountStore())
+        settings.providerDetectionCompleted = true
+        return settings
     }
 
     private static func makeUsageStore(settings: SettingsStore) -> UsageStore {
         UsageStore(
             fetcher: UsageFetcher(environment: [:]),
             browserDetection: BrowserDetection(cacheTTL: 0),
-            settings: settings)
+            settings: settings,
+            environmentBase: [:])
     }
 }
 
@@ -219,5 +541,17 @@ private final class InMemorySyntheticTokenStore: SyntheticTokenStoring, @uncheck
 
     func storeToken(_ token: String?) throws {
         self.value = token
+    }
+}
+
+private struct LocalizedTestError: LocalizedError {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var errorDescription: String? {
+        self.message
     }
 }

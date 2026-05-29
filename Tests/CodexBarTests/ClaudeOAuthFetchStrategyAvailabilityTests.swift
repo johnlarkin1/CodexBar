@@ -19,9 +19,11 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
         }
     }
 
-    private func makeContext(sourceMode: ProviderSourceMode) -> ProviderFetchContext {
-        let env: [String: String] = [:]
-        return ProviderFetchContext(
+    private func makeContext(
+        sourceMode: ProviderSourceMode,
+        env: [String: String] = [:]) -> ProviderFetchContext
+    {
+        ProviderFetchContext(
             runtime: .app,
             sourceMode: sourceMode,
             includeCredits: false,
@@ -48,7 +50,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func autoModeExpiredCreds_cliAvailable_returnsAvailable() async {
+    func `auto mode expired creds cli available returns available`() async {
         let context = self.makeContext(sourceMode: .auto)
         let strategy = ClaudeOAuthFetchStrategy()
         let available = await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride
@@ -61,7 +63,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func autoModeExpiredCreds_cliUnavailable_returnsUnavailable() async {
+    func `auto mode expired creds cli unavailable returns unavailable`() async {
         let context = self.makeContext(sourceMode: .auto)
         let strategy = ClaudeOAuthFetchStrategy()
         let available = await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride
@@ -74,7 +76,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func oauthModeExpiredCreds_cliAvailable_returnsAvailable() async {
+    func `oauth mode expired creds cli available returns available`() async {
         let context = self.makeContext(sourceMode: .oauth)
         let strategy = ClaudeOAuthFetchStrategy()
         let available = await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride
@@ -87,7 +89,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func autoModeExpiredCodexbarCreds_cliUnavailable_stillAvailable() async {
+    func `auto mode expired codexbar creds cli unavailable still available`() async {
         let context = self.makeContext(sourceMode: .auto)
         let strategy = ClaudeOAuthFetchStrategy()
         let available = await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride
@@ -100,7 +102,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func oauthModeDoesNotFallbackAfterOAuthFailure() {
+    func `oauth mode does not fallback after O auth failure`() {
         let context = self.makeContext(sourceMode: .oauth)
         let strategy = ClaudeOAuthFetchStrategy()
         #expect(strategy.shouldFallback(
@@ -109,7 +111,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func autoModeFallsBackAfterOAuthFailure() {
+    func `auto mode falls back after O auth failure`() {
         let context = self.makeContext(sourceMode: .auto)
         let strategy = ClaudeOAuthFetchStrategy()
         #expect(strategy.shouldFallback(
@@ -118,7 +120,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func autoMode_userInitiated_clearsKeychainCooldownGate() async {
+    func `auto mode user initiated clears keychain cooldown gate`() async {
         let context = self.makeContext(sourceMode: .auto)
         let strategy = ClaudeOAuthFetchStrategy()
         let recordWithoutRequiredScope = ClaudeOAuthCredentialRecord(
@@ -131,29 +133,27 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
             owner: .claudeCLI,
             source: .cacheKeychain)
 
-        await ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(.securityFramework) {
-            await KeychainAccessGate.withTaskOverrideForTesting(false) {
-                ClaudeOAuthKeychainAccessGate.resetForTesting()
-                defer { ClaudeOAuthKeychainAccessGate.resetForTesting() }
+        await KeychainAccessGate.withTaskOverrideForTesting(false) {
+            ClaudeOAuthKeychainAccessGate.resetForTesting()
+            defer { ClaudeOAuthKeychainAccessGate.resetForTesting() }
 
-                let now = Date(timeIntervalSince1970: 1000)
-                ClaudeOAuthKeychainAccessGate.recordDenied(now: now)
-                #expect(ClaudeOAuthKeychainAccessGate.shouldAllowPrompt(now: now) == false)
+            let now = Date(timeIntervalSince1970: 1000)
+            ClaudeOAuthKeychainAccessGate.recordDenied(now: now)
+            #expect(ClaudeOAuthKeychainAccessGate.shouldAllowPrompt(now: now) == false)
 
-                _ = await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride
-                    .withValue(recordWithoutRequiredScope) {
-                        await ProviderInteractionContext.$current.withValue(.userInitiated) {
-                            await strategy.isAvailable(context)
-                        }
+            _ = await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride
+                .withValue(recordWithoutRequiredScope) {
+                    await ProviderInteractionContext.$current.withValue(.userInitiated) {
+                        await strategy.isAvailable(context)
                     }
+                }
 
-                #expect(ClaudeOAuthKeychainAccessGate.shouldAllowPrompt(now: now))
-            }
+            #expect(ClaudeOAuthKeychainAccessGate.shouldAllowPrompt(now: now))
         }
     }
 
     @Test
-    func autoMode_onlyOnUserAction_background_startup_withoutCache_isAvailableForBootstrap() async throws {
+    func `auto mode only on user action background startup without cache is available for bootstrap`() async throws {
         let context = self.makeContext(sourceMode: .auto)
         let strategy = ClaudeOAuthFetchStrategy()
         let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
@@ -177,12 +177,14 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
                 let fileURL = tempDir.appendingPathComponent("credentials.json")
 
-                let available = await ClaudeOAuthCredentialsStore.withCredentialsURLOverrideForTesting(fileURL) {
-                    await ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(.securityFramework) {
-                        await ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.onlyOnUserAction) {
-                            await ProviderRefreshContext.$current.withValue(.startup) {
-                                await ProviderInteractionContext.$current.withValue(.background) {
-                                    await strategy.isAvailable(context)
+                let available = await KeychainAccessGate.withTaskOverrideForTesting(false) {
+                    await ClaudeOAuthCredentialsStore.withCredentialsURLOverrideForTesting(fileURL) {
+                        await ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(.securityFramework) {
+                            await ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.onlyOnUserAction) {
+                                await ProviderRefreshContext.$current.withValue(.startup) {
+                                    await ProviderInteractionContext.$current.withValue(.background) {
+                                        await strategy.isAvailable(context)
+                                    }
                                 }
                             }
                         }
@@ -195,7 +197,72 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func autoMode_experimental_reader_ignoresPromptPolicyCooldownGate() async {
+    func `auto mode expired Claude CLI creds env provided CLI override returns available`() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let cliURL = tempDir.appendingPathComponent("claude")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: cliURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cliURL.path)
+
+        let context = self.makeContext(
+            sourceMode: .auto,
+            env: ["CLAUDE_CLI_PATH": cliURL.path])
+        let strategy = ClaudeOAuthFetchStrategy()
+        let available = await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride
+            .withValue(self.expiredRecord()) {
+                await strategy.isAvailable(context)
+            }
+
+        #expect(available == true)
+    }
+
+    @Test
+    func `auto mode default reader keeps background startup bootstrap available`() async throws {
+        let context = self.makeContext(sourceMode: .auto)
+        let strategy = ClaudeOAuthFetchStrategy()
+        let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
+
+        try await KeychainCacheStore.withServiceOverrideForTesting(service) {
+            KeychainCacheStore.setTestStoreForTesting(true)
+            defer { KeychainCacheStore.setTestStoreForTesting(false) }
+
+            try await ClaudeOAuthCredentialsStore.withIsolatedMemoryCacheForTesting {
+                ClaudeOAuthCredentialsStore.invalidateCache()
+                ClaudeOAuthCredentialsStore._resetCredentialsFileTrackingForTesting()
+                ClaudeOAuthKeychainAccessGate.resetForTesting()
+                defer {
+                    ClaudeOAuthCredentialsStore.invalidateCache()
+                    ClaudeOAuthCredentialsStore._resetCredentialsFileTrackingForTesting()
+                    ClaudeOAuthKeychainAccessGate.resetForTesting()
+                }
+
+                let tempDir = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                let fileURL = tempDir.appendingPathComponent("credentials.json")
+
+                let available = await KeychainAccessGate.withTaskOverrideForTesting(false) {
+                    await ClaudeOAuthCredentialsStore.withCredentialsURLOverrideForTesting(fileURL) {
+                        await ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.onlyOnUserAction) {
+                            await ClaudeOAuthCredentialsStore.withSecurityCLIReadOverrideForTesting(.nonZeroExit) {
+                                await ProviderRefreshContext.$current.withValue(.startup) {
+                                    await ProviderInteractionContext.$current.withValue(.background) {
+                                        await strategy.isAvailable(context)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                #expect(available == true)
+            }
+        }
+    }
+
+    @Test
+    func `auto mode experimental reader ignores prompt policy cooldown gate`() async {
         let context = self.makeContext(sourceMode: .auto)
         let strategy = ClaudeOAuthFetchStrategy()
         let securityData = Data("""
@@ -221,7 +288,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
         let available = await KeychainAccessGate.withTaskOverrideForTesting(false) {
             await ClaudeOAuthKeychainAccessGate.withShouldAllowPromptOverrideForTesting(false) {
                 await ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(
-                    .securityCLI)
+                    .securityCLIExperimental)
                 {
                     await ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.onlyOnUserAction) {
                         await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride.withValue(
@@ -244,7 +311,9 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
     }
 
     @Test
-    func autoMode_experimental_reader_securityFailure_blocksAvailabilityWhenStoredPolicyBlocksFallback() async {
+    func `auto mode experimental reader security failure blocks availability when stored policy blocks fallback`()
+        async
+    {
         let context = self.makeContext(sourceMode: .auto)
         let strategy = ClaudeOAuthFetchStrategy()
         let fallbackData = Data("""
@@ -270,7 +339,7 @@ struct ClaudeOAuthFetchStrategyAvailabilityTests {
         let available = await KeychainAccessGate.withTaskOverrideForTesting(false) {
             await ClaudeOAuthKeychainAccessGate.withShouldAllowPromptOverrideForTesting(true) {
                 await ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(
-                    .securityCLI)
+                    .securityCLIExperimental)
                 {
                     await ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.onlyOnUserAction) {
                         await ClaudeOAuthFetchStrategy.$nonInteractiveCredentialRecordOverride.withValue(

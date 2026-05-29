@@ -36,12 +36,130 @@ public struct SubprocessResult: Sendable {
 
 public enum SubprocessRunner {
     private static let log = CodexBarLog.logger(LogCategories.subprocess)
+    private static let timeoutQueue = DispatchQueue(
+        label: "com.steipete.codexbar.subprocess.timeout",
+        qos: .userInitiated,
+        attributes: .concurrent)
+
+    /// Thread-safe flag for communicating between concurrent tasks (e.g. timeout → caller).
+    private final class KillFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func set() {
+            self.lock.withLock { self.value = true }
+        }
+
+        var isSet: Bool {
+            self.lock.withLock { self.value }
+        }
+    }
+
+    private final class TimeoutTimer: @unchecked Sendable {
+        private let timer: any DispatchSourceTimer
+
+        init(timer: any DispatchSourceTimer) {
+            self.timer = timer
+        }
+
+        func cancel() {
+            self.timer.cancel()
+        }
+    }
+
+    private static func timeoutInterval(_ timeout: TimeInterval) -> DispatchTimeInterval {
+        guard timeout.isFinite else {
+            return .seconds(Int.max)
+        }
+        let nanoseconds = max(0, min(timeout * 1_000_000_000, Double(Int.max)))
+        return .nanoseconds(Int(nanoseconds))
+    }
+
+    private final class ProcessTermination: @unchecked Sendable {
+        private let lock = NSLock()
+        private var status: Int32?
+        private var continuation: CheckedContinuation<Int32, Never>?
+
+        func resolve(_ status: Int32) {
+            let continuation: CheckedContinuation<Int32, Never>?
+            self.lock.lock()
+            self.status = status
+            continuation = self.continuation
+            self.continuation = nil
+            self.lock.unlock()
+            continuation?.resume(returning: status)
+        }
+
+        func wait() async -> Int32 {
+            await withCheckedContinuation { continuation in
+                let status: Int32?
+                self.lock.lock()
+                status = self.status
+                if status == nil {
+                    self.continuation = continuation
+                }
+                self.lock.unlock()
+
+                if let status {
+                    continuation.resume(returning: status)
+                }
+            }
+        }
+    }
+
+    // MARK: - Helpers to move blocking calls off the cooperative thread pool
+
+    /// Reads pipe data on a GCD thread so it does not block the Swift cooperative pool.
+    private static func readDataOffPool(_ fileHandle: FileHandle) async -> Data {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                var output = Data()
+                while true {
+                    do {
+                        guard let data = try fileHandle.read(upToCount: 64 * 1024), data.isEmpty == false else {
+                            break
+                        }
+                        output.append(data)
+                    } catch {
+                        break
+                    }
+                }
+                continuation.resume(returning: output)
+            }
+        }
+    }
+
+    /// Terminates a process and its process group, escalating from SIGTERM to SIGKILL.
+    /// Returns `true` if the process was actually killed, `false` if it had already exited.
+    @discardableResult
+    private static func terminateProcess(_ process: Process, processGroup: pid_t?) -> Bool {
+        guard process.isRunning else { return false }
+        process.terminate()
+        if let pgid = processGroup {
+            kill(-pgid, SIGTERM)
+        }
+        let killDeadline = Date().addingTimeInterval(0.4)
+        while process.isRunning, Date() < killDeadline {
+            usleep(50000)
+        }
+        if process.isRunning {
+            if let pgid = processGroup {
+                kill(-pgid, SIGKILL)
+            }
+            kill(process.processIdentifier, SIGKILL)
+        }
+        return true
+    }
+
+    // MARK: - Public API
 
     public static func run(
         binary: String,
         arguments: [String],
         environment: [String: String],
         timeout: TimeInterval,
+        standardInput: Any? = nil,
+        currentDirectoryURL: URL? = nil,
         label: String) async throws -> SubprocessResult
     {
         guard FileManager.default.isExecutableFile(atPath: binary) else {
@@ -58,51 +176,82 @@ public enum SubprocessRunner {
         process.executableURL = URL(fileURLWithPath: binary)
         process.arguments = arguments
         process.environment = environment
+        process.currentDirectoryURL = currentDirectoryURL
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        process.standardInput = nil
+        process.standardInput = standardInput
 
-        let stdoutTask = Task<Data, Never> {
-            stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        }
-        let stderrTask = Task<Data, Never> {
-            stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let termination = ProcessTermination()
+        process.terminationHandler = { process in
+            termination.resolve(process.terminationStatus)
         }
 
         do {
             try process.run()
         } catch {
-            stdoutTask.cancel()
-            stderrTask.cancel()
+            process.terminationHandler = nil
             stdoutPipe.fileHandleForReading.closeFile()
+            stdoutPipe.fileHandleForWriting.closeFile()
             stderrPipe.fileHandleForReading.closeFile()
+            stderrPipe.fileHandleForWriting.closeFile()
             throw SubprocessRunnerError.launchFailed(error.localizedDescription)
         }
 
-        var processGroup: pid_t?
         let pid = process.processIdentifier
-        if setpgid(pid, pid) == 0 {
-            processGroup = pid
+        let processGroup: pid_t? = setpgid(pid, pid) == 0 ? pid : nil
+
+        let stdoutTask = Task<Data, Never> {
+            await self.readDataOffPool(stdoutPipe.fileHandleForReading)
+        }
+        let stderrTask = Task<Data, Never> {
+            await self.readDataOffPool(stderrPipe.fileHandleForReading)
         }
 
         let exitCodeTask = Task<Int32, Never> {
-            process.waitUntilExit()
-            return process.terminationStatus
+            await termination.wait()
         }
 
+        let killedByTimeout = KillFlag()
+        let timeoutTimer = DispatchSource.makeTimerSource(queue: self.timeoutQueue)
+        timeoutTimer.schedule(deadline: .now() + self.timeoutInterval(timeout))
+        timeoutTimer.setEventHandler {
+            guard process.isRunning else { return }
+            killedByTimeout.set()
+            self.terminateProcess(process, processGroup: processGroup)
+        }
+        timeoutTimer.resume()
+        let timeoutTimerBox = TimeoutTimer(timer: timeoutTimer)
+
         do {
-            let exitCode = try await withThrowingTaskGroup(of: Int32.self) { group in
-                group.addTask { await exitCodeTask.value }
-                group.addTask {
-                    try await Task.sleep(for: .seconds(timeout))
-                    throw SubprocessRunnerError.timedOut(label)
-                }
-                let code = try await group.next()!
-                group.cancelAll()
+            let exitCode = try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                let code = await exitCodeTask.value
+                try Task.checkCancellation()
                 return code
+            } onCancel: {
+                timeoutTimerBox.cancel()
+                self.terminateProcess(process, processGroup: processGroup)
+            }
+            timeoutTimerBox.cancel()
+
+            let duration = Date().timeIntervalSince(start)
+            // Race guard: the timeout timer may kill the process just before the
+            // exit code arrives. Key off the explicit kill flag so a completed
+            // process is not misclassified when the awaiting task resumes late.
+            if killedByTimeout.isSet {
+                self.log.warning(
+                    "Subprocess timed out",
+                    metadata: [
+                        "label": label,
+                        "binary": binaryName,
+                        "duration_ms": "\(Int(duration * 1000))",
+                    ])
+                stdoutTask.cancel()
+                stderrTask.cancel()
+                throw SubprocessRunnerError.timedOut(label)
             }
 
             let stdoutData = await stdoutTask.value
@@ -123,7 +272,6 @@ public enum SubprocessRunner {
                 throw SubprocessRunnerError.nonZeroExit(code: exitCode, stderr: stderr)
             }
 
-            let duration = Date().timeIntervalSince(start)
             self.log.debug(
                 "Subprocess exit",
                 metadata: [
@@ -142,27 +290,11 @@ public enum SubprocessRunner {
                     "binary": binaryName,
                     "duration_ms": "\(Int(duration * 1000))",
                 ])
-            if process.isRunning {
-                process.terminate()
-                if let pgid = processGroup {
-                    kill(-pgid, SIGTERM)
-                }
-                let killDeadline = Date().addingTimeInterval(0.4)
-                while process.isRunning, Date() < killDeadline {
-                    usleep(50000)
-                }
-                if process.isRunning {
-                    if let pgid = processGroup {
-                        kill(-pgid, SIGKILL)
-                    }
-                    kill(process.processIdentifier, SIGKILL)
-                }
-            }
+            // Safety net: ensure the process is dead (may already be killed by timeout timer).
+            self.terminateProcess(process, processGroup: processGroup)
             exitCodeTask.cancel()
             stdoutTask.cancel()
             stderrTask.cancel()
-            stdoutPipe.fileHandleForReading.closeFile()
-            stderrPipe.fileHandleForReading.closeFile()
             throw error
         }
     }

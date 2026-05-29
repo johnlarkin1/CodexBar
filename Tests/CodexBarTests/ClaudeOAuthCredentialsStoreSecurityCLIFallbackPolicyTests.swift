@@ -19,14 +19,14 @@ struct ClaudeOAuthCredentialsStoreSecurityCLIFallbackPolicyTests {
     }
 
     @Test
-    func experimentalReader_hasClaudeKeychainCredentialsWithoutPrompt_backgroundFallbackBlockedByStoredPolicy() {
+    func `experimental reader blocks background fallback per stored policy`() {
         let fallbackData = self.makeCredentialsData(
             accessToken: "fallback-should-be-blocked",
             expiresAt: Date(timeIntervalSinceNow: 3600))
 
         let hasCredentials = KeychainAccessGate.withTaskOverrideForTesting(false) {
             ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(
-                .securityCLI,
+                .securityCLIExperimental,
                 operation: {
                     ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(
                         .onlyOnUserAction,
@@ -51,7 +51,7 @@ struct ClaudeOAuthCredentialsStoreSecurityCLIFallbackPolicyTests {
     }
 
     @Test
-    func experimentalReader_syncFromClaudeKeychainWithoutPrompt_backgroundFallbackBlockedByStoredPolicy() {
+    func `experimental reader sync from claude keychain without prompt background fallback blocked by stored policy`() {
         let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
         KeychainCacheStore.withServiceOverrideForTesting(service) {
             KeychainAccessGate.withTaskOverrideForTesting(false) {
@@ -78,7 +78,7 @@ struct ClaudeOAuthCredentialsStoreSecurityCLIFallbackPolicyTests {
                         preflightOverride,
                         operation: {
                             ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(
-                                .securityCLI,
+                                .securityCLIExperimental,
                                 operation: {
                                     ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(
                                         .onlyOnUserAction,

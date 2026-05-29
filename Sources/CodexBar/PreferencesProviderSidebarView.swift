@@ -13,29 +13,39 @@ struct ProviderSidebarListView: View {
     @State private var draggingProvider: UsageProvider?
 
     var body: some View {
-        List(selection: self.$selection) {
-            ForEach(self.providers, id: \.self) { provider in
-                ProviderSidebarRowView(
-                    provider: provider,
-                    store: self.store,
-                    isEnabled: self.isEnabled(provider),
-                    subtitle: self.subtitle(provider),
-                    draggingProvider: self.$draggingProvider)
-                    .tag(provider)
-                    .onDrop(
-                        of: [UTType.plainText],
-                        delegate: ProviderSidebarDropDelegate(
-                            item: provider,
-                            providers: self.providers,
-                            dragging: self.$draggingProvider,
-                            moveProviders: self.moveProviders))
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(self.providers, id: \.self) { provider in
+                    ProviderSidebarRowView(
+                        provider: provider,
+                        store: self.store,
+                        isEnabled: self.isEnabled(provider),
+                        subtitle: self.subtitle(provider),
+                        draggingProvider: self.$draggingProvider)
+                        .padding(.horizontal, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(
+                                    self.selection == provider
+                                        ? Color(nsColor: .selectedContentBackgroundColor)
+                                        : Color.clear)
+                                .padding(.horizontal, 4))
+                        .contentShape(Rectangle())
+                        .onTapGesture { self.selection = provider }
+                        .onDrop(
+                            of: [UTType.plainText],
+                            delegate: ProviderSidebarDropDelegate(
+                                item: provider,
+                                providers: self.providers,
+                                dragging: self.$draggingProvider,
+                                moveProviders: self.moveProviders))
+                }
             }
+            .padding(.vertical, 4)
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
         .background(
             RoundedRectangle(cornerRadius: ProviderSettingsMetrics.sidebarCornerRadius, style: .continuous)
-                .fill(.regularMaterial))
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.8)))
         .overlay(
             RoundedRectangle(cornerRadius: ProviderSettingsMetrics.sidebarCornerRadius, style: .continuous)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.7), lineWidth: 1))
@@ -62,7 +72,7 @@ private struct ProviderSidebarRowView: View {
                 .contentShape(Rectangle())
                 .padding(.vertical, 4)
                 .padding(.horizontal, 2)
-                .help("Drag to reorder")
+                .help(L("Drag to reorder"))
                 .onDrag {
                     self.draggingProvider = self.provider
                     return NSItemProvider(object: self.provider.rawValue as NSString)
@@ -99,6 +109,7 @@ private struct ProviderSidebarRowView: View {
                 .toggleStyle(.checkbox)
                 .controlSize(.small)
         }
+        .padding(.trailing, 6)
         .contentShape(Rectangle())
         .padding(.vertical, 2)
     }
@@ -109,9 +120,9 @@ private struct ProviderSidebarRowView: View {
         if lines.count >= 2 {
             let first = lines[0]
             let rest = lines.dropFirst().joined(separator: "\n")
-            return "Disabled — \(first)\n\(rest)"
+            return "\(L("Disabled")) — \(first)\n\(rest)"
         }
-        return "Disabled — \(self.subtitle)"
+        return "\(L("Disabled")) — \(self.subtitle)"
     }
 }
 
@@ -135,7 +146,7 @@ private struct ProviderSidebarReorderHandle: View {
             width: ProviderSettingsMetrics.reorderHandleSize,
             height: ProviderSettingsMetrics.reorderHandleSize)
         .foregroundStyle(.tertiary)
-        .accessibilityLabel("Reorder")
+        .accessibilityLabel(L("Reorder"))
     }
 }
 

@@ -9,17 +9,42 @@ read_when:
 
 # Claude provider
 
-Claude supports three usage data paths plus local cost usage. Source selection is automatic unless debug override is set.
+Claude supports three usage data paths plus local cost usage. The main provider pipeline uses runtime-specific
+automatic selection, but the codebase still has multiple active Claude `.auto` decision sites while the refactor is
+pending. For the exact current-state parity contract, see
+[docs/refactor/claude-current-baseline.md](refactor/claude-current-baseline.md).
+
+When an Anthropic Admin API key is configured, Claude can also show organization-level spend/messages/tokens in the
+same inline dashboard pattern used by the OpenAI API provider.
 
 ## Data sources + selection order
 
 ### Default selection (debug menu disabled)
-1) OAuth API (if Claude CLI credentials include `user:profile` scope).
-2) CLI PTY (`claude`), if OAuth is unavailable or fails.
-3) Web API (browser cookies, `sessionKey`), if OAuth + CLI are unavailable or fail.
+- If an Admin API key is configured, the Admin API strategy is used for Claude API spend/usage.
+- App runtime main pipeline: OAuth API → CLI PTY → Web API.
+- CLI runtime main pipeline: Web API → CLI PTY.
+- Explicit picker modes (OAuth/Web/CLI) bypass automatic fallback.
+- A lower-level direct Claude fetcher still contains a separate `.auto` order. That inconsistency is tracked in
+  [docs/refactor/claude-current-baseline.md](refactor/claude-current-baseline.md).
 
 Usage source picker:
 - Preferences → Providers → Claude → Usage source (Auto/OAuth/Web/CLI).
+
+Admin API key setup:
+- Preferences → Providers → Claude → Admin API key, stored in `~/.codexbar/config.json`.
+- CLI/env: `printf '%s' "$ANTHROPIC_ADMIN_KEY" | codexbar config set-api-key --provider claude --stdin`.
+- Token accounts can also hold `sk-ant-admin...` keys; they route to the Admin API instead of cookie/OAuth usage.
+- Environment fallback: `ANTHROPIC_ADMIN_KEY`.
+
+## Admin API
+- Key prefix: `sk-ant-admin...`.
+- Endpoints:
+  - `/v1/organizations/cost_report`
+  - `/v1/organizations/usage_report/messages`
+- Output:
+  - Today/7d/30d spend and message/token summaries.
+  - Inline 30-day dashboard chart when daily buckets are present.
+  - Identity login method: `Admin API`.
 
 ## Keychain prompt policy (Claude OAuth)
 - Preferences → Providers → Claude → Keychain prompt policy.
@@ -37,8 +62,9 @@ Usage source picker:
 
 ## OAuth API (preferred)
 - Credentials:
-  - Keychain service: `Claude Code-credentials` (primary on macOS).
+  - CodexBar OAuth cache when available.
   - File fallback: `~/.claude/.credentials.json`.
+  - Claude CLI Keychain bootstrap/repair fallback: `Claude Code-credentials`.
 - Requires `user:profile` scope (CLI tokens with only `user:inference` cannot call usage).
 - Endpoint:
   - `GET https://api.anthropic.com/api/oauth/usage`
@@ -47,18 +73,24 @@ Usage source picker:
   - `anthropic-beta: oauth-2025-04-20`
 - Mapping:
   - `five_hour` → session window.
-  - `seven_day` → weekly window.
+  - `seven_day` → weekly window; also becomes the primary fallback when `five_hour` is absent or has no utilization.
   - `seven_day_sonnet` / `seven_day_opus` → model-specific weekly window.
+  - `seven_day_routines` / `seven_day_cowork` → Daily Routines extra window.
+  - Claude Design/Omelette keys are ignored because Claude Design shares the main Claude usage limit.
   - `extra_usage` → Extra usage cost (monthly spend/limit).
-- Plan inference: `rate_limit_tier` from credentials maps to Max/Pro/Team/Enterprise.
+- Successful OAuth login enables Claude and selects OAuth as the usage source.
+- Plan inference: `subscriptionType` is preferred when present; `rate_limit_tier` falls back to
+  Max/Pro/Team/Enterprise.
 
 ## Web API (cookies)
 - Preferences → Providers → Claude → Cookie source (Automatic or Manual).
 - Manual mode accepts a `Cookie:` header from a claude.ai request.
 - Multi-account manual tokens: add entries to `~/.codexbar/config.json` (`tokenAccounts`) and set Claude cookies to
   Manual. The menu can show all accounts stacked or a switcher bar (Preferences → Advanced → Display).
-- Claude token accounts accept either `sessionKey` cookies or OAuth access tokens (`sk-ant-oat...`). OAuth tokens use
-  the Anthropic OAuth usage endpoint; to force cookie mode, paste `sessionKey=<value>` or a full `Cookie:` header.
+- Claude token accounts accept either `sessionKey` cookies or OAuth access tokens (`sk-ant-oat...`). OAuth-token
+  accounts route to the OAuth path and disable cookie mode; session-key or cookie-header accounts stay in manual
+  cookie mode. The exact edge-routing rules are documented in
+  [docs/refactor/claude-current-baseline.md](refactor/claude-current-baseline.md).
 - Cookie source order:
   1) Safari: `~/Library/Cookies/Cookies.binarycookies`
   2) Chrome/Chromium forks: `~/Library/Application Support/Google/Chrome/*/Cookies`
@@ -75,12 +107,15 @@ Usage source picker:
   - `GET https://claude.ai/api/account` → email + plan hints.
 - Outputs:
   - Session + weekly + model-specific percent used.
+  - Daily Routines extra window when returned by the usage API.
   - Extra usage spend/limit (if enabled).
   - Account email + inferred plan.
 
 ## CLI PTY (fallback)
 - Runs `claude` in a PTY session (`ClaudeCLISession`).
 - Default behavior: exit after each probe; Debug → "Keep CLI sessions alive" keeps it running between probes.
+- Probe working directory: `~/Library/Application Support/CodexBar/ClaudeProbe` with local Claude settings that disable
+  deep-link URL handler registration during headless probes.
 - Command flow:
   1) Start CLI with `--allowed-tools ""` (no tools).
   2) Auto-respond to first-run prompts (trust files, workspace, telemetry).
@@ -94,17 +129,23 @@ Usage source picker:
 
 ## Cost usage (local log scan)
 - Source roots:
-  - `$CLAUDE_CONFIG_DIR` (comma-separated), each root uses `<root>/projects`.
-  - Fallback roots:
-    - `~/.config/claude/projects`
-    - `~/.claude/projects`
-- Files: `**/*.jsonl` under the project roots.
+  - Native Claude logs:
+    - `$CLAUDE_CONFIG_DIR` (comma-separated), each root uses `<root>/projects`.
+    - Fallback roots:
+      - `~/.config/claude/projects`
+      - `~/.claude/projects`
+  - Supported pi sessions:
+    - `~/.pi/agent/sessions/**/*.jsonl`
+- Files: `**/*.jsonl` under the native project roots plus supported pi session files.
 - Parsing:
-  - Lines with `type: "assistant"` and `message.usage`.
+  - Native Claude logs parse lines with `type: "assistant"` and `message.usage`.
   - Uses per-model token counts (input, cache read/create, output).
   - Deduplicates streaming chunks by `message.id + requestId` (usage is cumulative per chunk).
+  - pi sessions attribute `anthropic` assistant usage to Claude and bucket it by assistant-turn timestamp, so a single pi
+    session can contribute to multiple models/days.
 - Cache:
-  - `~/Library/Caches/CodexBar/cost-usage/claude-v1.json`
+  - Native + merged provider cache: `~/Library/Caches/CodexBar/cost-usage/claude-v2.json`
+  - pi session cache: `~/Library/Caches/CodexBar/cost-usage/pi-sessions-v1.json`
 
 ## Key files
 - OAuth: `Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/*`
@@ -112,4 +153,6 @@ Usage source picker:
 - CLI PTY: `Sources/CodexBarCore/Providers/Claude/ClaudeStatusProbe.swift`,
   `Sources/CodexBarCore/Providers/Claude/ClaudeCLISession.swift`
 - Cost usage: `Sources/CodexBarCore/CostUsageFetcher.swift`,
+  `Sources/CodexBarCore/PiSessionCostScanner.swift`,
+  `Sources/CodexBarCore/PiSessionCostCache.swift`,
   `Sources/CodexBarCore/Vendored/CostUsage/*`

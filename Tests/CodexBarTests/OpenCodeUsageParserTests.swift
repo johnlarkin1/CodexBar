@@ -2,10 +2,9 @@ import Foundation
 import Testing
 @testable import CodexBarCore
 
-@Suite
 struct OpenCodeUsageParserTests {
     @Test
-    func parsesWorkspaceIDs() {
+    func `parses workspace I ds`() {
         let text = ";0x00000089;((self.$R=self.$R||{})[\"codexbar\"]=[]," +
             "($R=>$R[0]=[$R[1]={id:\"wrk_01K6AR1ZET89H8NB691FQ2C2VB\",name:\"Default\",slug:null}])" +
             "($R[\"codexbar\"]))"
@@ -14,7 +13,7 @@ struct OpenCodeUsageParserTests {
     }
 
     @Test
-    func parsesSubscriptionUsage() throws {
+    func `parses subscription usage`() throws {
         let text = "$R[16]($R[30],$R[41]={rollingUsage:$R[42]={status:\"ok\",resetInSec:5944,usagePercent:17}," +
             "weeklyUsage:$R[43]={status:\"ok\",resetInSec:278201,usagePercent:75}});"
         let now = Date(timeIntervalSince1970: 0)
@@ -26,7 +25,7 @@ struct OpenCodeUsageParserTests {
     }
 
     @Test
-    func parsesSubscriptionFromJSONWithResetAt() throws {
+    func `parses subscription from JSON with reset at`() throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let resetAt = now.addingTimeInterval(3600)
         let formatter = ISO8601DateFormatter()
@@ -55,7 +54,7 @@ struct OpenCodeUsageParserTests {
     }
 
     @Test
-    func parsesSubscriptionFromCandidateWindows() throws {
+    func `parses subscription from candidate windows`() throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let payload: [String: Any] = [
             "windows": [
@@ -81,7 +80,7 @@ struct OpenCodeUsageParserTests {
     }
 
     @Test
-    func computesUsagePercentFromTotals() throws {
+    func `computes usage percent from totals`() throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let payload: [String: Any] = [
             "rollingUsage": [
@@ -105,12 +104,156 @@ struct OpenCodeUsageParserTests {
     }
 
     @Test
-    func parseSubscriptionThrowsWhenFieldsMissing() {
+    func `parse subscription throws when fields missing`() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let text = "{\"ok\":true}"
 
         #expect(throws: OpenCodeUsageError.self) {
             _ = try OpenCodeUsageFetcher.parseSubscription(text: text, now: now)
         }
+    }
+
+    @Test
+    func `renewsAt parses from ISO8601 renewAt key`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let renewAt = now.addingTimeInterval(86400 * 30)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let payload: [String: Any] = [
+            "rollingUsage": ["usagePercent": 10, "resetInSec": 600],
+            "weeklyUsage": ["usagePercent": 50, "resetInSec": 3600],
+            "renewAt": formatter.string(from: renewAt),
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        let snapshot = try OpenCodeUsageFetcher.parseSubscription(text: text, now: now)
+
+        #expect(snapshot.renewsAt != nil)
+        #expect(snapshot.renewsAt == renewAt)
+    }
+
+    @Test
+    func `renewsAt parses from renew_at key`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let renewAt = now.addingTimeInterval(86400 * 30)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let payload: [String: Any] = [
+            "rollingUsage": ["usagePercent": 10, "resetInSec": 600],
+            "weeklyUsage": ["usagePercent": 50, "resetInSec": 3600],
+            "renew_at": formatter.string(from: renewAt),
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        let snapshot = try OpenCodeUsageFetcher.parseSubscription(text: text, now: now)
+
+        #expect(snapshot.renewsAt != nil)
+        #expect(snapshot.renewsAt == renewAt)
+    }
+
+    @Test
+    func `renewsAt is nil when absent`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let payload: [String: Any] = [
+            "rollingUsage": ["usagePercent": 10, "resetInSec": 600],
+            "weeklyUsage": ["usagePercent": 50, "resetInSec": 3600],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        let snapshot = try OpenCodeUsageFetcher.parseSubscription(text: text, now: now)
+
+        #expect(snapshot.renewsAt == nil)
+    }
+
+    @Test
+    func `top level renewAt is preserved for nested usage object`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let renewAt = now.addingTimeInterval(86400 * 30)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let payload: [String: Any] = [
+            "renewAt": formatter.string(from: renewAt),
+            "usage": [
+                "rollingUsage": ["usagePercent": 10, "resetInSec": 600],
+                "weeklyUsage": ["usagePercent": 50, "resetInSec": 3600],
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        let snapshot = try OpenCodeUsageFetcher.parseSubscription(text: text, now: now)
+
+        #expect(snapshot.renewsAt == renewAt)
+    }
+
+    @Test
+    func `top level renew_at is preserved for nested usage object`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let renewAt = now.addingTimeInterval(86400 * 30)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let payload: [String: Any] = [
+            "renew_at": formatter.string(from: renewAt),
+            "usage": [
+                "rollingUsage": ["usagePercent": 10, "resetInSec": 600],
+                "weeklyUsage": ["usagePercent": 50, "resetInSec": 3600],
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        let snapshot = try OpenCodeUsageFetcher.parseSubscription(text: text, now: now)
+
+        #expect(snapshot.renewsAt == renewAt)
+    }
+
+    @Test
+    func `child renewAt overrides parent renewAt`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let parentRenewAt = now.addingTimeInterval(86400 * 30)
+        let childRenewAt = now.addingTimeInterval(86400 * 45)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let payload: [String: Any] = [
+            "renewAt": formatter.string(from: parentRenewAt),
+            "usage": [
+                "renewAt": formatter.string(from: childRenewAt),
+                "rollingUsage": ["usagePercent": 10, "resetInSec": 600],
+                "weeklyUsage": ["usagePercent": 50, "resetInSec": 3600],
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        let snapshot = try OpenCodeUsageFetcher.parseSubscription(text: text, now: now)
+
+        #expect(snapshot.renewsAt == childRenewAt)
+    }
+
+    @Test
+    func `toUsageSnapshot includes renewal NamedRateWindow when renewsAt present`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let renewAt = now.addingTimeInterval(86400 * 30)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let payload: [String: Any] = [
+            "rollingUsage": ["usagePercent": 10, "resetInSec": 600],
+            "weeklyUsage": ["usagePercent": 50, "resetInSec": 3600],
+            "renewAt": formatter.string(from: renewAt),
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        let snapshot = try OpenCodeUsageFetcher.parseSubscription(text: text, now: now)
+        let usage = snapshot.toUsageSnapshot()
+
+        #expect(usage.extraRateWindows != nil)
+        #expect(usage.extraRateWindows?.count == 1)
+        #expect(usage.extraRateWindows?[0].id == "renewal")
+        #expect(usage.extraRateWindows?[0].title == "Renews")
+        #expect(usage.extraRateWindows?[0].window.resetsAt == renewAt)
     }
 }

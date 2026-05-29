@@ -33,7 +33,7 @@ struct UsageOptions: CommanderParsable {
     @Option(name: .long("account-index"), help: "Token account index (1-based)")
     var accountIndex: Int?
 
-    @Flag(name: .long("all-accounts"), help: "Fetch all token accounts for the provider")
+    @Flag(name: .long("all-accounts"), help: "Fetch all token accounts, or all visible Codex accounts")
     var allAccounts: Bool = false
 
     @Option(name: .long("format"), help: "Output format: text | json")
@@ -76,7 +76,7 @@ struct UsageOptions: CommanderParsable {
     var augmentDebug: Bool = false
 }
 
-enum ProviderSelection: Sendable, ExpressibleFromArgument {
+enum ProviderSelection: ExpressibleFromArgument {
     case single(UsageProvider)
     case both
     case all
@@ -120,7 +120,7 @@ enum ProviderSelection: Sendable, ExpressibleFromArgument {
     }
 }
 
-enum OutputFormat: String, Sendable, ExpressibleFromArgument {
+enum OutputFormat: String, ExpressibleFromArgument {
     case text
     case json
 

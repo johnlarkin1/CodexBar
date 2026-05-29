@@ -5,7 +5,7 @@ import Testing
 @Suite(.serialized)
 struct OpenRouterUsageStatsTests {
     @Test
-    func toUsageSnapshot_usesKeyQuotaForPrimaryWindow() {
+    func `to usage snapshot uses key quota for primary window`() {
         let snapshot = OpenRouterUsageSnapshot(
             totalCredits: 50,
             totalUsage: 45.3895596325,
@@ -25,7 +25,7 @@ struct OpenRouterUsageStatsTests {
     }
 
     @Test
-    func toUsageSnapshot_withoutValidKeyLimitOmitsPrimaryWindow() {
+    func `to usage snapshot without valid key limit omits primary window`() {
         let snapshot = OpenRouterUsageSnapshot(
             totalCredits: 50,
             totalUsage: 45.3895596325,
@@ -43,7 +43,7 @@ struct OpenRouterUsageStatsTests {
     }
 
     @Test
-    func toUsageSnapshot_whenNoLimitConfiguredOmitsPrimaryAndMarksNoLimit() {
+    func `to usage snapshot when no limit configured omits primary and marks no limit`() {
         let snapshot = OpenRouterUsageSnapshot(
             totalCredits: 50,
             totalUsage: 45.3895596325,
@@ -62,7 +62,7 @@ struct OpenRouterUsageStatsTests {
     }
 
     @Test
-    func sanitizers_redactSensitiveTokenShapes() {
+    func `sanitizers redact sensitive token shapes`() {
         let body = """
         {"error":"bad token sk-or-v1-abc123","token":"secret-token","authorization":"Bearer sk-or-v1-xyz789"}
         """
@@ -82,7 +82,7 @@ struct OpenRouterUsageStatsTests {
     }
 
     @Test
-    func non200FetchThrowsGenericHTTPErrorWithoutBodyDetails() async throws {
+    func `non200 fetch throws generic HTTP error without body details`() async throws {
         let registered = URLProtocol.registerClass(OpenRouterStubURLProtocol.self)
         defer {
             if registered {
@@ -114,7 +114,7 @@ struct OpenRouterUsageStatsTests {
     }
 
     @Test
-    func fetchUsage_setsCreditsTimeoutAndClientHeaders() async throws {
+    func `fetch usage sets credits timeout and client headers`() async throws {
         let registered = URLProtocol.registerClass(OpenRouterStubURLProtocol.self)
         defer {
             if registered {
@@ -133,7 +133,16 @@ struct OpenRouterUsageStatsTests {
                 let body = #"{"data":{"total_credits":100,"total_usage":40}}"#
                 return Self.makeResponse(url: url, body: body, statusCode: 200)
             case "/api/v1/key":
-                let body = #"{"data":{"limit":20,"usage":0.5,"rate_limit":{"requests":120,"interval":"10s"}}}"#
+                let body = #"""
+                {"data":{
+                  "limit":20,
+                  "usage":0.5,
+                  "usage_daily":0.12,
+                  "usage_weekly":0.74,
+                  "usage_monthly":4.56,
+                  "rate_limit":{"requests":120,"interval":"10s"}
+                }}
+                """#
                 return Self.makeResponse(url: url, body: body, statusCode: 200)
             default:
                 return Self.makeResponse(url: url, body: "{}", statusCode: 404)
@@ -153,13 +162,16 @@ struct OpenRouterUsageStatsTests {
         #expect(usage.keyDataFetched)
         #expect(usage.keyLimit == 20)
         #expect(usage.keyUsage == 0.5)
+        #expect(usage.keyUsageDaily == 0.12)
+        #expect(usage.keyUsageWeekly == 0.74)
+        #expect(usage.keyUsageMonthly == 4.56)
         #expect(usage.keyRemaining == 19.5)
         #expect(usage.keyUsedPercent == 2.5)
         #expect(usage.keyQuotaStatus == .available)
     }
 
     @Test
-    func fetchUsage_whenKeyEndpointFailsMarksQuotaUnavailable() async throws {
+    func `fetch usage when key endpoint fails marks quota unavailable`() async throws {
         let registered = URLProtocol.registerClass(OpenRouterStubURLProtocol.self)
         defer {
             if registered {
@@ -190,7 +202,7 @@ struct OpenRouterUsageStatsTests {
     }
 
     @Test
-    func usageSnapshot_roundTripPersistsOpenRouterUsageMetadata() throws {
+    func `usage snapshot round trip persists open router usage metadata`() throws {
         let openRouter = OpenRouterUsageSnapshot(
             totalCredits: 50,
             totalUsage: 45.3895596325,
@@ -199,6 +211,9 @@ struct OpenRouterUsageStatsTests {
             keyDataFetched: true,
             keyLimit: nil,
             keyUsage: nil,
+            keyUsageDaily: 0.12,
+            keyUsageWeekly: 0.74,
+            keyUsageMonthly: 4.56,
             rateLimit: nil,
             updatedAt: Date(timeIntervalSince1970: 1_739_841_600))
         let snapshot = openRouter.toUsageSnapshot()
@@ -209,6 +224,9 @@ struct OpenRouterUsageStatsTests {
 
         #expect(decoded.openRouterUsage?.keyDataFetched == true)
         #expect(decoded.openRouterUsage?.keyQuotaStatus == .noLimitConfigured)
+        #expect(decoded.openRouterUsage?.keyUsageDaily == 0.12)
+        #expect(decoded.openRouterUsage?.keyUsageWeekly == 0.74)
+        #expect(decoded.openRouterUsage?.keyUsageMonthly == 4.56)
     }
 
     private static func makeResponse(

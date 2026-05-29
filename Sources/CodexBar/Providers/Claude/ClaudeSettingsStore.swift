@@ -10,6 +10,7 @@ extension SettingsStore {
         set {
             let source: ProviderSourceMode? = switch newValue {
             case .auto: .auto
+            case .api: .api
             case .oauth: .oauth
             case .web: .web
             case .cli: .cli
@@ -45,23 +46,38 @@ extension SettingsStore {
     }
 
     func ensureClaudeCookieLoaded() {}
+
+    var claudeAdminAPIKey: String {
+        get { self.configSnapshot.providerConfig(for: .claude)?.sanitizedAPIKey ?? "" }
+        set {
+            self.updateProviderConfig(provider: .claude) { entry in
+                entry.apiKey = self.normalizedConfigValue(newValue)
+            }
+            self.logSecretUpdate(provider: .claude, field: "apiKey", value: newValue)
+        }
+    }
 }
 
 extension SettingsStore {
     func claudeSettingsSnapshot(tokenOverride: TokenAccountOverride?) -> ProviderSettingsSnapshot
     .ClaudeProviderSettings {
-        ProviderSettingsSnapshot.ClaudeProviderSettings(
+        let account = self.selectedClaudeTokenAccount(tokenOverride: tokenOverride)
+        let routing = self.claudeCredentialRouting(account: account)
+        return ProviderSettingsSnapshot.ClaudeProviderSettings(
             usageDataSource: self.claudeUsageDataSource,
             webExtrasEnabled: self.claudeWebExtrasEnabled,
-            cookieSource: self.claudeSnapshotCookieSource(tokenOverride: tokenOverride),
-            manualCookieHeader: self.claudeSnapshotCookieHeader(tokenOverride: tokenOverride))
+            cookieSource: self.claudeSnapshotCookieSource(tokenOverride: tokenOverride, routing: routing),
+            manualCookieHeader: self.claudeSnapshotCookieHeader(
+                routing: routing,
+                hasSelectedAccount: account != nil),
+            organizationID: account?.sanitizedOrganizationID)
     }
 
     private static func claudeUsageDataSource(from source: ProviderSourceMode?) -> ClaudeUsageDataSource {
         guard let source else { return .auto }
         switch source {
         case .auto, .api:
-            return .auto
+            return source == .api ? .api : .auto
         case .web:
             return .web
         case .cli:
@@ -71,42 +87,53 @@ extension SettingsStore {
         }
     }
 
-    private func claudeSnapshotCookieHeader(tokenOverride: TokenAccountOverride?) -> String {
-        let fallback = self.claudeCookieHeader
-        guard let support = TokenAccountSupportCatalog.support(for: .claude),
-              case .cookieHeader = support.injection
-        else {
-            return fallback
+    private func claudeSnapshotCookieHeader(
+        routing: ClaudeCredentialRouting,
+        hasSelectedAccount: Bool) -> String
+    {
+        switch routing {
+        case .none:
+            hasSelectedAccount ? "" : self.claudeCookieHeader
+        case .oauth:
+            ""
+        case .adminAPIKey:
+            ""
+        case let .webCookie(header):
+            header
         }
-        guard let account = ProviderTokenAccountSelection.selectedAccount(
-            provider: .claude,
-            settings: self,
-            override: tokenOverride)
-        else {
-            return fallback
-        }
-        if TokenAccountSupportCatalog.isClaudeOAuthToken(account.token) {
-            return ""
-        }
-        return TokenAccountSupportCatalog.normalizedCookieHeader(account.token, support: support)
     }
 
-    private func claudeSnapshotCookieSource(tokenOverride: TokenAccountOverride?) -> ProviderCookieSource {
+    private func claudeSnapshotCookieSource(
+        tokenOverride: TokenAccountOverride?,
+        routing: ClaudeCredentialRouting) -> ProviderCookieSource
+    {
         let fallback = self.claudeCookieSource
         guard let support = TokenAccountSupportCatalog.support(for: .claude),
               support.requiresManualCookieSource
         else {
             return fallback
         }
-        if let account = ProviderTokenAccountSelection.selectedAccount(
-            provider: .claude,
-            settings: self,
-            override: tokenOverride),
-            TokenAccountSupportCatalog.isClaudeOAuthToken(account.token)
-        {
+        if routing.isOAuth {
+            return .off
+        }
+        if routing.adminAPIKey != nil {
             return .off
         }
         if self.tokenAccounts(for: .claude).isEmpty { return fallback }
         return .manual
+    }
+
+    private func claudeCredentialRouting(account: ProviderTokenAccount?) -> ClaudeCredentialRouting {
+        let manualCookieHeader = account == nil ? self.claudeCookieHeader : nil
+        return ClaudeCredentialRouting.resolve(
+            tokenAccountToken: account?.token,
+            manualCookieHeader: manualCookieHeader)
+    }
+
+    private func selectedClaudeTokenAccount(tokenOverride: TokenAccountOverride?) -> ProviderTokenAccount? {
+        ProviderTokenAccountSelection.selectedAccount(
+            provider: .claude,
+            settings: self,
+            override: tokenOverride)
     }
 }

@@ -2,10 +2,9 @@ import Foundation
 import Testing
 @testable import CodexBarCore
 
-@Suite
 struct ClaudeOAuthTests {
     @Test
-    func parsesOAuthCredentials() throws {
+    func `parses O auth credentials`() throws {
         let json = """
         {
           "claudeAiOauth": {
@@ -13,7 +12,8 @@ struct ClaudeOAuthTests {
             "refreshToken": "test-refresh",
             "expiresAt": 4102444800000,
             "scopes": ["usage:read"],
-            "rateLimitTier": "default_claude_max_20x"
+            "rateLimitTier": "default_claude_max_20x",
+            "subscriptionType": "pro"
           }
         }
         """
@@ -22,11 +22,12 @@ struct ClaudeOAuthTests {
         #expect(creds.refreshToken == "test-refresh")
         #expect(creds.scopes == ["usage:read"])
         #expect(creds.rateLimitTier == "default_claude_max_20x")
+        #expect(creds.subscriptionType == "pro")
         #expect(creds.isExpired == false)
     }
 
     @Test
-    func missingAccessTokenThrows() {
+    func `missing access token throws`() {
         let json = """
         {
           "claudeAiOauth": {
@@ -42,7 +43,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func missingOAuthBlockThrows() {
+    func `missing O auth block throws`() {
         let json = """
         { "other": { "accessToken": "nope" } }
         """
@@ -52,7 +53,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func treatsMissingExpiryAsExpired() {
+    func `treats missing expiry as expired`() {
         let creds = ClaudeOAuthCredentials(
             accessToken: "token",
             refreshToken: nil,
@@ -63,7 +64,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func mapsOAuthUsageToSnapshot() throws {
+    func `maps O auth usage to snapshot`() throws {
         let json = """
         {
           "five_hour": { "utilization": 12.5, "resets_at": "2025-12-25T12:00:00.000Z" },
@@ -83,7 +84,82 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func mapsOAuthExtraUsage() throws {
+    func `maps O auth subscription type when rate limit tier is generic`() throws {
+        let json = """
+        {
+          "five_hour": { "utilization": 12.5, "resets_at": "2025-12-25T12:00:00.000Z" }
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(
+            Data(json.utf8),
+            rateLimitTier: "default_claude_ai",
+            subscriptionType: "pro")
+        #expect(snap.loginMethod == "Claude Pro")
+    }
+
+    @Test
+    func `ignores merged O auth design usage window`() throws {
+        let json = """
+        {
+          "five_hour": { "utilization": 12.5, "resets_at": "2025-12-25T12:00:00.000Z" },
+          "seven_day_design": { "utilization": 44, "resets_at": "2025-12-31T00:00:00.000Z" },
+          "seven_day_routines": { "utilization": 18, "resets_at": "2026-01-01T00:00:00.000Z" }
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(Data(json.utf8))
+        #expect(snap.extraRateWindows.count == 1)
+        #expect(snap.extraRateWindows.contains { $0.id == "claude-design" } == false)
+        #expect(snap.extraRateWindows.first(where: { $0.id == "claude-routines" })?.title == "Daily Routines")
+        #expect(snap.extraRateWindows.first(where: { $0.id == "claude-routines" })?.window.usedPercent == 18)
+    }
+
+    @Test
+    func `ignores merged O auth omelette usage window`() throws {
+        let json = """
+        {
+          "five_hour": { "utilization": 12.5, "resets_at": "2025-12-25T12:00:00.000Z" },
+          "seven_day_omelette": { "utilization": 29, "resets_at": "2025-12-31T00:00:00.000Z" },
+          "seven_day_cowork": { "utilization": 9, "resets_at": "2026-01-01T00:00:00.000Z" }
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(Data(json.utf8))
+        #expect(snap.extraRateWindows.count == 1)
+        #expect(snap.extraRateWindows.contains { $0.id == "claude-design" } == false)
+        #expect(snap.extraRateWindows.first(where: { $0.id == "claude-routines" })?.window.usedPercent == 9)
+    }
+
+    @Test
+    func `maps O auth null cowork as zero routines window`() throws {
+        let json = """
+        {
+          "five_hour": { "utilization": 12.5, "resets_at": "2025-12-25T12:00:00.000Z" },
+          "seven_day_omelette": { "utilization": 29, "resets_at": "2025-12-31T00:00:00.000Z" },
+          "seven_day_cowork": null
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(Data(json.utf8))
+        #expect(snap.extraRateWindows.first(where: { $0.id == "claude-routines" })?.window.usedPercent == 0)
+        #expect(snap.extraRateWindows.contains { $0.id == "claude-design" } == false)
+    }
+
+    @Test
+    func `prefers populated routines alias over null alias in mixed payload`() throws {
+        let json = """
+        {
+          "five_hour": { "utilization": 12.5, "resets_at": "2025-12-25T12:00:00.000Z" },
+          "seven_day_design": null,
+          "seven_day_omelette": { "utilization": 37, "resets_at": "2025-12-31T00:00:00.000Z" },
+          "seven_day_routines": null,
+          "seven_day_cowork": { "utilization": 14, "resets_at": "2026-01-01T00:00:00.000Z" }
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(Data(json.utf8))
+        #expect(snap.extraRateWindows.contains { $0.id == "claude-design" } == false)
+        #expect(snap.extraRateWindows.first(where: { $0.id == "claude-routines" })?.window.usedPercent == 14)
+    }
+
+    @Test
+    func `maps O auth extra usage`() throws {
         // OAuth API returns values in cents (minor units), same as Web API.
         // The normalization always converts to dollars (major units).
         let json = """
@@ -100,10 +176,11 @@ struct ClaudeOAuthTests {
         #expect(snap.providerCost?.currencyCode == "USD")
         #expect(snap.providerCost?.limit == 20.5)
         #expect(snap.providerCost?.used == 3.25)
+        #expect(snap.providerCost?.period == "Monthly cap")
     }
 
     @Test
-    func mapsOAuthExtraUsageMinorUnitsAsMajorUnits() throws {
+    func `maps O auth extra usage minor units as major units`() throws {
         let json = """
         {
           "five_hour": { "utilization": 1, "resets_at": "2025-12-25T12:00:00.000Z" },
@@ -119,10 +196,93 @@ struct ClaudeOAuthTests {
         #expect(snap.providerCost?.currencyCode == "USD")
         #expect(snap.providerCost?.limit == 20)
         #expect(snap.providerCost?.used == 5.2)
+        #expect(snap.providerCost?.period == "Monthly cap")
     }
 
     @Test
-    func normalizesHighLimitOAuthExtraUsage() throws {
+    func `does not display spend limit 100x too high for enterprise O auth`() throws {
+        let json = """
+        {
+          "extra_usage": {
+            "is_enabled": true,
+            "monthly_limit": 2000,
+            "used_credits": 763,
+            "utilization": 38.15,
+            "currency": "EUR"
+          }
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(
+            Data(json.utf8),
+            subscriptionType: "enterprise")
+        #expect(snap.loginMethod == "Claude Enterprise")
+        #expect(snap.primary.usedPercent == 38.15)
+        #expect(snap.primaryWindowKind == .spendLimit)
+        #expect(snap.primary.windowMinutes == nil)
+        #expect(snap.primary.resetDescription == "Spend limit: €7.63 / €20.00")
+        #expect(snap.secondary == nil)
+        #expect(snap.providerCost?.period == "Spend limit")
+        #expect(snap.providerCost?.currencyCode == "EUR")
+        #expect(snap.providerCost?.limit == 20)
+        #expect(snap.providerCost?.used == 7.63)
+
+        let usage = ClaudeOAuthFetchStrategy._snapshotForTesting(from: snap)
+        #expect(usage.primary == nil)
+        #expect(usage.providerCost?.period == "Spend limit")
+        #expect(usage.providerCost?.limit == 20)
+        #expect(usage.providerCost?.used == 7.63)
+    }
+
+    @Test
+    func `maps O auth spend limit without plan metadata from minor units`() throws {
+        let json = """
+        {
+          "extra_usage": {
+            "is_enabled": true,
+            "monthly_limit": 2000,
+            "used_credits": 763,
+            "utilization": 38.15,
+            "currency": "EUR"
+          }
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(Data(json.utf8))
+        #expect(snap.loginMethod == nil)
+        #expect(snap.primaryWindowKind == .spendLimit)
+        #expect(snap.primary.usedPercent == 38.15)
+        #expect(snap.primary.resetDescription == "Spend limit: €7.63 / €20.00")
+        #expect(snap.providerCost?.period == "Spend limit")
+        #expect(snap.providerCost?.currencyCode == "EUR")
+        #expect(snap.providerCost?.limit == 20)
+        #expect(snap.providerCost?.used == 7.63)
+    }
+
+    @Test
+    func `maps large enterprise O auth spend limit from minor units`() throws {
+        let json = """
+        {
+          "extra_usage": {
+            "is_enabled": true,
+            "monthly_limit": 1000000,
+            "used_credits": 123456,
+            "utilization": 12.3456,
+            "currency": "USD"
+          }
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(
+            Data(json.utf8),
+            subscriptionType: "enterprise")
+        #expect(snap.primaryWindowKind == .spendLimit)
+        #expect(snap.primary.usedPercent == 12.3456)
+        #expect(snap.primary.resetDescription == "Spend limit: $1,234.56 / $10,000.00")
+        #expect(snap.providerCost?.period == "Spend limit")
+        #expect(snap.providerCost?.limit == 10000)
+        #expect(snap.providerCost?.used == 1234.56)
+    }
+
+    @Test
+    func `normalizes high limit O auth extra usage`() throws {
         let json = """
         {
           "five_hour": { "utilization": 1, "resets_at": "2025-12-25T12:00:00.000Z" },
@@ -143,7 +303,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func normalizesOAuthExtraUsageCentsToMajorUnits() throws {
+    func `normalizes O auth extra usage cents to major units`() throws {
         let json = """
         {
           "five_hour": { "utilization": 1, "resets_at": "2025-12-25T12:00:00.000Z" },
@@ -162,7 +322,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func prefersOpusWhenSonnetMissing() throws {
+    func `prefers opus when sonnet missing`() throws {
         let json = """
         {
           "five_hour": { "utilization": 10, "resets_at": "2025-12-25T12:00:00.000Z" },
@@ -174,7 +334,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func includesBodyInOAuth403Error() {
+    func `includes body in O auth403 error`() {
         let err = ClaudeOAuthFetchError.serverError(
             403,
             "HTTP 403: OAuth token does not meet scope requirement user:profile")
@@ -183,7 +343,108 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func oauthUsageUserAgentUsesClaudeCodeVersion() {
+    func `O auth429 error gives actionable guidance without raw body`() {
+        let err = ClaudeOAuthFetchError.rateLimited(retryAfter: nil)
+        #expect(err.localizedDescription.contains("rate limited"))
+        #expect(err.localizedDescription.contains("claude logout && claude login"))
+        #expect(!err.localizedDescription.contains("rate_limit_error"))
+    }
+
+    @Test
+    func `O auth429 usage fetch surfaces guidance without raw JSON`() async throws {
+        let fetcher = ClaudeUsageFetcher(
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            environment: [:],
+            dataSource: .oauth,
+            oauthKeychainPromptCooldownEnabled: true)
+
+        let loadCredsOverride: (@Sendable (
+            [String: String],
+            Bool,
+            Bool) async throws -> ClaudeOAuthCredentials)? = { _, _, _ in
+            ClaudeOAuthCredentials(
+                accessToken: "rate-limited-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSinceNow: 3600),
+                scopes: ["user:profile"],
+                rateLimitTier: nil)
+        }
+        let fetchOverride: (@Sendable (String) async throws -> OAuthUsageResponse)? = { _ in
+            throw ClaudeOAuthFetchError.rateLimited(retryAfter: nil)
+        }
+
+        do {
+            _ = try await ClaudeUsageFetcher.$fetchOAuthUsageOverride.withValue(fetchOverride) {
+                try await ClaudeUsageFetcher.$loadOAuthCredentialsOverride.withValue(
+                    loadCredsOverride,
+                    operation: {
+                        try await fetcher.loadLatestUsage(model: "sonnet")
+                    })
+            }
+            Issue.record("Expected OAuth rate limit to fail with guidance")
+        } catch let error as ClaudeUsageError {
+            guard case let .oauthFailed(message) = error else {
+                Issue.record("Expected ClaudeUsageError.oauthFailed, got \(error)")
+                return
+            }
+            #expect(message.contains("rate limited"))
+            #expect(message.contains("claude logout && claude login"))
+            #expect(!message.contains("rate_limit_error"))
+        } catch {
+            Issue.record("Expected ClaudeUsageError, got \(error)")
+        }
+    }
+
+    @Test
+    func `O auth usage rate limit gate blocks background retries until cooldown`() {
+        ClaudeOAuthUsageRateLimitGate.resetForTesting()
+        defer { ClaudeOAuthUsageRateLimitGate.resetForTesting() }
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let retryAfter = now.addingTimeInterval(120)
+
+        #expect(ClaudeOAuthUsageRateLimitGate.currentBlockedUntil(now: now) == nil)
+        ClaudeOAuthUsageRateLimitGate.recordRateLimit(retryAfter: retryAfter, now: now)
+
+        #expect(ClaudeOAuthUsageRateLimitGate.currentBlockedUntil(now: now) == retryAfter)
+        #expect(ClaudeOAuthUsageRateLimitGate.blockedUntil(interaction: .background, now: now) == retryAfter)
+        #expect(ClaudeOAuthUsageRateLimitGate.blockedUntil(interaction: .userInitiated, now: now) == nil)
+        #expect(ClaudeOAuthUsageRateLimitGate.currentBlockedUntil(now: now.addingTimeInterval(119)) != nil)
+        #expect(ClaudeOAuthUsageRateLimitGate.currentBlockedUntil(now: now.addingTimeInterval(121)) == nil)
+    }
+
+    @Test
+    func `O auth retry after parses seconds`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let url = try #require(URL(string: "https://api.anthropic.com/api/oauth/usage"))
+        let response = try #require(HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Retry-After": "42"]))
+
+        #expect(
+            ClaudeOAuthUsageFetcher._retryAfterDateForTesting(from: response, now: now)
+                == now.addingTimeInterval(42))
+    }
+
+    @Test
+    func `O auth retry after parses HTTP date`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let url = try #require(URL(string: "https://api.anthropic.com/api/oauth/usage"))
+        let response = try #require(HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"]))
+
+        #expect(
+            ClaudeOAuthUsageFetcher._retryAfterDateForTesting(from: response, now: now)
+                == Date(timeIntervalSince1970: 1_445_412_480))
+    }
+
+    @Test
+    func `oauth usage user agent uses claude code version`() {
         #expect(
             ClaudeOAuthUsageFetcher._userAgentForTesting(versionString: "2.1.70 (Claude Code)")
                 == "claude-code/2.1.70")
@@ -191,7 +452,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func skipsExtraUsageWhenDisabled() throws {
+    func `skips extra usage when disabled`() throws {
         let json = """
         {
           "five_hour": { "utilization": 1, "resets_at": "2025-12-25T12:00:00.000Z" },
@@ -209,7 +470,7 @@ struct ClaudeOAuthTests {
     // MARK: - Scope-based strategy resolution
 
     @Test
-    func prefersOAuthWhenAvailable() {
+    func `prefers O auth when available`() {
         let strategy = ClaudeProviderDescriptor.resolveUsageStrategy(
             selectedDataSource: .auto,
             webExtrasEnabled: false,
@@ -220,7 +481,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func fallsBackToCLIWhenOAuthMissingAndCLIAvailable() {
+    func `falls back to CLI when O auth missing and CLI available`() {
         let strategy = ClaudeProviderDescriptor.resolveUsageStrategy(
             selectedDataSource: .auto,
             webExtrasEnabled: false,
@@ -231,7 +492,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func fallsBackToWebWhenOAuthMissingAndCLIMissing() {
+    func `falls back to web when O auth missing and CLI missing`() {
         let strategy = ClaudeProviderDescriptor.resolveUsageStrategy(
             selectedDataSource: .auto,
             webExtrasEnabled: false,
@@ -242,7 +503,7 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func fallsBackToCLIWhenOAuthMissingAndWebMissing() {
+    func `falls back to CLI when O auth missing and web missing`() {
         let strategy = ClaudeProviderDescriptor.resolveUsageStrategy(
             selectedDataSource: .auto,
             webExtrasEnabled: false,

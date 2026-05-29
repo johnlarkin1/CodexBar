@@ -11,7 +11,7 @@ extension ClaudeOAuthCredentialsStore {
     private static let securityBinaryPath = "/usr/bin/security"
     private static let securityCLIReadTimeout: TimeInterval = 1.5
 
-    struct SecurityCLIReadRequest: Sendable {
+    struct SecurityCLIReadRequest {
         let account: String?
     }
 
@@ -19,18 +19,18 @@ extension ClaudeOAuthCredentialsStore {
         readStrategy: ClaudeOAuthKeychainReadStrategy = ClaudeOAuthKeychainReadStrategyPreference.current())
         -> Bool
     {
-        readStrategy == .securityCLI
+        readStrategy == .securityCLIExperimental
     }
 
     #if os(macOS)
-    private enum SecurityCLIReadError: Error, Sendable {
+    private enum SecurityCLIReadError: Error {
         case binaryUnavailable
         case launchFailed
         case timedOut
         case nonZeroExit(status: Int32, stderrLength: Int)
     }
 
-    private struct SecurityCLIReadCommandResult: Sendable {
+    private struct SecurityCLIReadCommandResult {
         let status: Int32
         let stdout: Data
         let stderrLength: Int

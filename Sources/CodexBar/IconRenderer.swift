@@ -10,7 +10,7 @@ enum IconRenderer {
     private static let outputScale: CGFloat = 2
     private static let canvasPx = Int(outputSize.width * outputScale)
 
-    private struct PixelGrid: Sendable {
+    private struct PixelGrid {
         let scale: CGFloat
 
         func pt(_ px: Int) -> CGFloat {
@@ -88,7 +88,7 @@ enum IconRenderer {
         }
     }
 
-    private struct RectPx: Hashable, Sendable {
+    private struct RectPx: Hashable {
         let x: Int
         let y: Int
         let w: Int
@@ -125,8 +125,9 @@ enum IconRenderer {
         let shouldCache = blink <= 0.0001 && wiggle <= 0.0001 && tilt <= 0.0001
         let render = {
             self.renderImage(tintColor: tintColor) {
-                // When a tintColor is provided (macOS 26+), draw shapes directly in that color
-                // so the image is inherently colored. Otherwise use labelColor for template rendering.
+                // When a tintColor is provided (macOS 26+ Liquid Glass), draw shapes directly in that
+                // color so the bitmap has real RGB values. Otherwise use labelColor for template rendering
+                // tinted via the status button's contentTintColor.
                 let baseFill = tintColor ?? NSColor.labelColor
                 let trackFillAlpha: CGFloat = stale ? 0.18 : 0.28
                 let trackStrokeAlpha: CGFloat = stale ? 0.28 : 0.44
@@ -804,17 +805,6 @@ enum IconRenderer {
         self.styleKeyLookup[style] ?? 0
     }
 
-    private static func indicatorKey(_ indicator: ProviderStatusIndicator) -> Int {
-        switch indicator {
-        case .none: 0
-        case .minor: 1
-        case .major: 2
-        case .critical: 3
-        case .maintenance: 4
-        case .unknown: 5
-        }
-    }
-
     private static func tintColorHash(_ color: NSColor?) -> Int {
         guard let color else { return 0 }
         // Quantize to 256 buckets per channel to avoid cache explosion while preserving visual fidelity.
@@ -828,6 +818,17 @@ enum IconRenderer {
         let bi = Int((b * 255).rounded())
         let ai = Int((a * 255).rounded())
         return ri << 24 | gi << 16 | bi << 8 | ai
+    }
+
+    private static func indicatorKey(_ indicator: ProviderStatusIndicator) -> Int {
+        switch indicator {
+        case .none: 0
+        case .minor: 1
+        case .major: 2
+        case .critical: 3
+        case .maintenance: 4
+        case .unknown: 5
+        }
     }
 
     private static func morphCacheKey(progress: Double, style: IconStyle) -> NSNumber {
@@ -1031,13 +1032,16 @@ enum IconRenderer {
                 Self.withScaledContext(draw)
             }
             NSGraphicsContext.restoreGraphicsState()
+        } else {
+            // Fallback to legacy focus if the bitmap rep fails for any reason.
+            image.lockFocus()
+            Self.withScaledContext(draw)
+            image.unlockFocus()
         }
 
-        if tintColor != nil {
-            image.isTemplate = false
-        } else {
-            image.isTemplate = true
-        }
+        // A colored icon must be non-template so macOS 26 Liquid Glass keeps its RGB pixels
+        // instead of re-rendering it as a monochrome template.
+        image.isTemplate = tintColor == nil
         return image
     }
 }
