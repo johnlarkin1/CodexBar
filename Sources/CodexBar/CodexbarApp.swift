@@ -420,10 +420,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.confettiOverlayController.play(originInScreen: origin)
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        TTYCommandRunner.terminateActiveProcessesForAppShutdown()
-    }
-
     /// Use the classic (non-Liquid Glass) app icon on macOS versions before 26.
     private func configureAppIconForMacOSVersion() {
         if #unavailable(macOS 26) {
