@@ -1283,10 +1283,10 @@ final class CodexAccountSwitcherView: NSView {
         var emailWidth = max(minimumEmailWidth, contentWidth * 0.58)
         var workspaceWidth = max(minimumWorkspaceWidth, contentWidth - emailWidth)
 
-        // Note: takes the widths as parameters rather than capturing the mutable
-        // `emailWidth` / `workspaceWidth` vars below. Capturing those `var`s in a
-        // nested function crashes swift-frontend (IRGen, SIGABRT) under the
-        // Swift 6.2.3 + macOS 26.4 SDK toolchain.
+        /// Note: takes the widths as parameters rather than capturing the mutable
+        /// `emailWidth` / `workspaceWidth` vars below. Capturing those `var`s in a
+        /// nested function crashes swift-frontend (IRGen, SIGABRT) under the
+        /// Swift 6.2.3 + macOS 26.4 SDK toolchain.
         func makeTitle(emailWidth: CGFloat, workspaceWidth: CGFloat) -> String {
             let emailText = self.truncateMiddle(account.email, toFit: emailWidth)
             let workspaceText = self.truncateTail(workspace, toFit: workspaceWidth)
