@@ -76,7 +76,8 @@ final class MenuCardHighlightState {
 
 final class MenuHostingView<Content: View>: NSHostingView<Content> {
     override var allowsVibrancy: Bool {
-        true
+        if #available(macOS 26, *) { return false }
+        return true
     }
 }
 
@@ -86,7 +87,8 @@ final class MenuCardItemHostingView<Content: View>: NSHostingView<Content>, Menu
     private let onClick: (() -> Void)?
 
     override var allowsVibrancy: Bool {
-        true
+        if #available(macOS 26, *) { return false }
+        return true
     }
 
     override var intrinsicContentSize: NSSize {

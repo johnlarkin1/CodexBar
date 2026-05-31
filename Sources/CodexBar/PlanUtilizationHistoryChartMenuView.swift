@@ -171,7 +171,7 @@ struct PlanUtilizationHistoryChartMenuView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .frame(minWidth: self.width, maxWidth: .infinity, alignment: .topLeading)
+        .frame(width: self.width, alignment: .topLeading)
         .task(id: visibleSeries.map(\.id).joined(separator: ",")) {
             guard let firstVisibleSeries = visibleSeries.first else { return }
             guard !visibleSeries.contains(where: { $0.id == self.selectedSeriesID }) else { return }

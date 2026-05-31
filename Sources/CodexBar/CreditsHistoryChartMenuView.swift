@@ -114,7 +114,7 @@ struct CreditsHistoryChartMenuView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .frame(minWidth: self.width, maxWidth: .infinity, alignment: .leading)
+        .frame(width: self.width, alignment: .leading)
     }
 
     private struct Model {

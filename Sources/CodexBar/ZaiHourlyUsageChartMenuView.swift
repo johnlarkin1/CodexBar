@@ -118,7 +118,7 @@ struct ZaiHourlyUsageChartMenuView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .frame(minWidth: self.width, maxWidth: .infinity, alignment: .topLeading)
+        .frame(width: self.width, alignment: .topLeading)
         .animation(.easeInOut(duration: 0.2), value: self.isExpanded)
     }
 
