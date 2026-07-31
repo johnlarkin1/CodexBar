@@ -36,6 +36,7 @@ enum IconRenderer {
         let style: Int
         let indicator: Int
         let hideCritters: Bool
+        let tint: Int
     }
 
     private final class IconCacheStore: @unchecked Sendable {
@@ -120,13 +121,16 @@ enum IconRenderer {
         wiggle: CGFloat = 0,
         tilt: CGFloat = 0,
         statusIndicator: ProviderStatusIndicator = .none,
-        hideCritters: Bool = false) -> NSImage
+        hideCritters: Bool = false,
+        tint: NSColor? = nil) -> NSImage
     {
         let shouldCache = blink <= 0.0001 && wiggle <= 0.0001 && tilt <= 0.0001
         let render = {
-            self.renderImage {
-                // Keep monochrome template icons; Claude uses subtle shape cues only.
-                let baseFill = NSColor.labelColor
+            self.renderImage(isTemplate: tint == nil) {
+                // Untinted icons stay monochrome templates; Claude uses subtle shape cues only. A tint is drawn
+                // as real RGB instead, because a template image keeps only its alpha mask and is recolored by
+                // AppKit -- which is why tinting one via `contentTintColor` has no effect on macOS 26.
+                let baseFill = tint ?? NSColor.labelColor
                 let trackFillAlpha: CGFloat = stale ? 0.18 : 0.28
                 let trackStrokeAlpha: CGFloat = stale ? 0.28 : 0.44
                 let fillColor = baseFill.withAlphaComponent(stale ? 0.55 : 1.0)
@@ -748,7 +752,7 @@ enum IconRenderer {
                     drawBar(rectPx: creditsBottomRectPx, remaining: bottomValue)
                 }
 
-                Self.drawStatusOverlay(indicator: statusIndicator)
+                Self.drawStatusOverlay(indicator: statusIndicator, color: baseFill)
             }
         }
 
@@ -760,7 +764,8 @@ enum IconRenderer {
                 stale: stale,
                 style: self.styleKey(style),
                 indicator: self.indicatorKey(statusIndicator),
-                hideCritters: hideCritters)
+                hideCritters: hideCritters,
+                tint: self.tintKey(tint))
             if let cached = self.cachedIcon(for: key) {
                 return cached
             }
@@ -944,9 +949,11 @@ enum IconRenderer {
         path.fill()
     }
 
-    private static func drawStatusOverlay(indicator: ProviderStatusIndicator) {
+    private static func drawStatusOverlay(
+        indicator: ProviderStatusIndicator,
+        color: NSColor = .labelColor)
+    {
         guard indicator.hasIssue else { return }
-        let color = NSColor.labelColor
 
         switch indicator {
         case .minor, .maintenance:
@@ -1016,7 +1023,7 @@ enum IconRenderer {
         CGRect(x: self.snap(x), y: self.snap(y), width: self.snap(width), height: self.snap(height))
     }
 
-    private static func renderImage(_ draw: () -> Void) -> NSImage {
+    private static func renderImage(isTemplate: Bool = true, _ draw: () -> Void) -> NSImage {
         let image = NSImage(size: Self.outputSize)
 
         if let rep = NSBitmapImageRep(
@@ -1047,8 +1054,18 @@ enum IconRenderer {
             image.unlockFocus()
         }
 
-        image.isTemplate = true
+        image.isTemplate = isTemplate
         return image
+    }
+
+    /// Packs a tint into the icon cache key. Quantizing to 8 bits per channel keeps two visually identical
+    /// tints on the same cache entry instead of growing an entry per rendered percentage point.
+    private static func tintKey(_ tint: NSColor?) -> Int {
+        guard let srgb = tint?.usingColorSpace(.sRGB) else { return 0 }
+        let red = Int((srgb.redComponent * 255).rounded())
+        let green = Int((srgb.greenComponent * 255).rounded())
+        let blue = Int((srgb.blueComponent * 255).rounded())
+        return 1 << 24 | red << 16 | green << 8 | blue
     }
 }
 

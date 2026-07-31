@@ -447,6 +447,8 @@ extension SettingsStore {
         let menuBarShowsBrandIconWithPercent = userDefaults.object(
             forKey: "menuBarShowsBrandIconWithPercent") as? Bool ?? false
         let menuBarHidesCritters = userDefaults.object(forKey: "menuBarHidesCritters") as? Bool ?? false
+        let menuBarUsageColorsEnabled = userDefaults
+            .object(forKey: "menuBarUsageColorsEnabled") as? Bool ?? false
         let menuBarHighContrastOnInactiveDisplays = userDefaults.object(
             forKey: "menuBarHighContrastOnInactiveDisplays") as? Bool ?? false
         let menuBarDisplayModeRaw = userDefaults.string(forKey: "menuBarDisplayMode")
@@ -560,6 +562,7 @@ extension SettingsStore {
             providerChangelogLinksEnabled: providerChangelogLinksEnabled,
             menuBarShowsBrandIconWithPercent: menuBarShowsBrandIconWithPercent,
             menuBarHidesCritters: menuBarHidesCritters,
+            menuBarUsageColorsEnabled: menuBarUsageColorsEnabled,
             menuBarHighContrastOnInactiveDisplays: menuBarHighContrastOnInactiveDisplays,
             menuBarDisplayModeRaw: menuBarDisplayModeRaw,
             menuBarShowsResetTimeWhenExhausted: menuBarShowsResetTimeWhenExhausted,
