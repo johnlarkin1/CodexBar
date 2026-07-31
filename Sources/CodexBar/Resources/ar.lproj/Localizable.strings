@@ -565,6 +565,8 @@
 "menu_bar_style_title" = "نمط شريط القوائم";
 "menu_bar_style_subtitle" = "كيفية رسم عنصر شريط القوائم.";
 "menu_bar_inactive_display_contrast_title" = "تحسين الوضوح على الشاشات غير النشطة";
+"menu_bar_usage_colors_title" = "استخدام ملوّن";
+"menu_bar_usage_colors_subtitle" = "تلوين أيقونة شريط القوائم من الأخضر إلى الأحمر مع ارتفاع الاستخدام.";
 "menu_bar_inactive_display_contrast_subtitle" = "استخدم عرضًا عالي التباين لإبقاء الأيقونة والمقياس قابلين للقراءة على الشاشات الأخرى.";
 "menu_bar_style_critters" = "الكائنات الصغيرة";
 "menu_bar_style_bars" = "أشرطة القياس";

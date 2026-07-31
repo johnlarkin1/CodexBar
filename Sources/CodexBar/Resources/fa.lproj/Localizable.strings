@@ -565,6 +565,8 @@
 "menu_bar_style_title" = "سبک نوار منو";
 "menu_bar_style_subtitle" = "نحوه نمایش آیتم نوار منو.";
 "menu_bar_inactive_display_contrast_title" = "بهبود خوانایی در نمایشگرهای غیرفعال";
+"menu_bar_usage_colors_title" = "مصرف رنگی";
+"menu_bar_usage_colors_subtitle" = "نماد نوار منو را با افزایش مصرف از سبز به قرمز رنگ می‌کند.";
 "menu_bar_inactive_display_contrast_subtitle" = "از نمایش با کنتراست بالا استفاده می‌کند تا نماد و معیار در نمایشگرهای دیگر خوانا بمانند.";
 "menu_bar_style_critters" = "موجودات";
 "menu_bar_style_bars" = "نوارهای اندازه‌گیری";

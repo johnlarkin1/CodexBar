@@ -559,6 +559,8 @@
 "menu_bar_style_title" = "Menubalkstijl";
 "menu_bar_style_subtitle" = "Hoe het menubalkitem wordt weergegeven.";
 "menu_bar_inactive_display_contrast_title" = "Zichtbaarheid op inactieve beeldschermen verbeteren";
+"menu_bar_usage_colors_title" = "Gebruik met kleurcodering";
+"menu_bar_usage_colors_subtitle" = "Kleurt het menubalksymbool van groen naar rood naarmate het gebruik stijgt.";
 "menu_bar_inactive_display_contrast_subtitle" = "Gebruikt weergave met hoog contrast zodat het pictogram en de metriek leesbaar blijven op andere beeldschermen.";
 "menu_bar_style_critters" = "Critters";
 "menu_bar_style_bars" = "Meterbalken";

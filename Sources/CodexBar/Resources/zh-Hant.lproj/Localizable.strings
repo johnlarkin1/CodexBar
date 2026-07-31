@@ -558,6 +558,8 @@
 "menu_bar_style_title" = "選單列樣式";
 "menu_bar_style_subtitle" = "選單列項目的繪製方式。";
 "menu_bar_inactive_display_contrast_title" = "改善非使用中顯示器上的可見度";
+"menu_bar_usage_colors_title" = "用量顏色標示";
+"menu_bar_usage_colors_subtitle" = "隨著用量上升，選單列圖示由綠轉紅。";
 "menu_bar_inactive_display_contrast_subtitle" = "使用高對比顯示，讓其他顯示器上的圖示與指標保持清晰可讀。";
 "menu_bar_style_critters" = "小動物";
 "menu_bar_style_bars" = "進度條";
