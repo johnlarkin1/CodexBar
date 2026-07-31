@@ -252,34 +252,7 @@ final class MenuBarLayoutRenderer {
                 : L("%@ %@", accessibilityPrefix, value)
             return self.textToken(display, accessibilityText: accessibility, attributes: style.attributes)
         case let .pace(window):
-            // Pace reuses the percent token's window vocabulary so a strip carrying both reads consistently.
-            // Only the pace headline ("On pace", "23% in reserve") is shown; the run-out estimate that shares
-            // the same pace calculation stays in the dedicated `.runsOut` token.
-            let paceValue = Self.pace(window, data: data)
-            let prefix: String
-            let accessibilityPrefix: String
-            switch window {
-            case .session:
-                prefix = Self.sessionPrefix(data.session)
-                accessibilityPrefix = L("Session pace")
-            case .weekly:
-                prefix = "W"
-                accessibilityPrefix = L("Weekly pace")
-            case .automatic:
-                prefix = ""
-                accessibilityPrefix = L("Pace")
-            }
-            guard let paceValue else {
-                return self.textToken(
-                    self.missingValue,
-                    accessibilityText: L("%@ unavailable", accessibilityPrefix),
-                    attributes: style.attributes)
-            }
-            let display = prefix.isEmpty ? paceValue : "\(prefix) \(paceValue)"
-            return self.textToken(
-                display,
-                accessibilityText: L("%@ %@", accessibilityPrefix, paceValue),
-                attributes: style.attributes)
+            return self.paceToken(window, data: data, style: style)
         case .usageBar:
             guard let window = data.automatic else {
                 return self.textToken(
@@ -390,6 +363,40 @@ final class MenuBarLayoutRenderer {
         case .weekly: data.weekly
         case .automatic: data.automatic
         }
+    }
+
+    /// Pace reuses the percent token's window vocabulary so a strip carrying both reads consistently.
+    /// Only the pace headline ("On pace", "23% in reserve") is shown; the run-out estimate that shares the
+    /// same pace calculation stays in the dedicated `.runsOut` token.
+    private static func paceToken(
+        _ window: PercentWindow,
+        data: MenuBarLayoutRenderData,
+        style: TokenStyle)
+        -> (value: NSAttributedString, accessibilityText: String?)
+    {
+        let prefix: String
+        let accessibilityPrefix: String
+        switch window {
+        case .session:
+            prefix = Self.sessionPrefix(data.session)
+            accessibilityPrefix = L("Session pace")
+        case .weekly:
+            prefix = "W"
+            accessibilityPrefix = L("Weekly pace")
+        case .automatic:
+            prefix = ""
+            accessibilityPrefix = L("Pace")
+        }
+        guard let paceValue = Self.pace(window, data: data) else {
+            return self.textToken(
+                self.missingValue,
+                accessibilityText: L("%@ unavailable", accessibilityPrefix),
+                attributes: style.attributes)
+        }
+        return self.textToken(
+            prefix.isEmpty ? paceValue : "\(prefix) \(paceValue)",
+            accessibilityText: L("%@ %@", accessibilityPrefix, paceValue),
+            attributes: style.attributes)
     }
 
     private static func pace(
