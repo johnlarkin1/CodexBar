@@ -231,6 +231,7 @@ extension StatusItemController {
         return false
     }
 
+    // swiftlint:disable function_body_length - at the limit before the usage tint; see IconRenderer.makeIcon
     @discardableResult
     func applyIcon(
         phase: Double?,
@@ -402,6 +403,7 @@ extension StatusItemController {
         self.noteIconPerfRender(skipped: false)
         return false
     }
+    // swiftlint:enable function_body_length
 
     private func applyStoredUnifiedMenuBarLayoutIfNeeded(
         provider: UsageProvider,
@@ -463,6 +465,7 @@ extension StatusItemController {
         return false
     }
 
+    // swiftlint:disable function_body_length - at the limit before the usage tint; see IconRenderer.makeIcon
     @discardableResult
     func applyIcon(for provider: UsageProvider, phase: Double?) -> Bool {
         guard let button = self.statusItems[provider]?.button else { return false }
@@ -628,6 +631,7 @@ extension StatusItemController {
         self.noteIconPerfRender(skipped: false)
         return false
     }
+    // swiftlint:enable function_body_length
 
     static func iconSignatureValue(_ value: Double?) -> String {
         guard let value else { return "nil" }
