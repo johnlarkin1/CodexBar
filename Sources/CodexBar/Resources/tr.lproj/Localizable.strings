@@ -1327,6 +1327,12 @@
 "menu_bar_layout_token_weekly" = "Haftalık %";
 "menu_bar_layout_token_auto" = "Otomatik %";
 "menu_bar_layout_token_bar" = "Kullanım çubuğu";
+"menu_bar_layout_token_session_pace" = "Oturum hızı";
+"menu_bar_layout_token_weekly_pace" = "Haftalık hız";
+"menu_bar_layout_token_auto_pace" = "Otomatik hız";
+"Session pace" = "Oturum hızı";
+"Weekly pace" = "Haftalık hız";
+"Pace" = "Hız";
 "menu_bar_layout_token_resets_in" = "Sıfırlamaya";
 "menu_bar_layout_token_reset_at" = "Sıfırlama saati";
 "menu_bar_layout_token_runs_out" = "Biter";
