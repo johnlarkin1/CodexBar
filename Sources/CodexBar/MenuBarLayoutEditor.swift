@@ -246,6 +246,9 @@ struct MenuBarLayoutEditor: View {
                     .percent(window: .weekly),
                     .percent(window: .automatic),
                     .usageBar,
+                    .pace(window: .session),
+                    .pace(window: .weekly),
+                    .pace(window: .automatic),
                 ],
                 includesLineBreak: false),
             MenuBarLayoutPaletteGroup(
@@ -674,9 +677,13 @@ private struct MenuBarLayoutPreview: View {
                 now: now)
         }
         let paceWindow = weekly ?? automatic
-        let runsOut = paceWindow
+        let weeklyPaceDetail = paceWindow
             .flatMap { self.store.weeklyPace(provider: provider, window: $0, now: now) }
-            .flatMap { UsagePaceText.weeklyDetail(provider: provider, pace: $0, now: now).rightLabel }
+            .map { UsagePaceText.weeklyDetail(provider: provider, pace: $0, now: now) }
+        let runsOut = weeklyPaceDetail?.rightLabel
+        let sessionPace = session
+            .flatMap { UsagePaceText.sessionDetail(provider: provider, window: $0, now: now) }?
+            .leftLabel
         let cost = self.store.tokenSnapshotForCurrentProviderConfig(for: provider)?.snapshot
         let costToday = MenuBarLayoutCostResolver.todayCostUSD(snapshot: cost, now: now)
         return MenuBarLayoutRenderData(
@@ -686,6 +693,8 @@ private struct MenuBarLayoutPreview: View {
             session: MenuBarLayoutRenderWindow(session),
             weekly: MenuBarLayoutRenderWindow(weekly),
             automatic: MenuBarLayoutRenderWindow(automatic),
+            sessionPace: sessionPace,
+            weeklyPace: weeklyPaceDetail?.leftLabel,
             runsOut: runsOut,
             costToday: costToday.map {
                 UsageFormatter.currencyString($0, currencyCode: cost?.currencyCode ?? "USD")
@@ -714,6 +723,8 @@ private struct MenuBarLayoutPreview: View {
             session: MenuBarLayoutRenderWindow(session),
             weekly: MenuBarLayoutRenderWindow(weekly),
             automatic: MenuBarLayoutRenderWindow(session),
+            sessionPace: L("%d%% in reserve", 12),
+            weeklyPace: L("%d%% in deficit", 8),
             runsOut: L("menu_bar_layout_sample_runs_out"),
             costToday: "$1.25",
             cost30d: "$20.00")
@@ -779,6 +790,9 @@ extension MenuBarLayoutToken {
         case .percent(window: .weekly): L("menu_bar_layout_token_weekly")
         case .percent(window: .automatic): L("menu_bar_layout_token_auto")
         case .usageBar: L("menu_bar_layout_token_bar")
+        case .pace(window: .session): L("menu_bar_layout_token_session_pace")
+        case .pace(window: .weekly): L("menu_bar_layout_token_weekly_pace")
+        case .pace(window: .automatic): L("menu_bar_layout_token_auto_pace")
         case .resetCountdown: L("menu_bar_layout_token_resets_in")
         case .resetAbsolute: L("menu_bar_layout_token_reset_at")
         case .runsOut: L("menu_bar_layout_token_runs_out")
@@ -802,6 +816,7 @@ extension MenuBarLayoutToken {
         case .providerName: "textformat"
         case .accountLabel: "person.crop.circle"
         case .percent: "percent"
+        case .pace: "speedometer"
         case .usageBar: "chart.bar.fill"
         case .resetCountdown: "timer"
         case .resetAbsolute: "clock"
