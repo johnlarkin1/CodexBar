@@ -60,7 +60,8 @@ struct MenuBarUsageTintTests {
             dark = try? self.components(color)
         }
 
-        #expect(light != nil)
-        #expect(light == dark)
+        let resolvedLight = try #require(light)
+        let resolvedDark = try #require(dark)
+        #expect(resolvedLight == resolvedDark)
     }
 }
