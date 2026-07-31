@@ -359,6 +359,7 @@ extension StatusItemController {
                 title: nil,
                 for: button)
         } else {
+            let tint = self.menuBarUsageTint(primaryBarPercent: primary, showUsed: showUsed)
             let signature = [
                 "mode=icon",
                 "provider=\(primaryProvider.rawValue)",
@@ -375,6 +376,7 @@ extension StatusItemController {
                 "anim=\(needsAnimation ? "1" : "0")",
                 "hideCritters=\(self.settings.menuBarHidesCritters ? "1" : "0")",
                 "highContrast=\(self.shouldUseHighContrastStatusItemContent ? "1" : "0")",
+                "usageColors=\(tint == nil ? "0" : "1")",
             ].joined(separator: "|")
             if self.shouldSkipMergedIconRender(signature), canSkipCachedRender {
                 self.noteIconPerfRender(skipped: true)
@@ -390,7 +392,8 @@ extension StatusItemController {
                 wiggle: wiggle,
                 tilt: tilt,
                 statusIndicator: statusIndicator,
-                hideCritters: self.settings.menuBarHidesCritters)
+                hideCritters: self.settings.menuBarHidesCritters,
+                tint: tint)
             self.setButtonContent(
                 image: warningFlash ? Self.quotaWarningFlashImage(base: image) : image,
                 title: nil,
@@ -582,6 +585,7 @@ extension StatusItemController {
                 title: nil,
                 for: button)
         } else {
+            let tint = self.menuBarUsageTint(primaryBarPercent: primary, showUsed: showUsed)
             let signature = [
                 "mode=icon",
                 "provider=\(provider.rawValue)",
@@ -598,6 +602,7 @@ extension StatusItemController {
                 "loading=\(isLoading ? "1" : "0")",
                 "hideCritters=\(self.settings.menuBarHidesCritters ? "1" : "0")",
                 "highContrast=\(self.shouldUseHighContrastStatusItemContent ? "1" : "0")",
+                "usageColors=\(tint == nil ? "0" : "1")",
             ].joined(separator: "|")
             if self.shouldSkipProviderIconRender(provider: provider, signature: signature), canSkipCachedRender {
                 self.noteIconPerfRender(skipped: true)
@@ -613,7 +618,8 @@ extension StatusItemController {
                 wiggle: wiggle,
                 tilt: tilt,
                 statusIndicator: statusIndicator,
-                hideCritters: self.settings.menuBarHidesCritters)
+                hideCritters: self.settings.menuBarHidesCritters,
+                tint: tint)
             self.setButtonContent(
                 image: warningFlash ? Self.quotaWarningFlashImage(base: image) : image,
                 title: nil,
@@ -626,6 +632,15 @@ extension StatusItemController {
     static func iconSignatureValue(_ value: Double?) -> String {
         guard let value else { return "nil" }
         return String(format: "%.3f", value)
+    }
+
+    /// Tint for the meter icon, or `nil` to leave it an untinted template.
+    ///
+    /// `primaryBarPercent` follows `usageBarsShowUsed`, so it is normalized to a used percentage here.
+    /// Reading it as "remaining" would paint a freshly reset quota red.
+    func menuBarUsageTint(primaryBarPercent: Double?, showUsed: Bool) -> NSColor? {
+        guard self.settings.menuBarUsageColorsEnabled else { return nil }
+        return MenuBarUsageTint.color(forUsedPercent: primaryBarPercent.map { showUsed ? $0 : 100 - $0 })
     }
 
     func resolvedMenuBarIconPercents(
