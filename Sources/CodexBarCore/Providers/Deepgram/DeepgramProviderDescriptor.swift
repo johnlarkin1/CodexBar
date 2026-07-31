@@ -1,9 +1,8 @@
-import CodexBarMacroSupport
 import Foundation
 
-@ProviderDescriptorRegistration
-@ProviderDescriptorDefinition
 public enum DeepgramProviderDescriptor {
+    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .deepgram,
@@ -31,7 +30,12 @@ public enum DeepgramProviderDescriptor {
                 color: ProviderColor(
                     red: 100 / 255,
                     green: 103 / 255,
-                    blue: 242 / 255)),
+                    blue: 242 / 255),
+                confettiPalette: [
+                    ProviderColor(hex: 0x13EF95),
+                    ProviderColor(hex: 0x149AFB),
+                    ProviderColor(hex: 0x1A1A1F),
+                ]),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: {

@@ -2,7 +2,7 @@
 
 Tiny macOS 14+ menu bar app that keeps your Codex, Claude, Cursor, Gemini, Antigravity, Droid (Factory), Copilot, z.ai, Kiro, Vertex AI, Augment, Amp, JetBrains AI, and OpenRouter limits visible (session + weekly where available) and shows when each window resets. One status item per provider (or Merge Icons mode with a provider switcher and optional Overview tab); enable what you use from Settings. No Dock icon, minimal UI, dynamic bar icons in the menu bar.
 
-<img src="codexbar.png" alt="CodexBar menu screenshot" width="520" />
+<img src="docs/codexbar.png" alt="CodexBar menu screenshot" width="520" />
 
 > ![IMPORTANT]
 > This is a FORKED project. I'll tell you why I did that below. 
@@ -23,6 +23,8 @@ steipete's is probably the most popular because of the wide range of tooling sup
 
 That's fine, but the beauty of claudecodeusage is... it just works based on your existing auth tokens from running either `claude` or `codex` in your preferred shell.
 
+> **Status as of the 0.46 sync:** this is a gripe, not a code difference. This fork carries **no** auth-model changes — it never has, in the tree. An earlier attempt to default Claude keychain reads to the `/usr/bin/security` CLI was proposed upstream ([#353](https://github.com/steipete/CodexBar/pull/353), [#532](https://github.com/steipete/CodexBar/pull/532)) and not taken; upstream now actively coerces that strategy back to the Security framework. Upstream's supported way to avoid the prompts is **Settings → Claude → keychain prompt mode = Never**, which this fork uses rather than carrying a patch against code upstream is deliberately retiring.
+
 - [Codex](docs/codex.md) — Local Codex CLI RPC (+ PTY fallback) and optional OpenAI web dashboard extras.
 - [Claude](docs/claude.md) — OAuth API or browser cookies (+ CLI PTY fallback); session + weekly usage.
 - [Cursor](docs/cursor.md) — Browser session cookies for plan + usage + billing resets.
@@ -41,10 +43,6 @@ That's fine, but the beauty of claudecodeusage is... it just works based on your
 - [OpenRouter](docs/openrouter.md) — API token for credit-based usage tracking across multiple AI providers.
 - Open to new providers: [provider authoring guide](docs/provider.md).
 
-## Projected Usage
-
-I like the notion of pace, but I think it's even more helpful to see the week over week pace. I also want to see it visually , so that's why there is a `Weekly Projection` option. 
-
 ## Features
 - Multi-provider menu bar with per-provider toggles (Settings → Providers).
 - Session + weekly meters with reset countdowns.
@@ -57,9 +55,9 @@ I like the notion of pace, but I think it's even more helpful to see the week ov
 - WidgetKit widget mirrors the menu card snapshot.
 - Privacy-first: on-device parsing by default; browser cookies are opt-in and reused (no passwords stored).
 
-## 5 hour Window Pace
+## 5 Hour Window Pace
 
-I like the notion of pace, but I think it should also render for the 5 hour windows for Codex and Claude.
+Pace indicators for the Codex and Claude 5-hour windows. Contributed upstream and merged in [#355](https://github.com/steipete/CodexBar/pull/355), so this is no longer a fork difference — it ships in upstream CodexBar too.
 
 ## Coloring of the Icons
 
@@ -69,16 +67,9 @@ I want to look at my menu bar and immediately know my CC usage or my Codex usage
 
 Ya see how it's colored. 
 
-## Bar vs Dot dividing Usage vs Pace 
+## Menu Bar Layout
 
-See this: 
-
-![Bar vs Dot dividing Usage vs Pace](Public/bar-usage-pace.png)
-
-and this new option:
-
-![Separator Option](Public/separator-option.png)
-
+The fork's old separator-style toggle was retired when this synced to upstream 0.46. Upstream's menu bar layout editor covers it and more — you can place, reorder, and remove separator, percent, pace, reset, and cost tokens per provider.
 
 ## Better Menu Bar Configurations
 

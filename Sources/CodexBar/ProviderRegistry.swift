@@ -56,7 +56,10 @@ struct ProviderRegistry {
                         runtime: .app,
                         sourceMode: sourceMode,
                         includeCredits: false,
-                        includeOptionalUsage: settings.showOptionalCreditsAndExtraUsage,
+                        includeOptionalUsage: ProviderTokenAccountSelection.shouldIncludeOptionalUsage(
+                            provider: provider,
+                            settings: settings,
+                            override: nil),
                         webTimeout: 60,
                         webDebugDumpHTML: false,
                         verbose: verbose,
@@ -81,12 +84,27 @@ struct ProviderRegistry {
                                 }
                             }
                         },
-                        costUsageHistoryDays: settings.costUsageHistoryDays)
+                        costUsageHistoryDays: settings.costUsageHistoryDays,
+                        persistsCLISessions: true,
+                        persistentCLISessionIdleWindow: Self.persistentCLISessionIdleWindow(
+                            refreshInterval: Self.nominalRefreshInterval(for: settings.refreshFrequency)))
                 })
             specs[provider] = spec
         }
 
         return specs
+    }
+
+    static func persistentCLISessionIdleWindow(refreshInterval: TimeInterval?) -> TimeInterval {
+        max(180, (refreshInterval ?? 120) + 60)
+    }
+
+    /// `RefreshFrequency.seconds` is nil for `.adaptive`, which would collapse the idle window to
+    /// its floor and churn persistent CLI sessions between adaptive ticks. No `UsageStore` exists
+    /// when specs are built, so `.adaptive` maps to the policy's nominal interval instead of a
+    /// live decision; `.manual` stays nil.
+    static func nominalRefreshInterval(for frequency: RefreshFrequency) -> TimeInterval? {
+        frequency.usesAdaptivePolicy ? AdaptiveRefreshPolicy.nominalIntervalForHeuristics : frequency.seconds
     }
 
     @MainActor
@@ -123,38 +141,23 @@ struct ProviderRegistry {
             provider: provider,
             settings: settings,
             override: tokenOverride)
-        var env = ProviderConfigEnvironment.applyProviderConfigOverrides(
+        var env = ProviderEnvironmentResolver.resolve(
             base: base,
             provider: provider,
-            config: settings.providerConfig(for: provider))
-        // If token account is selected, use its token instead of config's apiKey
-        if let account {
-            TokenAccountSupportCatalog.scrubEnvironmentForSelectedAccount(
-                &env,
-                provider: provider,
-                token: account.token)
-            if let override = TokenAccountSupportCatalog.envOverride(
-                for: provider,
-                token: account.token)
-            {
-                for (key, value) in override {
-                    env[key] = value
-                }
-            }
-        }
-        // Managed Codex routing only scopes remote account fetches such as identity, plan,
-        // quotas, and dashboard data, and only when the active source is a managed account.
-        // Token-cost/session history is intentionally not routed through the managed home
-        // because that data is currently treated as provider-level local telemetry from this
-        // Mac's Codex sessions, not as account-owned remote state. If we later want
-        // account-scoped token history in the UI, that needs an explicit product decision and
-        // presentation change so the two concepts are not conflated.
+            config: settings.providerConfig(for: provider),
+            selectedAccount: account)
+        // Codex account routing scopes remote account fetches such as identity, plan,
+        // quotas, and dashboard data. Token-cost/session history is intentionally handled
+        // separately because it is provider-level local telemetry from this Mac's Codex sessions,
+        // not account-owned remote state.
         if provider == .codex {
             let codexActiveSource = codexActiveSourceOverride ?? settings.codexResolvedActiveSource
-            if case .managedAccount = codexActiveSource,
-               let managedHomePath = settings.managedCodexRemoteHomePath(forActiveSource: codexActiveSource)
-            {
+            if let managedHomePath = settings.managedCodexRemoteHomePath(forActiveSource: codexActiveSource) {
                 env = CodexHomeScope.scopedEnvironment(base: env, codexHome: managedHomePath)
+            } else if let liveHomePath = settings.liveSystemCodexHomePath(forActiveSource: codexActiveSource) {
+                env = CodexHomeScope.scopedEnvironment(base: env, codexHome: liveHomePath)
+            } else if let profileHomePath = settings.profileCodexHomePath(forActiveSource: codexActiveSource) {
+                env = CodexHomeScope.scopedEnvironment(base: env, codexHome: profileHomePath)
             }
         }
         return env

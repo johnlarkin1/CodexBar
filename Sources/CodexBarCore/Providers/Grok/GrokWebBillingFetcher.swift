@@ -19,6 +19,7 @@ public enum GrokWebBillingError: LocalizedError, Sendable {
     case invalidResponse
     case requestFailed(Int, String)
     case rpcFailed(Int, String)
+    case teamUsageUnsupported
     case parseFailed
 
     public var errorDescription: String? {
@@ -31,19 +32,37 @@ public enum GrokWebBillingError: LocalizedError, Sendable {
             "Grok web billing returned an invalid response."
         case let .requestFailed(status, body):
             if status == 401 || status == 403 {
-                "Grok web billing rejected credentials. Run `grok login` to refresh xAI auth."
+                Self.reauthMessage
             } else {
                 "Grok web billing request failed with HTTP \(status): \(body)"
             }
         case let .rpcFailed(status, message):
-            if status == 16 {
-                "Grok web billing rejected credentials. Run `grok login` to refresh xAI auth."
+            if Self.isAuthenticationFailure(status: status, message: message) {
+                Self.reauthMessage
             } else {
                 "Grok web billing RPC failed with status \(status): \(message)"
             }
+        case .teamUsageUnsupported:
+            "Grok team usage is unavailable from the current billing surface."
         case .parseFailed:
             "Could not parse Grok web billing usage."
         }
+    }
+
+    private static let reauthMessage =
+        "Grok web billing rejected credentials. Sign in to grok.com in Chrome or run `grok login` to refresh xAI auth."
+
+    static func isAuthenticationFailure(status: Int, message: String) -> Bool {
+        if status == 16 { return true }
+        guard status == 7 else { return false }
+        let lower = message.lowercased()
+        return lower.contains("bad-credentials") ||
+            lower.contains("unauthenticated") ||
+            (lower.contains("oauth2") && lower.contains("could not be validated")) ||
+            (lower.contains("access token") &&
+                (lower.contains("invalid") ||
+                    lower.contains("expired") ||
+                    lower.contains("could not be validated")))
     }
 }
 
@@ -60,6 +79,7 @@ public enum GrokWebBillingFetcher {
         try await self.fetch(
             authorizationHeader: "Bearer \(credentials.accessToken)",
             cookieHeader: nil,
+            principalType: credentials.isExpired ? nil : credentials.principalType,
             transport: transport,
             endpoint: endpoint)
     }
@@ -70,8 +90,25 @@ public enum GrokWebBillingFetcher {
         endpoint: URL = Self.defaultEndpoint) async throws -> GrokWebBillingSnapshot
     {
         try await self.fetch(
-            authorizationHeader: nil,
             cookieHeader: cookieHeader,
+            credentials: nil,
+            session: transport,
+            endpoint: endpoint)
+    }
+
+    public static func fetch(
+        cookieHeader: String,
+        credentials: GrokCredentials?,
+        session transport: any ProviderHTTPTransport = ProviderHTTPClient.shared,
+        endpoint: URL = Self.defaultEndpoint) async throws -> GrokWebBillingSnapshot
+    {
+        let authorizationHeader = credentials.flatMap { credential in
+            credential.isExpired ? nil : "Bearer \(credential.accessToken)"
+        }
+        return try await self.fetch(
+            authorizationHeader: authorizationHeader,
+            cookieHeader: cookieHeader,
+            principalType: credentials.flatMap { $0.isExpired ? nil : $0.principalType },
             transport: transport,
             endpoint: endpoint)
     }
@@ -79,6 +116,7 @@ public enum GrokWebBillingFetcher {
     private static func fetch(
         authorizationHeader: String?,
         cookieHeader: String?,
+        principalType: String?,
         transport: any ProviderHTTPTransport,
         endpoint: URL) async throws -> GrokWebBillingSnapshot
     {
@@ -88,13 +126,31 @@ public enum GrokWebBillingFetcher {
                 cookieHeader: cookieHeader,
                 transport: transport,
                 endpoint: endpoint)
-        } catch where self.shouldRetry(error) {
-            return try await self.fetchOnce(
-                authorizationHeader: authorizationHeader,
-                cookieHeader: cookieHeader,
-                transport: transport,
-                endpoint: endpoint)
+        } catch {
+            if self.shouldRetry(error) {
+                do {
+                    return try await self.fetchOnce(
+                        authorizationHeader: authorizationHeader,
+                        cookieHeader: cookieHeader,
+                        transport: transport,
+                        endpoint: endpoint)
+                } catch {
+                    throw self.classified(error, principalType: principalType)
+                }
+            }
+            throw self.classified(error, principalType: principalType)
         }
+    }
+
+    private static func classified(_ error: Error, principalType: String?) -> Error {
+        guard principalType?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("team") == .orderedSame,
+            case let GrokWebBillingError.rpcFailed(status, message) = error,
+            self.isTeamBillingUnavailable(status: status, message: message)
+        else {
+            return error
+        }
+        return GrokWebBillingError.teamUsageUnsupported
     }
 
     private static func fetchOnce(
@@ -157,7 +213,10 @@ public enum GrokWebBillingFetcher {
     }
 
     static func parseGRPCWebResponse(_ data: Data, now: Date = Date()) throws -> GrokWebBillingSnapshot {
-        let payloads = Self.grpcWebDataFrames(from: data)
+        var payloads = Self.grpcWebDataFrames(from: data)
+        if payloads.isEmpty, Self.looksLikeProtobufPayload(data) {
+            payloads = [data]
+        }
         guard !payloads.isEmpty else { throw GrokWebBillingError.emptyResponse }
 
         var scan = ProtobufScan()
@@ -187,21 +246,33 @@ public enum GrokWebBillingFetcher {
             .map(\.date)
             .min()
 
+        let hasUsagePeriod = scan.varintFields.contains { field in
+            field.path.starts(with: [1, 6]) ||
+                (field.path == [1, 8, 1] && (field.value == 1 || field.value == 2))
+        }
         let noUsageYet = parsedPercent == nil &&
             scan.fixed32Fields.isEmpty &&
             reset != nil &&
-            scan.varintFields.contains { $0.path.starts(with: [1, 6]) }
+            hasUsagePeriod
         guard let percent = parsedPercent ?? (noUsageYet ? 0 : nil) else {
             throw GrokWebBillingError.parseFailed
         }
         return GrokWebBillingSnapshot(usedPercent: percent, resetsAt: reset)
     }
 
+    static func looksLikeProtobufPayload(_ data: Data) -> Bool {
+        guard let first = data.first else { return false }
+        let fieldNumber = first >> 3
+        let wireType = first & 0x07
+        return fieldNumber > 0 && (wireType == 0 || wireType == 1 || wireType == 2 || wireType == 5)
+    }
+
     static func grpcWebDataFrames(from data: Data) -> [Data] {
         let bytes = [UInt8](data)
         var frames: [Data] = []
         var index = 0
-        while index + 5 <= bytes.count {
+        while index < bytes.count {
+            guard index + 5 <= bytes.count else { return [] }
             let flags = bytes[index]
             let length = (Int(bytes[index + 1]) << 24)
                 | (Int(bytes[index + 2]) << 16)
@@ -209,7 +280,7 @@ public enum GrokWebBillingFetcher {
                 | Int(bytes[index + 4])
             let start = index + 5
             let end = start + length
-            guard length >= 0, end <= bytes.count else { break }
+            guard length >= 0, end <= bytes.count else { return [] }
             if flags & 0x80 == 0 {
                 frames.append(Data(bytes[start..<end]))
             }
@@ -230,6 +301,12 @@ public enum GrokWebBillingFetcher {
             return
         }
         throw GrokWebBillingError.rpcFailed(status, fields["grpc-message"] ?? "")
+    }
+
+    static func isTeamBillingUnavailable(status: Int, message: String) -> Bool {
+        guard status == 9 else { return false }
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "no personal team" || normalized == "no personal team."
     }
 
     static func grpcHeaderFields(from headers: [AnyHashable: Any]) -> [String: String] {

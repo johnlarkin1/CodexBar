@@ -1,14 +1,14 @@
 import CodexBarCore
 import Foundation
 
-enum CLIErrorKind: String, Encodable {
+enum CLIErrorKind: String, Encodable, Sendable {
     case args
     case config
     case provider
     case runtime
 }
 
-struct ProviderErrorPayload: Encodable {
+struct ProviderErrorPayload: Encodable, Sendable {
     let code: Int32
     let message: String
     let kind: CLIErrorKind?
@@ -49,6 +49,7 @@ extension CodexBarCLI {
     static func makeProviderErrorPayload(
         provider: UsageProvider,
         account: String?,
+        cacheAccountKey: String? = nil,
         source: String,
         status: ProviderStatusPayload?,
         error: Error,
@@ -57,6 +58,7 @@ extension CodexBarCLI {
         ProviderPayload(
             provider: provider,
             account: account,
+            cacheAccountKey: cacheAccountKey,
             version: nil,
             source: source,
             status: status,

@@ -1,9 +1,8 @@
-import CodexBarMacroSupport
 import Foundation
 
-@ProviderDescriptorRegistration
-@ProviderDescriptorDefinition
 public enum ManusProviderDescriptor {
+    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .manus,
@@ -27,7 +26,12 @@ public enum ManusProviderDescriptor {
             branding: ProviderBranding(
                 iconStyle: .manus,
                 iconResourceName: "ProviderIcon-manus",
-                color: ProviderColor(red: 52 / 255, green: 50 / 255, blue: 45 / 255)),
+                color: ProviderColor(red: 52 / 255, green: 50 / 255, blue: 45 / 255),
+                confettiPalette: [
+                    ProviderColor(hex: 0x34322D),
+                    ProviderColor(hex: 0xF2F0E9),
+                    ProviderColor(hex: 0x0099FF),
+                ]),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "Manus cost summary is not supported." }),

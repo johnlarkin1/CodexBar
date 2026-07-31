@@ -14,9 +14,39 @@ struct FileCodexAccountUsageSnapshotStore: CodexAccountUsageSnapshotStoring, @un
 
     private struct Record: Codable {
         let id: String
+        let accountIdentity: AccountIdentity?
         let snapshot: UsageSnapshot?
         let error: String?
         let sourceLabel: String?
+    }
+
+    private struct AccountIdentity: Codable, Equatable {
+        let normalizedEmail: String?
+        let workspaceAccountID: String?
+        let authFingerprint: String?
+        let storedAccountID: UUID?
+        let selectionSource: CodexActiveSource?
+
+        init(account: CodexVisibleAccount) {
+            self.normalizedEmail = CodexIdentityResolver.normalizeEmail(account.email)
+            self.workspaceAccountID = CodexOpenAIWorkspaceResolver.normalizeWorkspaceAccountID(
+                account.workspaceAccountID)
+            self.authFingerprint = CodexAuthFingerprint.normalize(account.authFingerprint)
+            self.storedAccountID = account.storedAccountID
+            self.selectionSource = account.selectionSource
+        }
+
+        func matches(_ account: CodexVisibleAccount) -> Bool {
+            guard let normalizedEmail = self.normalizedEmail,
+                  normalizedEmail == CodexIdentityResolver.normalizeEmail(account.email),
+                  let workspaceAccountID = self.workspaceAccountID,
+                  workspaceAccountID == CodexOpenAIWorkspaceResolver.normalizeWorkspaceAccountID(
+                      account.workspaceAccountID)
+            else {
+                return false
+            }
+            return true
+        }
     }
 
     private static let currentVersion = 1
@@ -41,9 +71,10 @@ struct FileCodexAccountUsageSnapshotStore: CodexAccountUsageSnapshotStoring, @un
         let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
         return payload.records.compactMap { record in
             guard let account = accountsByID[record.id] else { return nil }
+            guard record.accountIdentity?.matches(account) == true else { return nil }
             return CodexAccountUsageSnapshot(
                 account: account,
-                snapshot: record.snapshot,
+                snapshot: Self.relabelSnapshot(record.snapshot, for: account),
                 error: record.error,
                 sourceLabel: record.sourceLabel)
         }
@@ -52,9 +83,12 @@ struct FileCodexAccountUsageSnapshotStore: CodexAccountUsageSnapshotStoring, @un
     func store(_ snapshots: [CodexAccountUsageSnapshot]) {
         let payload = Payload(
             version: Self.currentVersion,
-            records: snapshots.map { snapshot in
-                Record(
+            records: snapshots.compactMap { snapshot in
+                let identity = AccountIdentity(account: snapshot.account)
+                guard identity.normalizedEmail != nil, identity.workspaceAccountID != nil else { return nil }
+                return Record(
                     id: snapshot.id,
+                    accountIdentity: identity,
                     snapshot: snapshot.snapshot,
                     error: snapshot.error,
                     sourceLabel: snapshot.sourceLabel)
@@ -75,6 +109,18 @@ struct FileCodexAccountUsageSnapshotStore: CodexAccountUsageSnapshotStoring, @un
         } catch {
             // Snapshot hydration is best-effort; never make menu refresh fail because disk cache failed.
         }
+    }
+
+    private static func relabelSnapshot(_ snapshot: UsageSnapshot?, for account: CodexVisibleAccount)
+        -> UsageSnapshot?
+    {
+        guard let snapshot else { return nil }
+        let identity = snapshot.identity(for: .codex)
+        return snapshot.withIdentity(ProviderIdentitySnapshot(
+            providerID: .codex,
+            accountEmail: account.email,
+            accountOrganization: identity?.accountOrganization,
+            loginMethod: identity?.loginMethod ?? account.workspaceLabel))
     }
 
     static func defaultURL() -> URL {
