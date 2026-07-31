@@ -21,6 +21,9 @@ struct MenuBarLayoutRendererTests {
             (.percent(window: .weekly), "W 60%"),
             (.percent(window: .automatic), "50%"),
             (.usageBar, "▮▮▯"),
+            (.pace(window: .session), "5h 10% in reserve"),
+            (.pace(window: .weekly), "W 4% in deficit"),
+            (.pace(window: .automatic), "10% in reserve"),
             (.resetCountdown, "in 2h"),
             (.runsOut, "Runs out tomorrow"),
             (.costToday, "$1.25"),
@@ -88,6 +91,8 @@ struct MenuBarLayoutRendererTests {
             session: nil,
             weekly: nil,
             automatic: nil,
+            sessionPace: nil,
+            weeklyPace: nil,
             runsOut: nil,
             costToday: nil,
             cost30d: nil)
@@ -99,6 +104,9 @@ struct MenuBarLayoutRendererTests {
             .percent(window: .weekly),
             .percent(window: .automatic),
             .usageBar,
+            .pace(window: .session),
+            .pace(window: .weekly),
+            .pace(window: .automatic),
             .resetCountdown,
             .resetAbsolute,
             .runsOut,
@@ -108,8 +116,33 @@ struct MenuBarLayoutRendererTests {
 
         let output = renderer.render(layout: layout, data: missingData, icon: nil, options: self.options())
 
-        #expect(output.attributedTitle.string.count(where: { $0 == "–" }) == 12)
+        #expect(output.attributedTitle.string.count(where: { $0 == "–" }) == 15)
         #expect(output.accessibilityLabel.contains("unavailable"))
+    }
+
+    @Test
+    func `automatic pace falls back to the weekly figure without a session pace`() {
+        let renderer = MenuBarLayoutRenderer()
+        let data = MenuBarLayoutRenderData(
+            iconKey: "codex",
+            providerName: "Codex",
+            accountLabel: nil,
+            session: nil,
+            weekly: nil,
+            automatic: nil,
+            sessionPace: nil,
+            weeklyPace: "4% in deficit",
+            runsOut: nil,
+            costToday: nil,
+            cost30d: nil)
+
+        let output = renderer.render(
+            layout: MenuBarLayout(lines: [[.pace(window: .automatic)]]),
+            data: data,
+            icon: nil,
+            options: self.options())
+
+        #expect(output.attributedTitle.string == "4% in deficit")
     }
 
     @Test
@@ -227,6 +260,8 @@ struct MenuBarLayoutRendererTests {
             session: nil,
             weekly: nil,
             automatic: textOnlyWindow,
+            sessionPace: nil,
+            weeklyPace: nil,
             runsOut: nil,
             costToday: nil,
             cost30d: nil)
@@ -284,6 +319,8 @@ struct MenuBarLayoutRendererTests {
                 windowMinutes: 300,
                 resetsAt: self.now.addingTimeInterval(2 * 60 * 60),
                 resetDescription: nil)),
+            sessionPace: "10% in reserve",
+            weeklyPace: "4% in deficit",
             runsOut: "Runs out tomorrow",
             costToday: "$1.25",
             cost30d: "$20.00")
