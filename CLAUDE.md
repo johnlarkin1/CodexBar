@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-CodexBar is a macOS 14+ (Sonoma) menu bar app monitoring AI coding tool usage across 18+ providers. Built with Swift 6.2 and strict concurrency, SwiftPM-only (no Xcode project). Fork of [steipete/CodexBar](https://github.com/steipete/CodexBar) — this fork preserves the Augment provider (removed upstream) and adds color-coded icons, time window selection, and weekly projection.
+CodexBar is a macOS 14+ (Sonoma) menu bar app monitoring AI coding tool usage across ~70 providers. Built with Swift 6 and strict concurrency, SwiftPM-only (no Xcode project). Fork of [steipete/CodexBar](https://github.com/steipete/CodexBar), synced to upstream 0.46.0.
+
+The fork's only functional delta is **color-coded menu bar icons, defaulted on** (upstream ships the same feature off by default) plus a disabled Sparkle feed and fork signing identity. Separator styles and session/weekly window selection were retired in the 0.46 sync — upstream's layout editor and `MenuBarMetricPreference` supersede them.
 
 ## Build, Test, Lint
 
@@ -15,8 +17,11 @@ swift test                               # Full XCTest suite
 swift test --filter TestClass/testMethod  # Single test
 
 ./Scripts/compile_and_run.sh             # Full dev cycle: kill → build → test → package → relaunch → verify
-./Scripts/lint.sh lint                   # SwiftFormat --lint + SwiftLint --strict (check only)
+./Scripts/lint.sh lint                   # locales + portable checks + SwiftFormat + SwiftLint --strict
+./Scripts/lint.sh lint-macos             # locales + SwiftFormat (what CI runs on macOS)
+./Scripts/lint.sh lint-linux             # portable checks + SwiftLint (what CI runs on Linux)
 ./Scripts/lint.sh format                 # SwiftFormat auto-fix
+node Scripts/check-app-locales.mjs       # locale completeness; new L() keys need all 22 catalogs
 ./Scripts/package_app.sh                 # Build release binary → create CodexBar.app bundle
 ./Scripts/sign-and-notarize.sh           # Code sign + notarize (arm64 zip)
 ./Scripts/make_appcast.sh <zip> <url>    # Generate Sparkle appcast
@@ -29,7 +34,7 @@ After code changes, always rebuild and restart via `./Scripts/compile_and_run.sh
 ### Provider System
 
 Each provider lives in `Sources/CodexBarCore/Providers/<Name>/` with two files:
-- **`*ProviderDescriptor`** — Metadata (display name, icon, color, supported source modes). Registered via `@ProviderDescriptorRegistration` and `@ProviderDescriptorDefinition` macros into `ProviderDescriptorRegistry`.
+- **`*ProviderDescriptor`** — Metadata (display name, icon, color, supported source modes). Registered by hand in the `ProviderDescriptorRegistry.descriptorsByID` map in `Sources/CodexBarCore/Providers/ProviderDescriptor.swift`. Adding a provider means adding an entry there; a missing one trips a `preconditionFailure` at bootstrap.
 - **`*StatusProbe`** — Fetch logic implementing one or more `ProviderFetchStrategy` variants (`.oauth`, `.web`, `.cli`, `.api`, `.localProbe`). Strategies declare availability and execute fetches with automatic fallback chaining.
 
 ### Data Flow
@@ -59,13 +64,6 @@ UsageFetcher (orchestrator)
 | `RateWindow` | `Sources/CodexBarCore/` | Percentage used, window duration, reset time |
 | `ConsecutiveFailureGate` | `Sources/CodexBarCore/` | Debounces flaky errors before displaying |
 
-### Macros (`Sources/CodexBarMacros/`)
-
-- `@ProviderDescriptorRegistration` — Generates registry peer function
-- `@ProviderDescriptorDefinition` — Generates `descriptor` computed property
-- `@ProviderImplementationRegistration` — Registers provider implementation
-
-Macro support types live in `Sources/CodexBarMacroSupport/`, implementations use SwiftSyntaxMacros.
 
 ### Authentication Chain
 
@@ -100,8 +98,8 @@ Providers authenticate via a fallback chain configured in their descriptor's `su
 
 ## Fork Context
 
-- **Upstream:** `steipete/CodexBar` — upstream removed Augment; this fork preserves it
+- **Upstream:** `steipete/CodexBar` — Augment is present upstream; nothing provider-related is fork-only
 - **Secondary upstream:** `nguyenphutrong/quotio` — monitored for feature ideas
-- **Fork-specific features:** Color-coded menu bar icons, time window selection, weekly projection, separator styles
+- **Fork-specific:** color-coded icons default on; Sparkle feed disabled in `Scripts/package_app.sh` (fork shares upstream's bundle ID *and* Sparkle key, so a live feed would auto-update fork installs into upstream builds); `APP_TEAM_ID`/signing identity
 - **Upstream sync scripts:** `Scripts/check_upstreams.sh`, `Scripts/review_upstream.sh`, `Scripts/prepare_upstream_pr.sh`
 - **Version:** Tracked in `version.env` (`MARKETING_VERSION` + `BUILD_NUMBER`)

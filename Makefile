@@ -3,6 +3,9 @@
 
 # Pull version from version.env for targets that need it
 include version.env
+
+# Matches codexbar_release_arch_label in Scripts/release_artifacts.sh.
+ARCH_LABEL ?= macos-universal
 export MARKETING_VERSION
 export BUILD_NUMBER
 
@@ -15,7 +18,7 @@ export APP_IDENTITY
 # GitHub repo for fork releases (override: make sign-and-release GH_REPO="org/repo")
 GH_REPO ?= johnlarkin1/CodexBar
 
-.PHONY: help build build-release test run run-test lint format \
+.PHONY: help build build-release test run run-test lint format check \
         sign package release sign-and-release appcast check-release \
         validate-changelog check-upstream clean
 
@@ -41,6 +44,8 @@ run-test: ## Build with tests, package, and launch
 	./Scripts/compile_and_run.sh --test
 
 # ── Code Quality ────────────────────────────────────────────────────
+check: lint ## Alias for lint (upstream tooling and AGENTS.md expect `make check`)
+
 lint: ## SwiftFormat --lint + SwiftLint --strict (check only)
 	./Scripts/lint.sh lint
 
@@ -67,8 +72,8 @@ _guard-no-upstream: ## (internal) Block releases targeting upstream
 
 sign-and-release: _guard-no-upstream sign ## Sign, notarize, tag, and create GitHub release on fork
 	@TAG="v$(MARKETING_VERSION)"; \
-	ZIP="CodexBar-$(MARKETING_VERSION).zip"; \
-	DSYM_ZIP="CodexBar-$(MARKETING_VERSION).dSYM.zip"; \
+	ZIP="CodexBar-$(ARCH_LABEL)-$(MARKETING_VERSION).zip"; \
+	DSYM_ZIP="CodexBar-$(ARCH_LABEL)-$(MARKETING_VERSION).dSYM.zip"; \
 	if [ ! -f "$$ZIP" ]; then \
 		echo "ERROR: $$ZIP not found. Did sign-and-notarize.sh succeed?" >&2; \
 		exit 1; \

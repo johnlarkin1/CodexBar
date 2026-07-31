@@ -217,8 +217,11 @@ if [[ -f "$ICON_SOURCE" ]]; then
 fi
 
 BUNDLE_ID="com.steipete.codexbar"
-FEED_URL="https://raw.githubusercontent.com/steipete/CodexBar/main/appcast.xml"
-AUTO_CHECKS=true
+# Fork builds ship no appcast. The bundle ID and Sparkle public key are still upstream's, so a
+# non-empty feed here would let an upstream release auto-update a fork install and silently
+# remove the fork-only features. Do not restore these values when syncing upstream.
+FEED_URL=""
+AUTO_CHECKS=false
 if [[ "$LOWER_CONF" == "debug" ]]; then
   BUNDLE_ID="com.steipete.codexbar.debug"
   FEED_URL=""
@@ -229,7 +232,7 @@ if [[ "$SIGNING_MODE" == "adhoc" ]]; then
   AUTO_CHECKS=false
 fi
 WIDGET_BUNDLE_ID="${BUNDLE_ID}.widget"
-APP_TEAM_ID="${APP_TEAM_ID:-Y5PE65HELJ}"
+APP_TEAM_ID="${APP_TEAM_ID:-P3Q6VLD666}"
 APP_GROUP_ID="${APP_TEAM_ID}.com.steipete.codexbar"
 if [[ "$BUNDLE_ID" == *".debug"* ]]; then
   APP_GROUP_ID="${APP_TEAM_ID}.com.steipete.codexbar.debug"
@@ -497,7 +500,7 @@ elif [[ "$ALLOW_LLDB" == "1" ]]; then
   CODESIGN_ID="-"
   CODESIGN_ARGS=(--force --sign "$CODESIGN_ID")
 else
-  CODESIGN_ID="${APP_IDENTITY:-Developer ID Application: Peter Steinberger (Y5PE65HELJ)}"
+  CODESIGN_ID="${APP_IDENTITY:-Developer ID Application: John Larkin (P3Q6VLD666)}"
   CODESIGN_ARGS=(--force --timestamp --options runtime --sign "$CODESIGN_ID")
 fi
 function resign() { codesign "${CODESIGN_ARGS[@]}" "$1"; }

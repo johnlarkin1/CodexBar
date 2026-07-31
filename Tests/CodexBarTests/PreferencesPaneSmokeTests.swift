@@ -141,7 +141,6 @@ struct PreferencesPaneSmokeTests {
 
         settings.menuBarUsageColorsEnabled = false
         #expect(!Self.makeSettingsStore(suite: suite, reset: false).menuBarUsageColorsEnabled)
-
     }
 
     @Test
