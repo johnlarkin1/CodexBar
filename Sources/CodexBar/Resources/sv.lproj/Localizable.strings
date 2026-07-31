@@ -558,6 +558,8 @@
 "menu_bar_style_title" = "Menyradsstil";
 "menu_bar_style_subtitle" = "Hur menyradsobjektet visas.";
 "menu_bar_inactive_display_contrast_title" = "Förbättra synligheten på inaktiva skärmar";
+"menu_bar_usage_colors_title" = "Färgkodad användning";
+"menu_bar_usage_colors_subtitle" = "Färgar menyradsikonen från grönt till rött när användningen ökar.";
 "menu_bar_inactive_display_contrast_subtitle" = "Använder kontrastrik rendering så att ikonen och mätvärdet förblir läsbara på andra skärmar.";
 "menu_bar_style_critters" = "Figurer";
 "menu_bar_style_bars" = "Mätarstaplar";

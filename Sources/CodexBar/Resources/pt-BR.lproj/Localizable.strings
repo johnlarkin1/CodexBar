@@ -556,6 +556,8 @@
 "menu_bar_style_title" = "Estilo da barra de menus";
 "menu_bar_style_subtitle" = "Como o item da barra de menus é desenhado.";
 "menu_bar_inactive_display_contrast_title" = "Melhorar a visibilidade em telas inativas";
+"menu_bar_usage_colors_title" = "Uso codificado por cores";
+"menu_bar_usage_colors_subtitle" = "Colore o ícone da barra de menus de verde a vermelho conforme o uso aumenta.";
 "menu_bar_inactive_display_contrast_subtitle" = "Usa renderização de alto contraste para manter o ícone e a métrica legíveis em outras telas.";
 "menu_bar_style_critters" = "Bichinhos";
 "menu_bar_style_bars" = "Barras de medição";

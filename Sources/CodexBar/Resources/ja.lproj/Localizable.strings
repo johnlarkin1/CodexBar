@@ -556,6 +556,8 @@
 "menu_bar_style_title" = "メニューバーのスタイル";
 "menu_bar_style_subtitle" = "メニューバー項目の表示方法です。";
 "menu_bar_inactive_display_contrast_title" = "非アクティブなディスプレイでの視認性を向上";
+"menu_bar_usage_colors_title" = "使用量の色分け";
+"menu_bar_usage_colors_subtitle" = "使用量が増えるとメニューバーアイコンを緑から赤へ色付けします。";
 "menu_bar_inactive_display_contrast_subtitle" = "高コントラスト表示を使用し、ほかのディスプレイでもアイコンと指標を読みやすくします。";
 "menu_bar_style_critters" = "クリッター";
 "menu_bar_style_bars" = "メーターバー";

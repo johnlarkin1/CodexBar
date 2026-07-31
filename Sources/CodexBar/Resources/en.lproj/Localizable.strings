@@ -565,6 +565,8 @@
 "menu_bar_style_title" = "Menu bar style";
 "menu_bar_style_subtitle" = "How the menu bar item is drawn.";
 "menu_bar_inactive_display_contrast_title" = "Improve visibility on inactive displays";
+"menu_bar_usage_colors_title" = "Color-coded usage";
+"menu_bar_usage_colors_subtitle" = "Tint the menu bar icon from green to red as usage rises.";
 "menu_bar_inactive_display_contrast_subtitle" = "Use high-contrast rendering to keep the icon and metric readable on other displays.";
 "menu_bar_style_critters" = "Critters";
 "menu_bar_style_bars" = "Meter bars";
