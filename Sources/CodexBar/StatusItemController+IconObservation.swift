@@ -29,6 +29,7 @@ extension StatusItemController {
             "showUsed=\(self.settings.usageBarsShowUsed ? "1" : "0")",
             "brandPercent=\(showBrandPercent ? "1" : "0")",
             "hideCritters=\(self.settings.menuBarHidesCritters ? "1" : "0")",
+            "usageColors=\(self.settings.menuBarUsageColorsEnabled ? "1" : "0")",
             "needsAnimation=\(self.needsMenuBarIconAnimation() ? "1" : "0")",
             providerSignatures,
         ].joined(separator: "|")
