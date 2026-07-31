@@ -403,6 +403,7 @@ extension StatusItemController {
         self.noteIconPerfRender(skipped: false)
         return false
     }
+
     // swiftlint:enable function_body_length
 
     private func applyStoredUnifiedMenuBarLayoutIfNeeded(
@@ -631,6 +632,7 @@ extension StatusItemController {
         self.noteIconPerfRender(skipped: false)
         return false
     }
+
     // swiftlint:enable function_body_length
 
     static func iconSignatureValue(_ value: Double?) -> String {
