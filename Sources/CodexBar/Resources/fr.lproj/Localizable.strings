@@ -559,6 +559,8 @@
 "menu_bar_style_title" = "Style de la barre de menus";
 "menu_bar_style_subtitle" = "Définit l’apparence de l’élément dans la barre de menus.";
 "menu_bar_inactive_display_contrast_title" = "Améliorer la visibilité sur les écrans inactifs";
+"menu_bar_usage_colors_title" = "Utilisation en couleurs";
+"menu_bar_usage_colors_subtitle" = "Colore l'icône de la barre des menus du vert au rouge à mesure que l'utilisation augmente.";
 "menu_bar_inactive_display_contrast_subtitle" = "Utilise un rendu à contraste élevé pour que l’icône et la mesure restent lisibles sur les autres écrans.";
 "menu_bar_style_critters" = "Créatures";
 "menu_bar_style_bars" = "Barres de mesure";
