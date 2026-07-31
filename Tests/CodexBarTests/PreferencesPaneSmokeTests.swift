@@ -131,17 +131,17 @@ struct PreferencesPaneSmokeTests {
         #expect(MenuBarPane.inactiveDisplayContrastAvailable(for: .iconAndPercent))
     }
 
-    /// Existing installs have no stored value for this key, so the absent-means-false read is the whole
-    /// migration story: updating must not change anyone's menu bar.
+    /// This fork defaults usage colors on; upstream defaults them off.
     @Test
-    func `usage colors default off and persist`() {
+    func `usage colors default on and persist`() {
         let suite = "PreferencesPaneSmokeTests-usage-colors"
         let settings = Self.makeSettingsStore(suite: suite)
 
-        #expect(!settings.menuBarUsageColorsEnabled)
+        #expect(settings.menuBarUsageColorsEnabled)
 
-        settings.menuBarUsageColorsEnabled = true
-        #expect(Self.makeSettingsStore(suite: suite, reset: false).menuBarUsageColorsEnabled)
+        settings.menuBarUsageColorsEnabled = false
+        #expect(!Self.makeSettingsStore(suite: suite, reset: false).menuBarUsageColorsEnabled)
+
     }
 
     @Test

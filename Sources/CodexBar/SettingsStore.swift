@@ -447,8 +447,10 @@ extension SettingsStore {
         let menuBarShowsBrandIconWithPercent = userDefaults.object(
             forKey: "menuBarShowsBrandIconWithPercent") as? Bool ?? false
         let menuBarHidesCritters = userDefaults.object(forKey: "menuBarHidesCritters") as? Bool ?? false
+        // Fork default: on. Upstream ships this off so an update never changes an existing
+        // menu bar; colored icons are the reason this fork exists, so it defaults on here.
         let menuBarUsageColorsEnabled = userDefaults
-            .object(forKey: "menuBarUsageColorsEnabled") as? Bool ?? false
+            .object(forKey: "menuBarUsageColorsEnabled") as? Bool ?? true
         let menuBarHighContrastOnInactiveDisplays = userDefaults.object(
             forKey: "menuBarHighContrastOnInactiveDisplays") as? Bool ?? false
         let menuBarDisplayModeRaw = userDefaults.string(forKey: "menuBarDisplayMode")
