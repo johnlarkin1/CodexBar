@@ -1327,6 +1327,12 @@
 "menu_bar_layout_token_weekly" = "Недельный %";
 "menu_bar_layout_token_auto" = "Авто %";
 "menu_bar_layout_token_bar" = "Индикатор использования";
+"menu_bar_layout_token_session_pace" = "Темп сеанса";
+"menu_bar_layout_token_weekly_pace" = "Недельный темп";
+"menu_bar_layout_token_auto_pace" = "Автоматический темп";
+"Session pace" = "Темп сеанса";
+"Weekly pace" = "Недельный темп";
+"Pace" = "Темп";
 "menu_bar_layout_token_resets_in" = "Сброс через";
 "menu_bar_layout_token_reset_at" = "Сброс в";
 "menu_bar_layout_token_runs_out" = "Закончится";

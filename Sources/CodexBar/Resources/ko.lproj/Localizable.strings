@@ -1293,6 +1293,12 @@
 "menu_bar_layout_token_weekly" = "주간 %";
 "menu_bar_layout_token_auto" = "자동 %";
 "menu_bar_layout_token_bar" = "사용량 막대";
+"menu_bar_layout_token_session_pace" = "세션 사용 속도";
+"menu_bar_layout_token_weekly_pace" = "주간 사용 속도";
+"menu_bar_layout_token_auto_pace" = "자동 사용 속도";
+"Session pace" = "세션 사용 속도";
+"Weekly pace" = "주간 사용 속도";
+"Pace" = "사용 속도";
 "menu_bar_layout_token_resets_in" = "재설정까지";
 "menu_bar_layout_token_reset_at" = "재설정 시각";
 "menu_bar_layout_token_runs_out" = "소진";

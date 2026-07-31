@@ -1329,6 +1329,12 @@
 "menu_bar_layout_token_weekly" = "Mingguan %";
 "menu_bar_layout_token_auto" = "% otomatis";
 "menu_bar_layout_token_bar" = "Bar penggunaan";
+"menu_bar_layout_token_session_pace" = "Pace sesi";
+"menu_bar_layout_token_weekly_pace" = "Pace mingguan";
+"menu_bar_layout_token_auto_pace" = "Pace otomatis";
+"Session pace" = "Pace sesi";
+"Weekly pace" = "Pace mingguan";
+"Pace" = "Pace";
 "menu_bar_layout_token_resets_in" = "Reset dalam";
 "menu_bar_layout_token_reset_at" = "Reset pukul";
 "menu_bar_layout_token_runs_out" = "Habis";
