@@ -6,6 +6,7 @@ public struct GrokUsageSnapshot: Sendable {
     public let credentials: GrokCredentials?
     public let localSummary: GrokLocalSessionSummary?
     public let cliVersion: String?
+    public let diagnostic: String?
     public let updatedAt: Date
 
     public init(
@@ -14,13 +15,15 @@ public struct GrokUsageSnapshot: Sendable {
         credentials: GrokCredentials?,
         localSummary: GrokLocalSessionSummary?,
         cliVersion: String?,
-        updatedAt: Date)
+        updatedAt: Date,
+        diagnostic: String? = nil)
     {
         self.billing = billing
         self.webBilling = webBilling
         self.credentials = credentials
         self.localSummary = localSummary
         self.cliVersion = cliVersion
+        self.diagnostic = diagnostic
         self.updatedAt = updatedAt
     }
 
@@ -62,34 +65,27 @@ public struct GrokUsageSnapshot: Sendable {
 }
 
 public struct GrokStatusProbe: Sendable {
+    public static let teamUsageUnavailableMessage =
+        "Grok team usage is unavailable from the current billing surface; identity is still available."
+
     public init() {}
 
     public static func detectVersion(env: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         guard let binary = BinaryLocator.resolveGrokBinary(env: env) else { return nil }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [binary, "--version"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return nil }
-            // Output is like "grok 0.1.210 (8b63e9068c)" — strip the leading "grok " so
-            // callers can prefix the CLI name themselves without duplicating it.
-            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            let firstLine = trimmed.split(separator: "\n").first.map(String.init) ?? trimmed
-            let withoutPrefix = firstLine.replacingOccurrences(
-                of: #"^grok\s+"#,
-                with: "",
-                options: [.regularExpression])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return withoutPrefix.isEmpty ? nil : withoutPrefix
-        } catch {
-            return nil
-        }
+        guard let output = ProviderVersionDetector.run(
+            path: binary,
+            args: ["--version"],
+            environment: env,
+            mergeStandardError: true)
+        else { return nil }
+        // Output is like "grok 0.1.210 (8b63e9068c)" — strip the leading "grok " so
+        // callers can prefix the CLI name themselves without duplicating it.
+        let withoutPrefix = output.replacingOccurrences(
+            of: #"^grok\s+"#,
+            with: "",
+            options: [.regularExpression])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return withoutPrefix.isEmpty ? nil : withoutPrefix
     }
 
     public func fetch(env: [String: String] = ProcessInfo.processInfo.environment) async throws -> GrokUsageSnapshot {
@@ -99,10 +95,12 @@ public struct GrokStatusProbe: Sendable {
 
         var billing: GrokBillingResponse?
         var rpcError: Error?
+        var billingAttempted = false
         do {
             let client = try GrokRPCClient(environment: env)
             defer { client.shutdown() }
             try await client.initialize()
+            billingAttempted = true
             billing = try await client.fetchBilling()
         } catch {
             rpcError = error
@@ -116,6 +114,19 @@ public struct GrokStatusProbe: Sendable {
         // identity field, so a stale `~/.grok/sessions/` directory must not
         // suppress the auth-required hint. CLI-only fetches need a billing
         // response; the provider pipeline owns the separate web fallback.
+        if billing == nil,
+           let credentials,
+           Self.shouldUseIdentityOnlyFallback(
+               credentials: credentials,
+               billingAttempted: billingAttempted,
+               error: rpcError)
+        {
+            return Self.identityOnlySnapshot(
+                credentials: credentials,
+                localSummary: localSummary,
+                cliVersion: cliVersion)
+        }
+
         if billing == nil {
             throw rpcError ?? GrokRPCError.notAuthenticated
         }
@@ -130,6 +141,47 @@ public struct GrokStatusProbe: Sendable {
             localSummary: localSummary,
             cliVersion: cliVersion,
             updatedAt: Date())
+    }
+
+    static func identityOnlySnapshot(
+        credentials: GrokCredentials,
+        localSummary: GrokLocalSessionSummary?,
+        cliVersion: String?,
+        updatedAt: Date = .init()) -> GrokUsageSnapshot
+    {
+        GrokUsageSnapshot(
+            billing: nil,
+            webBilling: nil,
+            credentials: credentials,
+            localSummary: localSummary,
+            cliVersion: cliVersion,
+            updatedAt: updatedAt,
+            diagnostic: GrokStatusProbe.teamUsageUnavailableMessage)
+    }
+
+    static func isBillingMethodUnavailable(_ error: Error?) -> Bool {
+        guard let error,
+              case let GrokRPCError.requestFailed(message) = error
+        else {
+            return false
+        }
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "method not found" || normalized.hasPrefix("method not found:")
+    }
+
+    static func shouldUseIdentityOnlyFallback(
+        credentials: GrokCredentials?,
+        billingAttempted: Bool,
+        error: Error?) -> Bool
+    {
+        guard billingAttempted,
+              let credentials,
+              !credentials.isExpired,
+              credentials.isTeamPrincipal
+        else {
+            return false
+        }
+        return Self.isBillingMethodUnavailable(error)
     }
 
     static func credentialsForSnapshot(
@@ -150,7 +202,7 @@ public struct GrokStatusProbe: Sendable {
             return status == 401 || status == 403
         case let .rpcFailed(status, _):
             return status == 16
-        case .missingCredentials, .emptyResponse, .invalidResponse, .parseFailed:
+        case .missingCredentials, .emptyResponse, .invalidResponse, .teamUsageUnsupported, .parseFailed:
             return false
         }
     }

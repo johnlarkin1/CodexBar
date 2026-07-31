@@ -35,7 +35,7 @@ enum IconRenderer {
         let stale: Bool
         let style: Int
         let indicator: Int
-        let tintHash: Int
+        let hideCritters: Bool
     }
 
     private final class IconCacheStore: @unchecked Sendable {
@@ -120,15 +120,13 @@ enum IconRenderer {
         wiggle: CGFloat = 0,
         tilt: CGFloat = 0,
         statusIndicator: ProviderStatusIndicator = .none,
-        tintColor: NSColor? = nil) -> NSImage
+        hideCritters: Bool = false) -> NSImage
     {
         let shouldCache = blink <= 0.0001 && wiggle <= 0.0001 && tilt <= 0.0001
         let render = {
-            self.renderImage(tintColor: tintColor) {
-                // When a tintColor is provided (macOS 26+ Liquid Glass), draw shapes directly in that
-                // color so the bitmap has real RGB values. Otherwise use labelColor for template rendering
-                // tinted via the status button's contentTintColor.
-                let baseFill = tintColor ?? NSColor.labelColor
+            self.renderImage {
+                // Keep monochrome template icons; Claude uses subtle shape cues only.
+                let baseFill = NSColor.labelColor
                 let trackFillAlpha: CGFloat = stale ? 0.18 : 0.28
                 let trackStrokeAlpha: CGFloat = stale ? 0.28 : 0.44
                 let fillColor = baseFill.withAlphaComponent(stale ? 0.55 : 1.0)
@@ -659,17 +657,25 @@ enum IconRenderer {
                 // Warp special case: when no bonus or bonus exhausted, show "top monthly, bottom dimmed"
                 let warpNoBonus = style == .warp && !weeklyAvailable
 
+                // "Hide critters" renders plain meter bars: suppress all face/decoration twists.
+                let twistFace = !hideCritters && style == .codex
+                let twistNotches = !hideCritters && style == .claude
+                let twistGemini = !hideCritters && (style == .gemini || style == .antigravity)
+                let twistAntigravity = !hideCritters && style == .antigravity
+                let twistFactory = !hideCritters && style == .factory
+                let twistWarp = !hideCritters && style == .warp
+
                 if weeklyAvailable {
                     // Normal: top=primary, bottom=secondary (bonus/weekly).
                     drawBar(
                         rectPx: topRectPx,
                         remaining: topValue,
-                        addNotches: style == .claude,
-                        addFace: style == .codex,
-                        addGeminiTwist: style == .gemini || style == .antigravity,
-                        addAntigravityTwist: style == .antigravity,
-                        addFactoryTwist: style == .factory,
-                        addWarpTwist: style == .warp,
+                        addNotches: twistNotches,
+                        addFace: twistFace,
+                        addGeminiTwist: twistGemini,
+                        addAntigravityTwist: twistAntigravity,
+                        addFactoryTwist: twistFactory,
+                        addWarpTwist: twistWarp,
                         blink: blink)
                     drawBar(rectPx: bottomRectPx, remaining: bottomValue)
                 } else if !hasWeekly || warpNoBonus {
@@ -678,7 +684,7 @@ enum IconRenderer {
                         drawBar(
                             rectPx: topRectPx,
                             remaining: topValue,
-                            addWarpTwist: true,
+                            addWarpTwist: twistWarp,
                             blink: blink)
                         drawBar(rectPx: bottomRectPx, remaining: nil, alpha: 0.45)
                     } else {
@@ -690,24 +696,24 @@ enum IconRenderer {
                                 rectPx: creditsRectPx,
                                 remaining: ratio,
                                 alpha: creditsAlpha,
-                                addNotches: style == .claude,
-                                addFace: style == .codex,
-                                addGeminiTwist: style == .gemini || style == .antigravity,
-                                addAntigravityTwist: style == .antigravity,
-                                addFactoryTwist: style == .factory,
-                                addWarpTwist: style == .warp,
+                                addNotches: twistNotches,
+                                addFace: twistFace,
+                                addGeminiTwist: twistGemini,
+                                addAntigravityTwist: twistAntigravity,
+                                addFactoryTwist: twistFactory,
+                                addWarpTwist: twistWarp,
                                 blink: blink)
                             drawBar(rectPx: creditsBottomRectPx, remaining: nil, alpha: 0.45)
                         } else {
                             drawBar(
                                 rectPx: topRectPx,
                                 remaining: topValue,
-                                addNotches: style == .claude,
-                                addFace: style == .codex,
-                                addGeminiTwist: style == .gemini || style == .antigravity,
-                                addAntigravityTwist: style == .antigravity,
-                                addFactoryTwist: style == .factory,
-                                addWarpTwist: style == .warp,
+                                addNotches: twistNotches,
+                                addFace: twistFace,
+                                addGeminiTwist: twistGemini,
+                                addAntigravityTwist: twistAntigravity,
+                                addFactoryTwist: twistFactory,
+                                addWarpTwist: twistWarp,
                                 blink: blink)
                             drawBar(rectPx: bottomRectPx, remaining: nil, alpha: 0.45)
                         }
@@ -719,30 +725,30 @@ enum IconRenderer {
                             rectPx: creditsRectPx,
                             remaining: ratio,
                             alpha: creditsAlpha,
-                            addNotches: style == .claude,
-                            addFace: style == .codex,
-                            addGeminiTwist: style == .gemini || style == .antigravity,
-                            addAntigravityTwist: style == .antigravity,
-                            addFactoryTwist: style == .factory,
-                            addWarpTwist: style == .warp,
+                            addNotches: twistNotches,
+                            addFace: twistFace,
+                            addGeminiTwist: twistGemini,
+                            addAntigravityTwist: twistAntigravity,
+                            addFactoryTwist: twistFactory,
+                            addWarpTwist: twistWarp,
                             blink: blink)
                     } else {
                         // No credits available; fall back to 5h if present.
                         drawBar(
                             rectPx: topRectPx,
                             remaining: topValue,
-                            addNotches: style == .claude,
-                            addFace: style == .codex,
-                            addGeminiTwist: style == .gemini || style == .antigravity,
-                            addAntigravityTwist: style == .antigravity,
-                            addFactoryTwist: style == .factory,
-                            addWarpTwist: style == .warp,
+                            addNotches: twistNotches,
+                            addFace: twistFace,
+                            addGeminiTwist: twistGemini,
+                            addAntigravityTwist: twistAntigravity,
+                            addFactoryTwist: twistFactory,
+                            addWarpTwist: twistWarp,
                             blink: blink)
                     }
                     drawBar(rectPx: creditsBottomRectPx, remaining: bottomValue)
                 }
 
-                Self.drawStatusOverlay(indicator: statusIndicator, tintColor: tintColor)
+                Self.drawStatusOverlay(indicator: statusIndicator)
             }
         }
 
@@ -754,7 +760,7 @@ enum IconRenderer {
                 stale: stale,
                 style: self.styleKey(style),
                 indicator: self.indicatorKey(statusIndicator),
-                tintHash: self.tintColorHash(tintColor))
+                hideCritters: hideCritters)
             if let cached = self.cachedIcon(for: key) {
                 return cached
             }
@@ -769,14 +775,14 @@ enum IconRenderer {
     // swiftlint:enable function_body_length
 
     /// Morph helper: unbraids a simplified knot into our bar icon.
-    static func makeMorphIcon(progress: Double, style: IconStyle) -> NSImage {
+    static func makeMorphIcon(progress: Double, style: IconStyle, hideCritters: Bool = false) -> NSImage {
         let clamped = max(0, min(progress, 1))
-        let key = self.morphCacheKey(progress: clamped, style: style)
+        let key = self.morphCacheKey(progress: clamped, style: style, hideCritters: hideCritters)
         if let cached = self.morphCache.image(for: key) {
             return cached
         }
         let image = self.renderImage {
-            self.drawUnbraidMorph(t: clamped, style: style)
+            self.drawUnbraidMorph(t: clamped, style: style, hideCritters: hideCritters)
         }
         self.morphCache.set(image, for: key)
         return image
@@ -805,21 +811,6 @@ enum IconRenderer {
         self.styleKeyLookup[style] ?? 0
     }
 
-    private static func tintColorHash(_ color: NSColor?) -> Int {
-        guard let color else { return 0 }
-        // Quantize to 256 buckets per channel to avoid cache explosion while preserving visual fidelity.
-        var r: CGFloat = 0
-        var g: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        (color.usingColorSpace(.sRGB) ?? color).getRed(&r, green: &g, blue: &b, alpha: &a)
-        let ri = Int((r * 255).rounded())
-        let gi = Int((g * 255).rounded())
-        let bi = Int((b * 255).rounded())
-        let ai = Int((a * 255).rounded())
-        return ri << 24 | gi << 16 | bi << 8 | ai
-    }
-
     private static func indicatorKey(_ indicator: ProviderStatusIndicator) -> Int {
         switch indicator {
         case .none: 0
@@ -831,9 +822,9 @@ enum IconRenderer {
         }
     }
 
-    private static func morphCacheKey(progress: Double, style: IconStyle) -> NSNumber {
+    private static func morphCacheKey(progress: Double, style: IconStyle, hideCritters: Bool) -> NSNumber {
         let bucket = Int((progress * Double(self.morphBucketCount)).rounded())
-        let key = self.styleKey(style) * 1000 + bucket
+        let key = (hideCritters ? 1_000_000 : 0) + self.styleKey(style) * 1000 + bucket
         return NSNumber(value: key)
     }
 
@@ -845,7 +836,7 @@ enum IconRenderer {
         self.iconCacheStore.storeIcon(image, for: key, limit: self.iconCacheLimit)
     }
 
-    private static func drawUnbraidMorph(t: Double, style: IconStyle) {
+    private static func drawUnbraidMorph(t: Double, style: IconStyle, hideCritters: Bool) {
         let t = CGFloat(max(0, min(t, 1)))
         let size = Self.baseSize
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -923,7 +914,8 @@ enum IconRenderer {
                 weeklyRemaining: 100,
                 creditsRemaining: nil,
                 stale: false,
-                style: style)
+                style: style,
+                hideCritters: hideCritters)
             bars.draw(in: CGRect(origin: .zero, size: size), from: .zero, operation: .sourceOver, fraction: barT)
         }
     }
@@ -952,9 +944,9 @@ enum IconRenderer {
         path.fill()
     }
 
-    private static func drawStatusOverlay(indicator: ProviderStatusIndicator, tintColor: NSColor? = nil) {
+    private static func drawStatusOverlay(indicator: ProviderStatusIndicator) {
         guard indicator.hasIssue else { return }
-        let color = tintColor ?? NSColor.labelColor
+        let color = NSColor.labelColor
 
         switch indicator {
         case .minor, .maintenance:
@@ -964,6 +956,8 @@ enum IconRenderer {
                 y: 2,
                 width: size,
                 height: size)
+            Self.clearStatusOverlayHalo(
+                NSBezierPath(ovalIn: rect.insetBy(dx: -1, dy: -1)))
             let path = NSBezierPath(ovalIn: rect)
             color.setFill()
             path.fill()
@@ -973,19 +967,33 @@ enum IconRenderer {
                 y: 4,
                 width: 2.0,
                 height: 6)
-            let linePath = NSBezierPath(roundedRect: lineRect, xRadius: 1, yRadius: 1)
-            color.setFill()
-            linePath.fill()
-
             let dotRect = Self.snapRect(
                 x: Self.baseSize.width - 6,
                 y: 2,
                 width: 2.0,
                 height: 2.0)
+
+            let haloRect = lineRect.union(dotRect).insetBy(dx: -1, dy: -1)
+            Self.clearStatusOverlayHalo(
+                NSBezierPath(roundedRect: haloRect, xRadius: 2, yRadius: 2))
+
+            let linePath = NSBezierPath(roundedRect: lineRect, xRadius: 1, yRadius: 1)
+            color.setFill()
+            linePath.fill()
             NSBezierPath(ovalIn: dotRect).fill()
         case .none:
             break
         }
+    }
+
+    private static func clearStatusOverlayHalo(_ path: NSBezierPath) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.saveGState()
+        ctx.setBlendMode(.clear)
+        // The fill color is ignored by .clear; it only drives the path fill operation.
+        NSColor.black.setFill()
+        path.fill()
+        ctx.restoreGState()
     }
 
     private static func withScaledContext(_ draw: () -> Void) {
@@ -1008,7 +1016,7 @@ enum IconRenderer {
         CGRect(x: self.snap(x), y: self.snap(y), width: self.snap(width), height: self.snap(height))
     }
 
-    private static func renderImage(tintColor: NSColor? = nil, _ draw: () -> Void) -> NSImage {
+    private static func renderImage(_ draw: () -> Void) -> NSImage {
         let image = NSImage(size: Self.outputSize)
 
         if let rep = NSBitmapImageRep(
@@ -1019,7 +1027,7 @@ enum IconRenderer {
             samplesPerPixel: 4,
             hasAlpha: true,
             isPlanar: false,
-            colorSpaceName: .calibratedRGB,
+            colorSpaceName: .deviceRGB,
             bytesPerRow: 0,
             bitsPerPixel: 0)
         {
@@ -1039,9 +1047,7 @@ enum IconRenderer {
             image.unlockFocus()
         }
 
-        // A colored icon must be non-template so macOS 26 Liquid Glass keeps its RGB pixels
-        // instead of re-rendering it as a monochrome template.
-        image.isTemplate = tintColor == nil
+        image.isTemplate = true
         return image
     }
 }

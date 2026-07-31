@@ -1,9 +1,8 @@
-import CodexBarMacroSupport
 import Foundation
 
-@ProviderDescriptorRegistration
-@ProviderDescriptorDefinition
 public enum AzureOpenAIProviderDescriptor {
+    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .azureopenai,
@@ -28,7 +27,12 @@ public enum AzureOpenAIProviderDescriptor {
             branding: ProviderBranding(
                 iconStyle: .openai,
                 iconResourceName: "ProviderIcon-codex",
-                color: ProviderColor(red: 0, green: 120 / 255, blue: 212 / 255)),
+                color: ProviderColor(red: 0, green: 120 / 255, blue: 212 / 255),
+                confettiPalette: [
+                    ProviderColor(hex: 0x0078D4),
+                    ProviderColor(hex: 0x50E6FF),
+                    ProviderColor(hex: 0xFFFFFF),
+                ]),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "Azure OpenAI usage history is not exposed by the deployment validation probe." }),
@@ -57,6 +61,7 @@ struct AzureOpenAIAPIFetchStrategy: ProviderFetchStrategy {
         guard let apiKey = Self.resolveAPIKey(environment: context.env) else {
             throw AzureOpenAIUsageError.missingAPIKey
         }
+        try AzureOpenAISettingsReader.validateEndpointOverrides(environment: context.env)
         guard let endpoint = Self.resolveEndpoint(environment: context.env) else {
             throw AzureOpenAIUsageError.missingEndpoint
         }

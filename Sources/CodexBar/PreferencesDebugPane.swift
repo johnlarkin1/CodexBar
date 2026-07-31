@@ -316,6 +316,7 @@ struct DebugPane: View {
                         Text("Augment").tag(UsageProvider.augment)
                         Text("Amp").tag(UsageProvider.amp)
                         Text("T3 Chat").tag(UsageProvider.t3chat)
+                        Text("ZoomMate").tag(UsageProvider.zoommate)
                         Text("Ollama").tag(UsageProvider.ollama)
                     }
                     .pickerStyle(.segmented)
@@ -524,9 +525,13 @@ struct DebugPane: View {
     }
 
     private func clearCookieCache() {
-        let cleared = CookieHeaderCache.clearAll()
-        if cleared > 0 {
-            self.cookieCacheStatus = "Cleared \(cleared) provider\(cleared == 1 ? "" : "s")."
+        let summary = CookieHeaderCache.clearAllDetailed()
+        if summary.failedCount > 0 {
+            self.cookieCacheStatus = "Cookie cache cleanup failed for \(summary.failedCount) "
+                + "operation\(summary.failedCount == 1 ? "" : "s")."
+        } else if summary.clearedCount > 0 {
+            self.cookieCacheStatus = "Cleared \(summary.clearedCount) "
+                + "provider\(summary.clearedCount == 1 ? "" : "s")."
         } else {
             self.cookieCacheStatus = "No cached cookies found."
         }

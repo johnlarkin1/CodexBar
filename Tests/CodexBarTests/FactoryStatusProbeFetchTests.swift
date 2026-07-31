@@ -88,7 +88,8 @@ struct FactoryStatusProbeFetchTests {
                 homeDirectory: "/tmp/codexbar-empty-browser-home",
                 cacheTTL: 0,
                 fileExists: { _ in false },
-                directoryContents: { _ in nil }))
+                directoryContents: { _ in nil }),
+            transport: FactoryStubTransport())
 
         let snapshot = try await probe.fetch()
 
@@ -205,7 +206,8 @@ struct FactoryStatusProbeFetchTests {
                 homeDirectory: "/tmp/codexbar-empty-browser-home",
                 cacheTTL: 0,
                 fileExists: { _ in false },
-                directoryContents: { _ in nil }))
+                directoryContents: { _ in nil }),
+            transport: FactoryStubTransport())
 
         let snapshot = try await probe.fetch()
 
@@ -758,7 +760,12 @@ struct FactoryStatusProbeFetchTests {
 }
 
 final class FactoryStubURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    private static let _handlerBox = LockIsolated<((URLRequest) throws -> (HTTPURLResponse, Data))?>(nil)
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { Self._handlerBox.value }
+        set { Self._handlerBox.setValue(newValue) }
+    }
+
     nonisolated(unsafe) static var requests: [URLRequest] = []
 
     override static func canInit(with request: URLRequest) -> Bool {
@@ -787,4 +794,15 @@ final class FactoryStubURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private struct FactoryStubTransport: ProviderHTTPTransport {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard let handler = FactoryStubURLProtocol.handler else {
+            throw URLError(.badServerResponse)
+        }
+        FactoryStubURLProtocol.requests.append(request)
+        let (response, data) = try handler(request)
+        return (data, response)
+    }
 }
