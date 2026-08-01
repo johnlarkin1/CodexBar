@@ -296,6 +296,8 @@ final class MenuBarLayoutRenderer {
                 attributes: style.attributes)
         case .separatorDot:
             return self.textToken("·", accessibilityText: nil, attributes: style.attributes)
+        case .separatorPipe:
+            return self.textToken("|", accessibilityText: nil, attributes: style.attributes)
         case .space:
             return self.textToken(" ", accessibilityText: nil, attributes: style.attributes)
         }

@@ -20,6 +20,7 @@ enum MenuBarLayoutToken: Codable, Hashable, Sendable {
     case costToday
     case cost30d
     case separatorDot
+    case separatorPipe
     case space
 }
 
