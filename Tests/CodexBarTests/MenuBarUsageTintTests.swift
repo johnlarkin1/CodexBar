@@ -18,10 +18,20 @@ struct MenuBarUsageTintTests {
         let samples = [0.0, 20, 40, 60, 70, 80, 90, 100]
         let ramp = try samples.map { try self.components(#require(MenuBarUsageTint.color(forUsedPercent: $0))) }
 
+        // Green falls the whole way. It is the channel that carries "toward red" across both
+        // segments, so it is the one that must be monotonic end to end.
         for (lower, higher) in zip(ramp, ramp.dropFirst()) {
-            #expect(higher.red >= lower.red)
             #expect(higher.green <= lower.green)
         }
+
+        // Red only climbs on the green → orange leg. The orange and red anchors are picked for
+        // legibility rather than to form a monotonic red ramp (0.85 then 0.80), so red dips
+        // slightly past the medium threshold by design.
+        let towardOrange = zip(samples, ramp).filter { $0.0 <= 70 }.map(\.1)
+        for (lower, higher) in zip(towardOrange, towardOrange.dropFirst()) {
+            #expect(higher.red >= lower.red)
+        }
+
         let lowest = try #require(ramp.first)
         let highest = try #require(ramp.last)
         #expect(highest.red > lowest.red)
