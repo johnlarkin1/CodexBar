@@ -1331,6 +1331,12 @@
 "menu_bar_layout_token_weekly" = "รายสัปดาห์ %";
 "menu_bar_layout_token_auto" = "% อัตโนมัติ";
 "menu_bar_layout_token_bar" = "แถบการใช้งาน";
+"menu_bar_layout_token_session_pace" = "อัตราการใช้เซสชัน";
+"menu_bar_layout_token_weekly_pace" = "อัตราการใช้รายสัปดาห์";
+"menu_bar_layout_token_auto_pace" = "อัตราการใช้อัตโนมัติ";
+"Session pace" = "อัตราการใช้เซสชัน";
+"Weekly pace" = "อัตราการใช้รายสัปดาห์";
+"Pace" = "อัตราการใช้";
 "menu_bar_layout_token_resets_in" = "รีเซ็ตใน";
 "menu_bar_layout_token_reset_at" = "รีเซ็ตเวลา";
 "menu_bar_layout_token_runs_out" = "หมด";

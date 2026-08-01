@@ -28,6 +28,8 @@ struct MenuBarLayoutRenderData: Hashable {
     let session: MenuBarLayoutRenderWindow?
     let weekly: MenuBarLayoutRenderWindow?
     let automatic: MenuBarLayoutRenderWindow?
+    let sessionPace: String?
+    let weeklyPace: String?
     let runsOut: String?
     let costToday: String?
     let cost30d: String?
@@ -249,6 +251,8 @@ final class MenuBarLayoutRenderer {
                 ? L("%@ unavailable", accessibilityPrefix)
                 : L("%@ %@", accessibilityPrefix, value)
             return self.textToken(display, accessibilityText: accessibility, attributes: style.attributes)
+        case let .pace(window):
+            return self.paceToken(window, data: data, style: style)
         case .usageBar:
             guard let window = data.automatic else {
                 return self.textToken(
@@ -358,6 +362,54 @@ final class MenuBarLayoutRenderer {
         case .session: data.session
         case .weekly: data.weekly
         case .automatic: data.automatic
+        }
+    }
+
+    /// Pace reuses the percent token's window vocabulary so a strip carrying both reads consistently.
+    /// Only the pace headline ("On pace", "23% in reserve") is shown; the run-out estimate that shares the
+    /// same pace calculation stays in the dedicated `.runsOut` token.
+    private static func paceToken(
+        _ window: PercentWindow,
+        data: MenuBarLayoutRenderData,
+        style: TokenStyle)
+        -> (value: NSAttributedString, accessibilityText: String?)
+    {
+        let prefix: String
+        let accessibilityPrefix: String
+        switch window {
+        case .session:
+            prefix = Self.sessionPrefix(data.session)
+            accessibilityPrefix = L("Session pace")
+        case .weekly:
+            prefix = "W"
+            accessibilityPrefix = L("Weekly pace")
+        case .automatic:
+            prefix = ""
+            accessibilityPrefix = L("Pace")
+        }
+        guard let paceValue = Self.pace(window, data: data) else {
+            return self.textToken(
+                self.missingValue,
+                accessibilityText: L("%@ unavailable", accessibilityPrefix),
+                attributes: style.attributes)
+        }
+        return self.textToken(
+            prefix.isEmpty ? paceValue : "\(prefix) \(paceValue)",
+            accessibilityText: L("%@ %@", accessibilityPrefix, paceValue),
+            attributes: style.attributes)
+    }
+
+    private static func pace(
+        _ percentWindow: PercentWindow,
+        data: MenuBarLayoutRenderData)
+        -> String?
+    {
+        switch percentWindow {
+        case .session: data.sessionPace
+        case .weekly: data.weeklyPace
+        // Providers without a session-length pace fall back to the weekly figure so the automatic token
+        // stays populated instead of collapsing to the unavailable placeholder.
+        case .automatic: data.sessionPace ?? data.weeklyPace
         }
     }
 
