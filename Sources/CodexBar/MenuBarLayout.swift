@@ -12,6 +12,7 @@ enum MenuBarLayoutToken: Codable, Hashable, Sendable {
     case providerName
     case accountLabel
     case percent(window: PercentWindow)
+    case pace(window: PercentWindow)
     case usageBar
     case resetCountdown
     case resetAbsolute

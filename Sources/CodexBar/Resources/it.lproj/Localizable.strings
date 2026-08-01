@@ -1331,6 +1331,12 @@
 "menu_bar_layout_token_weekly" = "Settimanale %";
 "menu_bar_layout_token_auto" = "% automatica";
 "menu_bar_layout_token_bar" = "Barra utilizzo";
+"menu_bar_layout_token_session_pace" = "Andamento sessione";
+"menu_bar_layout_token_weekly_pace" = "Andamento settimanale";
+"menu_bar_layout_token_auto_pace" = "Andamento automatico";
+"Session pace" = "Andamento sessione";
+"Weekly pace" = "Andamento settimanale";
+"Pace" = "Andamento";
 "menu_bar_layout_token_resets_in" = "Ripristino tra";
 "menu_bar_layout_token_reset_at" = "Ripristino alle";
 "menu_bar_layout_token_runs_out" = "Termina";

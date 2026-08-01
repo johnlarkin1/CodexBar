@@ -57,9 +57,14 @@ extension StatusItemController {
     {
         let windows = self.menuBarLayoutWindows(provider: provider, snapshot: snapshot, now: now)
         let paceWindow = windows.weekly ?? windows.automatic
-        let runsOut = paceWindow
+        // One pace evaluation feeds both tokens: `.runsOut` takes the projection, `.pace` takes the headline.
+        let weeklyPaceDetail = paceWindow
             .flatMap { self.store.weeklyPace(provider: provider, window: $0, now: now) }
-            .flatMap { UsagePaceText.weeklyDetail(provider: provider, pace: $0, now: now).rightLabel }
+            .map { UsagePaceText.weeklyDetail(provider: provider, pace: $0, now: now) }
+        let runsOut = weeklyPaceDetail?.rightLabel
+        let sessionPace = windows.session
+            .flatMap { UsagePaceText.sessionDetail(provider: provider, window: $0, now: now) }?
+            .leftLabel
         let costStrings = self.menuBarLayoutCostStrings(provider: provider, now: now)
         let providerName = L(self.store.metadata(for: provider).displayName)
         let accountLabel = self.menuBarLayoutAccountLabel(provider: provider, snapshot: snapshot)
@@ -71,6 +76,8 @@ extension StatusItemController {
             session: MenuBarLayoutRenderWindow(windows.session),
             weekly: MenuBarLayoutRenderWindow(windows.weekly),
             automatic: MenuBarLayoutRenderWindow(windows.automatic),
+            sessionPace: sessionPace,
+            weeklyPace: weeklyPaceDetail?.leftLabel,
             runsOut: runsOut,
             costToday: costStrings.today,
             cost30d: costStrings.last30Days)

@@ -1327,6 +1327,12 @@
 "menu_bar_layout_token_weekly" = "Щотижня %";
 "menu_bar_layout_token_auto" = "Авто %";
 "menu_bar_layout_token_bar" = "Індикатор використання";
+"menu_bar_layout_token_session_pace" = "Темп сесії";
+"menu_bar_layout_token_weekly_pace" = "Тижневий темп";
+"menu_bar_layout_token_auto_pace" = "Автоматичний темп";
+"Session pace" = "Темп сесії";
+"Weekly pace" = "Тижневий темп";
+"Pace" = "Темп";
 "menu_bar_layout_token_resets_in" = "Скидання через";
 "menu_bar_layout_token_reset_at" = "Скидання о";
 "menu_bar_layout_token_runs_out" = "Закінчиться";
