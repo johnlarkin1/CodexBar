@@ -1335,6 +1335,7 @@
 "menu_bar_layout_token_space" = "Пробел";
 "menu_bar_layout_token_line_break" = "Разрыв строки";
 "menu_bar_layout_token_separator_accessibility" = "Точка-разделитель";
+"menu_bar_layout_token_separator_pipe_accessibility" = "Черта-разделитель";
 
 /* Menu bar layout accessibility */
 "Icon unavailable" = "Значок: Недоступно";

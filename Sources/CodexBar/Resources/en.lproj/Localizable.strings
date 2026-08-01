@@ -1338,6 +1338,7 @@
 "menu_bar_layout_token_space" = "Space";
 "menu_bar_layout_token_line_break" = "Line break";
 "menu_bar_layout_token_separator_accessibility" = "Separator dot";
+"menu_bar_layout_token_separator_pipe_accessibility" = "Separator bar";
 
 /* Menu bar layout accessibility */
 "Icon unavailable" = "Icon unavailable";

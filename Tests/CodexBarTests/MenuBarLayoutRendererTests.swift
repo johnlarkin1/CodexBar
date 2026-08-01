@@ -26,6 +26,7 @@ struct MenuBarLayoutRendererTests {
             (.costToday, "$1.25"),
             (.cost30d, "$20.00"),
             (.separatorDot, "·"),
+            (.separatorPipe, "|"),
             (.space, " "),
         ]
 

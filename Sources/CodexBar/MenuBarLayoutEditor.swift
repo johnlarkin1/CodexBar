@@ -261,7 +261,7 @@ struct MenuBarLayoutEditor: View {
             MenuBarLayoutPaletteGroup(
                 id: "structure",
                 title: L("menu_bar_layout_group_structure"),
-                tokens: [.separatorDot, .space],
+                tokens: [.separatorDot, .separatorPipe, .space],
                 includesLineBreak: true),
         ]
     }
@@ -785,6 +785,7 @@ extension MenuBarLayoutToken {
         case .costToday: L("menu_bar_layout_token_cost_today")
         case .cost30d: L("menu_bar_layout_token_cost_30d")
         case .separatorDot: "·"
+        case .separatorPipe: "|"
         case .space: L("menu_bar_layout_token_space")
         }
     }
@@ -792,6 +793,7 @@ extension MenuBarLayoutToken {
     var editorAccessibilityLabel: String {
         switch self {
         case .separatorDot: L("menu_bar_layout_token_separator_accessibility")
+        case .separatorPipe: L("menu_bar_layout_token_separator_pipe_accessibility")
         default: self.editorLabel
         }
     }
@@ -809,6 +811,7 @@ extension MenuBarLayoutToken {
         case .costToday: "dollarsign.circle"
         case .cost30d: "calendar.badge.clock"
         case .separatorDot: "smallcircle.filled.circle"
+        case .separatorPipe: "rectangle.split.2x1"
         case .space: "space"
         }
     }
