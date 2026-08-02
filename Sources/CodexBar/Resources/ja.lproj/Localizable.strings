@@ -558,6 +558,11 @@
 "menu_bar_inactive_display_contrast_title" = "非アクティブなディスプレイでの視認性を向上";
 "menu_bar_usage_colors_title" = "使用量の色分け";
 "menu_bar_usage_colors_subtitle" = "使用量が増えるとメニューバーアイコンを緑から赤へ色付けします。";
+"menu_bar_usage_colors_target_title" = "色を適用する対象";
+"menu_bar_usage_colors_target_subtitle" = "「アイコン + パーセント」のみ。メニューバーのどの部分に使用量の色を適用するかを選びます。";
+"menu_bar_usage_colors_target_icon" = "アイコン";
+"menu_bar_usage_colors_target_usage" = "使用量の値";
+"menu_bar_usage_colors_target_everything" = "全体";
 "menu_bar_inactive_display_contrast_subtitle" = "高コントラスト表示を使用し、ほかのディスプレイでもアイコンと指標を読みやすくします。";
 "menu_bar_style_critters" = "クリッター";
 "menu_bar_style_bars" = "メーターバー";
@@ -1328,9 +1333,9 @@
 "menu_bar_layout_token_weekly" = "週間 %";
 "menu_bar_layout_token_auto" = "自動 %";
 "menu_bar_layout_token_bar" = "使用量バー";
-"menu_bar_layout_token_session_pace" = "セッションペース";
-"menu_bar_layout_token_weekly_pace" = "週間ペース";
-"menu_bar_layout_token_auto_pace" = "自動ペース";
+"menu_bar_layout_token_session_pace" = "セッション ±%";
+"menu_bar_layout_token_weekly_pace" = "週間 ±%";
+"menu_bar_layout_token_auto_pace" = "自動 ±%";
 "Session pace" = "セッションペース";
 "Weekly pace" = "週間ペース";
 "Pace" = "ペース";

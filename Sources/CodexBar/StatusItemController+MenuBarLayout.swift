@@ -35,7 +35,10 @@ extension StatusItemController {
             showUsed: self.settings.usageBarsShowUsed,
             appearanceName: appearanceName,
             isDebugApp: Self.isDebugApp(bundleIdentifier: Bundle.main.bundleIdentifier),
-            now: minute)
+            now: minute,
+            usageColorTarget: self.settings.menuBarUsageColorsEnabled
+                ? self.settings.menuBarUsageColorTarget
+                : nil)
         let rendered = self.menuBarLayoutRenderer.render(
             layout: resolution.layout,
             data: data,
@@ -64,7 +67,7 @@ extension StatusItemController {
         let runsOut = weeklyPaceDetail?.rightLabel
         let sessionPace = windows.session
             .flatMap { UsagePaceText.sessionDetail(provider: provider, window: $0, now: now) }?
-            .leftLabel
+            .compactLabel
         let costStrings = self.menuBarLayoutCostStrings(provider: provider, now: now)
         let providerName = L(self.store.metadata(for: provider).displayName)
         let accountLabel = self.menuBarLayoutAccountLabel(provider: provider, snapshot: snapshot)
@@ -77,7 +80,7 @@ extension StatusItemController {
             weekly: MenuBarLayoutRenderWindow(windows.weekly),
             automatic: MenuBarLayoutRenderWindow(windows.automatic),
             sessionPace: sessionPace,
-            weeklyPace: weeklyPaceDetail?.leftLabel,
+            weeklyPace: weeklyPaceDetail?.compactLabel,
             runsOut: runsOut,
             costToday: costStrings.today,
             cost30d: costStrings.last30Days)

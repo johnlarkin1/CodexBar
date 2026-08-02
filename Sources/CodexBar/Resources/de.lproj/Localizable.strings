@@ -559,6 +559,11 @@
 "menu_bar_inactive_display_contrast_title" = "Sichtbarkeit auf inaktiven Displays verbessern";
 "menu_bar_usage_colors_title" = "Farbcodierte Auslastung";
 "menu_bar_usage_colors_subtitle" = "Färbt das Menüleistensymbol von Grün nach Rot, wenn die Auslastung steigt.";
+"menu_bar_usage_colors_target_title" = "Farbe gilt für";
+"menu_bar_usage_colors_target_subtitle" = "Nur Symbol + Prozent. Wählen Sie, welche Teile der Menüleiste die Auslastungsfarbe annehmen.";
+"menu_bar_usage_colors_target_icon" = "Symbol";
+"menu_bar_usage_colors_target_usage" = "Auslastungswerte";
+"menu_bar_usage_colors_target_everything" = "Gesamte Leiste";
 "menu_bar_inactive_display_contrast_subtitle" = "Verwendet eine kontrastreiche Darstellung, damit Symbol und Messwert auf anderen Displays lesbar bleiben.";
 "menu_bar_style_critters" = "Kreaturen";
 "menu_bar_style_bars" = "Messleisten";
@@ -1328,9 +1333,9 @@
 "menu_bar_layout_token_weekly" = "Wöchentlich %";
 "menu_bar_layout_token_auto" = "Automatisch %";
 "menu_bar_layout_token_bar" = "Nutzungsleiste";
-"menu_bar_layout_token_session_pace" = "Sitzungstempo";
-"menu_bar_layout_token_weekly_pace" = "Wochentempo";
-"menu_bar_layout_token_auto_pace" = "Automatisches Tempo";
+"menu_bar_layout_token_session_pace" = "Sitzung ±%";
+"menu_bar_layout_token_weekly_pace" = "Wöchentlich ±%";
+"menu_bar_layout_token_auto_pace" = "Automatisch ±%";
 "Session pace" = "Sitzungstempo";
 "Weekly pace" = "Wochentempo";
 "Pace" = "Tempo";

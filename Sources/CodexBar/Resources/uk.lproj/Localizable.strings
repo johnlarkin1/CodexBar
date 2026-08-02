@@ -561,6 +561,11 @@
 "menu_bar_inactive_display_contrast_title" = "Покращити видимість на неактивних дисплеях";
 "menu_bar_usage_colors_title" = "Кольорова індикація витрат";
 "menu_bar_usage_colors_subtitle" = "Забарвлює піктограму в рядку меню від зеленого до червоного зі зростанням витрат.";
+"menu_bar_usage_colors_target_title" = "Колір застосовується до";
+"menu_bar_usage_colors_target_subtitle" = "Лише «Піктограма + відсоток». Виберіть, які частини рядка меню отримують колір використання.";
+"menu_bar_usage_colors_target_icon" = "Піктограма";
+"menu_bar_usage_colors_target_usage" = "Значення використання";
+"menu_bar_usage_colors_target_everything" = "Увесь рядок";
 "menu_bar_inactive_display_contrast_subtitle" = "Використовує висококонтрастне відтворення, щоб піктограма й показник залишалися читабельними на інших дисплеях.";
 "menu_bar_style_critters" = "Тварини";
 "menu_bar_style_bars" = "Смуги-індикатори";
@@ -1327,9 +1332,9 @@
 "menu_bar_layout_token_weekly" = "Щотижня %";
 "menu_bar_layout_token_auto" = "Авто %";
 "menu_bar_layout_token_bar" = "Індикатор використання";
-"menu_bar_layout_token_session_pace" = "Темп сесії";
-"menu_bar_layout_token_weekly_pace" = "Тижневий темп";
-"menu_bar_layout_token_auto_pace" = "Автоматичний темп";
+"menu_bar_layout_token_session_pace" = "Сесія ±%";
+"menu_bar_layout_token_weekly_pace" = "Щотижня ±%";
+"menu_bar_layout_token_auto_pace" = "Авто ±%";
 "Session pace" = "Темп сесії";
 "Weekly pace" = "Тижневий темп";
 "Pace" = "Темп";

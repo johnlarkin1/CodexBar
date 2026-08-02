@@ -317,6 +317,14 @@ extension SettingsStore {
         }
     }
 
+    var menuBarUsageColorTarget: MenuBarUsageColorTarget {
+        get { MenuBarUsageColorTarget(rawValue: self.defaultsState.menuBarUsageColorTargetRaw) ?? .usage }
+        set {
+            self.defaultsState.menuBarUsageColorTargetRaw = newValue.rawValue
+            self.userDefaults.set(newValue.rawValue, forKey: "menuBarUsageColorTarget")
+        }
+    }
+
     var menuBarHighContrastOnInactiveDisplays: Bool {
         get { self.defaultsState.menuBarHighContrastOnInactiveDisplays }
         set {

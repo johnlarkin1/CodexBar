@@ -560,6 +560,11 @@
 "menu_bar_inactive_display_contrast_title" = "改善非使用中顯示器上的可見度";
 "menu_bar_usage_colors_title" = "用量顏色標示";
 "menu_bar_usage_colors_subtitle" = "隨著用量上升，選單列圖示由綠轉紅。";
+"menu_bar_usage_colors_target_title" = "顏色套用於";
+"menu_bar_usage_colors_target_subtitle" = "僅限「圖示 + 百分比」。選擇選單列中哪些部分套用用量顏色。";
+"menu_bar_usage_colors_target_icon" = "圖示";
+"menu_bar_usage_colors_target_usage" = "用量數值";
+"menu_bar_usage_colors_target_everything" = "整個選單列";
 "menu_bar_inactive_display_contrast_subtitle" = "使用高對比顯示，讓其他顯示器上的圖示與指標保持清晰可讀。";
 "menu_bar_style_critters" = "小動物";
 "menu_bar_style_bars" = "進度條";
@@ -1358,9 +1363,9 @@
 "menu_bar_layout_token_weekly" = "每週 %";
 "menu_bar_layout_token_auto" = "自動 %";
 "menu_bar_layout_token_bar" = "用量列";
-"menu_bar_layout_token_session_pace" = "工作階段進度";
-"menu_bar_layout_token_weekly_pace" = "每週進度";
-"menu_bar_layout_token_auto_pace" = "自動進度";
+"menu_bar_layout_token_session_pace" = "工作階段 ±%";
+"menu_bar_layout_token_weekly_pace" = "每週 ±%";
+"menu_bar_layout_token_auto_pace" = "自動 ±%";
 "Session pace" = "工作階段進度";
 "Weekly pace" = "每週進度";
 "Pace" = "進度";

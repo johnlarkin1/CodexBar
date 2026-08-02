@@ -567,6 +567,11 @@
 "menu_bar_inactive_display_contrast_title" = "Etkin olmayan ekranlarda görünürlüğü artır";
 "menu_bar_usage_colors_title" = "Renk kodlu kullanım";
 "menu_bar_usage_colors_subtitle" = "Kullanım arttıkça menü çubuğu simgesini yeşilden kırmızıya renklendirir.";
+"menu_bar_usage_colors_target_title" = "Renk şuna uygulanır";
+"menu_bar_usage_colors_target_subtitle" = "Yalnızca Simge + yüzde. Menü çubuğunun hangi bölümlerinin kullanım rengini alacağını seçin.";
+"menu_bar_usage_colors_target_icon" = "Simge";
+"menu_bar_usage_colors_target_usage" = "Kullanım değerleri";
+"menu_bar_usage_colors_target_everything" = "Tüm çubuk";
 "menu_bar_inactive_display_contrast_subtitle" = "Simge ve ölçümün diğer ekranlarda okunabilir kalması için yüksek kontrastlı işleme kullanır.";
 "menu_bar_style_critters" = "Canavarlar";
 "menu_bar_style_bars" = "Ölçüm çubukları";
@@ -1329,9 +1334,9 @@
 "menu_bar_layout_token_weekly" = "Haftalık %";
 "menu_bar_layout_token_auto" = "Otomatik %";
 "menu_bar_layout_token_bar" = "Kullanım çubuğu";
-"menu_bar_layout_token_session_pace" = "Oturum hızı";
-"menu_bar_layout_token_weekly_pace" = "Haftalık hız";
-"menu_bar_layout_token_auto_pace" = "Otomatik hız";
+"menu_bar_layout_token_session_pace" = "Oturum ±%";
+"menu_bar_layout_token_weekly_pace" = "Haftalık ±%";
+"menu_bar_layout_token_auto_pace" = "Otomatik ±%";
 "Session pace" = "Oturum hızı";
 "Weekly pace" = "Haftalık hız";
 "Pace" = "Hız";

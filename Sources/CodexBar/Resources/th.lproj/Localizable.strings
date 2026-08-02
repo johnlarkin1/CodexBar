@@ -567,6 +567,11 @@
 "menu_bar_inactive_display_contrast_title" = "เพิ่มการมองเห็นบนจอแสดงผลที่ไม่ได้ใช้งาน";
 "menu_bar_usage_colors_title" = "แสดงการใช้งานด้วยสี";
 "menu_bar_usage_colors_subtitle" = "ไล่สีไอคอนบนแถบเมนูจากเขียวไปแดงเมื่อการใช้งานเพิ่มขึ้น";
+"menu_bar_usage_colors_target_title" = "ใช้สีกับ";
+"menu_bar_usage_colors_target_subtitle" = "เฉพาะ “ไอคอน + เปอร์เซ็นต์” เลือกว่าส่วนใดของแถบเมนูจะใช้สีตามการใช้งาน";
+"menu_bar_usage_colors_target_icon" = "ไอคอน";
+"menu_bar_usage_colors_target_usage" = "ค่าการใช้งาน";
+"menu_bar_usage_colors_target_everything" = "ทั้งแถบ";
 "menu_bar_inactive_display_contrast_subtitle" = "ใช้การแสดงผลแบบคอนทราสต์สูงเพื่อให้ไอคอนและค่าชี้วัดอ่านได้บนจออื่น";
 "menu_bar_style_critters" = "ตัวการ์ตูน";
 "menu_bar_style_bars" = "แถบวัด";
@@ -1331,9 +1336,9 @@
 "menu_bar_layout_token_weekly" = "รายสัปดาห์ %";
 "menu_bar_layout_token_auto" = "% อัตโนมัติ";
 "menu_bar_layout_token_bar" = "แถบการใช้งาน";
-"menu_bar_layout_token_session_pace" = "อัตราการใช้เซสชัน";
-"menu_bar_layout_token_weekly_pace" = "อัตราการใช้รายสัปดาห์";
-"menu_bar_layout_token_auto_pace" = "อัตราการใช้อัตโนมัติ";
+"menu_bar_layout_token_session_pace" = "เซสชั่น ±%";
+"menu_bar_layout_token_weekly_pace" = "รายสัปดาห์ ±%";
+"menu_bar_layout_token_auto_pace" = "±% อัตโนมัติ";
 "Session pace" = "อัตราการใช้เซสชัน";
 "Weekly pace" = "อัตราการใช้รายสัปดาห์";
 "Pace" = "อัตราการใช้";

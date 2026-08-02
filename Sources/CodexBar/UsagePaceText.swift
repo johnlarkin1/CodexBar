@@ -4,6 +4,9 @@ import Foundation
 enum UsagePaceText {
     struct WeeklyDetail {
         let leftLabel: String
+        /// Menu bar form of `leftLabel`: `+20%` when under the expected burn, `-8%` when over, `0%` on pace.
+        /// The prose form is fine in the dropdown but eats menu bar width the strip does not have.
+        let compactLabel: String
         let rightLabel: String?
         let expectedUsedPercent: Double
         let stage: UsagePace.Stage
@@ -31,6 +34,7 @@ enum UsagePaceText {
     static func weeklyDetail(provider: UsageProvider, pace: UsagePace, now: Date = .init()) -> WeeklyDetail {
         WeeklyDetail(
             leftLabel: self.detailLeftLabel(for: pace),
+            compactLabel: self.detailCompactLabel(for: pace),
             rightLabel: self.detailRightLabel(for: pace, provider: provider, context: .weekly, now: now),
             expectedUsedPercent: pace.expectedUsedPercent,
             stage: pace.stage)
@@ -85,6 +89,25 @@ enum UsagePaceText {
             return L("%d%% in deficit", deltaValue)
         case .slightlyBehind, .behind, .farBehind:
             return L("%d%% in reserve", deltaValue)
+        }
+    }
+
+    /// Signed counterpart to `detailLeftLabel`, sharing its stage-first branching so the two never disagree.
+    /// Sign reads as budget: `+` is quota held back against the expected burn, `-` is quota spent ahead of it.
+    /// Built from `UsageFormatter.percentString` rather than a catalog string so the `%` placement stays
+    /// consistent with every other percentage in the strip.
+    private static func detailCompactLabel(for pace: UsagePace) -> String {
+        let deltaValue = abs(pace.deltaPercent).rounded()
+        if deltaValue == 0 {
+            return UsageFormatter.percentString(0)
+        }
+        switch pace.stage {
+        case .onTrack:
+            return UsageFormatter.percentString(0)
+        case .slightlyAhead, .ahead, .farAhead:
+            return "-\(UsageFormatter.percentString(deltaValue))"
+        case .slightlyBehind, .behind, .farBehind:
+            return "+\(UsageFormatter.percentString(deltaValue))"
         }
     }
 
@@ -177,6 +200,7 @@ enum UsagePaceText {
         guard let pace = sessionPace(provider: provider, window: window, now: now) else { return nil }
         return WeeklyDetail(
             leftLabel: Self.detailLeftLabel(for: pace),
+            compactLabel: Self.detailCompactLabel(for: pace),
             rightLabel: Self.detailRightLabel(for: pace, provider: provider, context: .session, now: now),
             expectedUsedPercent: pace.expectedUsedPercent,
             stage: pace.stage)

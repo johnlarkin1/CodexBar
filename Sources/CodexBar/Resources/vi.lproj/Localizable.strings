@@ -557,6 +557,11 @@
 "menu_bar_inactive_display_contrast_title" = "Cải thiện khả năng hiển thị trên màn hình không hoạt động";
 "menu_bar_usage_colors_title" = "Mức dùng theo màu";
 "menu_bar_usage_colors_subtitle" = "Tô màu biểu tượng thanh menu từ xanh lá sang đỏ khi mức sử dụng tăng.";
+"menu_bar_usage_colors_target_title" = "Màu áp dụng cho";
+"menu_bar_usage_colors_target_subtitle" = "Chỉ Biểu tượng + phần trăm. Chọn phần nào của thanh menu nhận màu mức dùng.";
+"menu_bar_usage_colors_target_icon" = "Biểu tượng";
+"menu_bar_usage_colors_target_usage" = "Giá trị mức dùng";
+"menu_bar_usage_colors_target_everything" = "Toàn bộ thanh";
 "menu_bar_inactive_display_contrast_subtitle" = "Sử dụng hiển thị tương phản cao để biểu tượng và chỉ số vẫn dễ đọc trên các màn hình khác.";
 "menu_bar_style_critters" = "Sinh vật";
 "menu_bar_style_bars" = "Thanh đo";
@@ -1328,9 +1333,9 @@
 "menu_bar_layout_token_weekly" = "Hàng tuần %";
 "menu_bar_layout_token_auto" = "% tự động";
 "menu_bar_layout_token_bar" = "Thanh sử dụng";
-"menu_bar_layout_token_session_pace" = "Tốc độ phiên";
-"menu_bar_layout_token_weekly_pace" = "Tốc độ hàng tuần";
-"menu_bar_layout_token_auto_pace" = "Tốc độ tự động";
+"menu_bar_layout_token_session_pace" = "Phiên ±%";
+"menu_bar_layout_token_weekly_pace" = "Hàng tuần ±%";
+"menu_bar_layout_token_auto_pace" = "±% tự động";
 "Session pace" = "Tốc độ phiên";
 "Weekly pace" = "Tốc độ hàng tuần";
 "Pace" = "Tốc độ";

@@ -539,6 +539,11 @@
 "menu_bar_inactive_display_contrast_title" = "提高非活跃显示器上的可见性";
 "menu_bar_usage_colors_title" = "用量颜色标识";
 "menu_bar_usage_colors_subtitle" = "随着用量上升，菜单栏图标由绿变红。";
+"menu_bar_usage_colors_target_title" = "颜色应用于";
+"menu_bar_usage_colors_target_subtitle" = "仅限“图标 + 百分比”。选择菜单栏中哪些部分使用用量颜色。";
+"menu_bar_usage_colors_target_icon" = "图标";
+"menu_bar_usage_colors_target_usage" = "用量数值";
+"menu_bar_usage_colors_target_everything" = "整个菜单栏";
 "menu_bar_inactive_display_contrast_subtitle" = "使用高对比度绘制，让其他显示器上的图标和指标仍清晰可读。";
 "menu_bar_style_critters" = "小动物";
 "menu_bar_style_bars" = "进度条";
@@ -1303,9 +1308,9 @@
 "menu_bar_layout_token_weekly" = "每周 %";
 "menu_bar_layout_token_auto" = "自动 %";
 "menu_bar_layout_token_bar" = "用量条";
-"menu_bar_layout_token_session_pace" = "会话节奏";
-"menu_bar_layout_token_weekly_pace" = "每周节奏";
-"menu_bar_layout_token_auto_pace" = "自动节奏";
+"menu_bar_layout_token_session_pace" = "会话 ±%";
+"menu_bar_layout_token_weekly_pace" = "每周 ±%";
+"menu_bar_layout_token_auto_pace" = "自动 ±%";
 "Session pace" = "会话节奏";
 "Weekly pace" = "每周节奏";
 "Pace" = "节奏";

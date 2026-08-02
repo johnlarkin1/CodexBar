@@ -569,6 +569,11 @@
 "menu_bar_inactive_display_contrast_title" = "Popraw widoczność na nieaktywnych ekranach";
 "menu_bar_usage_colors_title" = "Zużycie oznaczone kolorami";
 "menu_bar_usage_colors_subtitle" = "Zabarwia ikonę paska menu od zieleni do czerwieni wraz ze wzrostem zużycia.";
+"menu_bar_usage_colors_target_title" = "Kolor dotyczy";
+"menu_bar_usage_colors_target_subtitle" = "Tylko Ikona + procent. Wybierz, które części paska menu przyjmują kolor zużycia.";
+"menu_bar_usage_colors_target_icon" = "Ikona";
+"menu_bar_usage_colors_target_usage" = "Wartości zużycia";
+"menu_bar_usage_colors_target_everything" = "Cały pasek";
 "menu_bar_inactive_display_contrast_subtitle" = "Używa renderowania o wysokim kontraście, aby ikona i wskaźnik pozostały czytelne na innych ekranach.";
 "menu_bar_style_critters" = "Stworki";
 "menu_bar_style_bars" = "Paski miernika";
@@ -1331,9 +1336,9 @@
 "menu_bar_layout_token_weekly" = "Tydzień %";
 "menu_bar_layout_token_auto" = "Automatycznie %";
 "menu_bar_layout_token_bar" = "Pasek użycia";
-"menu_bar_layout_token_session_pace" = "Tempo sesji";
-"menu_bar_layout_token_weekly_pace" = "Tempo tygodniowe";
-"menu_bar_layout_token_auto_pace" = "Tempo automatyczne";
+"menu_bar_layout_token_session_pace" = "Sesja ±%";
+"menu_bar_layout_token_weekly_pace" = "Tydzień ±%";
+"menu_bar_layout_token_auto_pace" = "Automatycznie ±%";
 "Session pace" = "Tempo sesji";
 "Weekly pace" = "Tempo tygodniowe";
 "Pace" = "Tempo";
