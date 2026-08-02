@@ -560,6 +560,11 @@
 "menu_bar_inactive_display_contrast_title" = "Förbättra synligheten på inaktiva skärmar";
 "menu_bar_usage_colors_title" = "Färgkodad användning";
 "menu_bar_usage_colors_subtitle" = "Färgar menyradsikonen från grönt till rött när användningen ökar.";
+"menu_bar_usage_colors_target_title" = "Färgen gäller";
+"menu_bar_usage_colors_target_subtitle" = "Endast Ikon + procent. Välj vilka delar av menyraden som får användningsfärgen.";
+"menu_bar_usage_colors_target_icon" = "Ikon";
+"menu_bar_usage_colors_target_usage" = "Användningsvärden";
+"menu_bar_usage_colors_target_everything" = "Hela raden";
 "menu_bar_inactive_display_contrast_subtitle" = "Använder kontrastrik rendering så att ikonen och mätvärdet förblir läsbara på andra skärmar.";
 "menu_bar_style_critters" = "Figurer";
 "menu_bar_style_bars" = "Mätarstaplar";
@@ -1326,9 +1331,9 @@
 "menu_bar_layout_token_weekly" = "Vecka %";
 "menu_bar_layout_token_auto" = "Automatiskt %";
 "menu_bar_layout_token_bar" = "Användningsstapel";
-"menu_bar_layout_token_session_pace" = "Sessionstakt";
-"menu_bar_layout_token_weekly_pace" = "Veckotakt";
-"menu_bar_layout_token_auto_pace" = "Automatisk takt";
+"menu_bar_layout_token_session_pace" = "Session ±%";
+"menu_bar_layout_token_weekly_pace" = "Vecka ±%";
+"menu_bar_layout_token_auto_pace" = "Automatiskt ±%";
 "Session pace" = "Sessionstakt";
 "Weekly pace" = "Veckotakt";
 "Pace" = "Takt";

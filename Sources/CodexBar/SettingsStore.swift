@@ -451,6 +451,9 @@ extension SettingsStore {
         // menu bar; colored icons are the reason this fork exists, so it defaults on here.
         let menuBarUsageColorsEnabled = userDefaults
             .object(forKey: "menuBarUsageColorsEnabled") as? Bool ?? true
+        // Only the layout strip can honor anything but `.icon`; the legacy meter path has one glyph to tint.
+        let menuBarUsageColorTargetRaw = userDefaults.string(forKey: "menuBarUsageColorTarget")
+            ?? MenuBarUsageColorTarget.usage.rawValue
         let menuBarHighContrastOnInactiveDisplays = userDefaults.object(
             forKey: "menuBarHighContrastOnInactiveDisplays") as? Bool ?? false
         let menuBarDisplayModeRaw = userDefaults.string(forKey: "menuBarDisplayMode")
@@ -565,6 +568,7 @@ extension SettingsStore {
             menuBarShowsBrandIconWithPercent: menuBarShowsBrandIconWithPercent,
             menuBarHidesCritters: menuBarHidesCritters,
             menuBarUsageColorsEnabled: menuBarUsageColorsEnabled,
+            menuBarUsageColorTargetRaw: menuBarUsageColorTargetRaw,
             menuBarHighContrastOnInactiveDisplays: menuBarHighContrastOnInactiveDisplays,
             menuBarDisplayModeRaw: menuBarDisplayModeRaw,
             menuBarShowsResetTimeWhenExhausted: menuBarShowsResetTimeWhenExhausted,

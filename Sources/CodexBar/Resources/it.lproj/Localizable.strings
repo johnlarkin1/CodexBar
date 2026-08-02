@@ -569,6 +569,11 @@
 "menu_bar_inactive_display_contrast_title" = "Migliora la visibilità sugli schermi inattivi";
 "menu_bar_usage_colors_title" = "Utilizzo a colori";
 "menu_bar_usage_colors_subtitle" = "Colora l'icona nella barra dei menu dal verde al rosso man mano che l'utilizzo aumenta.";
+"menu_bar_usage_colors_target_title" = "Il colore si applica a";
+"menu_bar_usage_colors_target_subtitle" = "Solo Icona + percentuale. Scegli quali parti della barra dei menu assumono il colore di utilizzo.";
+"menu_bar_usage_colors_target_icon" = "Icona";
+"menu_bar_usage_colors_target_usage" = "Valori di utilizzo";
+"menu_bar_usage_colors_target_everything" = "Intera barra";
 "menu_bar_inactive_display_contrast_subtitle" = "Usa un rendering ad alto contrasto per mantenere leggibili icona e metrica sugli altri schermi.";
 "menu_bar_style_critters" = "Creature";
 "menu_bar_style_bars" = "Barre di livello";
@@ -1331,9 +1336,9 @@
 "menu_bar_layout_token_weekly" = "Settimanale %";
 "menu_bar_layout_token_auto" = "% automatica";
 "menu_bar_layout_token_bar" = "Barra utilizzo";
-"menu_bar_layout_token_session_pace" = "Andamento sessione";
-"menu_bar_layout_token_weekly_pace" = "Andamento settimanale";
-"menu_bar_layout_token_auto_pace" = "Andamento automatico";
+"menu_bar_layout_token_session_pace" = "Sessione ±%";
+"menu_bar_layout_token_weekly_pace" = "Settimanale ±%";
+"menu_bar_layout_token_auto_pace" = "±% automatica";
 "Session pace" = "Andamento sessione";
 "Weekly pace" = "Andamento settimanale";
 "Pace" = "Andamento";

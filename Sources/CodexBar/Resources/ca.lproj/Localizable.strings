@@ -545,6 +545,11 @@
 "menu_bar_inactive_display_contrast_title" = "Millora la visibilitat a les pantalles inactives";
 "menu_bar_usage_colors_title" = "Ús amb codi de colors";
 "menu_bar_usage_colors_subtitle" = "Acoloreix la icona de la barra de menús de verd a vermell a mesura que augmenta l'ús.";
+"menu_bar_usage_colors_target_title" = "El color s’aplica a";
+"menu_bar_usage_colors_target_subtitle" = "Només Icona + percentatge. Tria quines parts de la barra de menús prenen el color d’ús.";
+"menu_bar_usage_colors_target_icon" = "Icona";
+"menu_bar_usage_colors_target_usage" = "Valors d’ús";
+"menu_bar_usage_colors_target_everything" = "Tota la barra";
 "menu_bar_inactive_display_contrast_subtitle" = "Utilitza una representació d'alt contrast perquè la icona i la mètrica siguin llegibles a les altres pantalles.";
 "menu_bar_style_critters" = "Bestioles";
 "menu_bar_style_bars" = "Barres de mesura";
@@ -1330,9 +1335,9 @@
 "menu_bar_layout_token_weekly" = "Setmanal %";
 "menu_bar_layout_token_auto" = "% automàtic";
 "menu_bar_layout_token_bar" = "Barra d’ús";
-"menu_bar_layout_token_session_pace" = "Ritme de sessió";
-"menu_bar_layout_token_weekly_pace" = "Ritme setmanal";
-"menu_bar_layout_token_auto_pace" = "Ritme automàtic";
+"menu_bar_layout_token_session_pace" = "Sessió ±%";
+"menu_bar_layout_token_weekly_pace" = "Setmanal ±%";
+"menu_bar_layout_token_auto_pace" = "±% automàtic";
 "Session pace" = "Ritme de sessió";
 "Weekly pace" = "Ritme setmanal";
 "Pace" = "Ritme";

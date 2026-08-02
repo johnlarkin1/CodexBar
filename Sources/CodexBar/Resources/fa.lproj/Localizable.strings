@@ -567,6 +567,11 @@
 "menu_bar_inactive_display_contrast_title" = "بهبود خوانایی در نمایشگرهای غیرفعال";
 "menu_bar_usage_colors_title" = "مصرف رنگی";
 "menu_bar_usage_colors_subtitle" = "نماد نوار منو را با افزایش مصرف از سبز به قرمز رنگ می‌کند.";
+"menu_bar_usage_colors_target_title" = "رنگ اعمال می‌شود بر";
+"menu_bar_usage_colors_target_subtitle" = "فقط «نماد + درصد». انتخاب کنید کدام بخش‌های نوار منو رنگ مصرف را بگیرند.";
+"menu_bar_usage_colors_target_icon" = "نماد";
+"menu_bar_usage_colors_target_usage" = "مقادیر مصرف";
+"menu_bar_usage_colors_target_everything" = "کل نوار";
 "menu_bar_inactive_display_contrast_subtitle" = "از نمایش با کنتراست بالا استفاده می‌کند تا نماد و معیار در نمایشگرهای دیگر خوانا بمانند.";
 "menu_bar_style_critters" = "موجودات";
 "menu_bar_style_bars" = "نوارهای اندازه‌گیری";
@@ -1331,9 +1336,9 @@
 "menu_bar_layout_token_weekly" = "هفتگی %";
 "menu_bar_layout_token_auto" = "درصد خودکار";
 "menu_bar_layout_token_bar" = "نوار مصرف";
-"menu_bar_layout_token_session_pace" = "سرعت جلسه";
-"menu_bar_layout_token_weekly_pace" = "سرعت هفتگی";
-"menu_bar_layout_token_auto_pace" = "سرعت خودکار";
+"menu_bar_layout_token_session_pace" = "جلسه ±%";
+"menu_bar_layout_token_weekly_pace" = "هفتگی ±%";
+"menu_bar_layout_token_auto_pace" = "درصد خودکار ±%";
 "Session pace" = "سرعت جلسه";
 "Weekly pace" = "سرعت هفتگی";
 "Pace" = "سرعت";

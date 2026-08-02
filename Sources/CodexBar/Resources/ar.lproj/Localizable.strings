@@ -567,6 +567,11 @@
 "menu_bar_inactive_display_contrast_title" = "تحسين الوضوح على الشاشات غير النشطة";
 "menu_bar_usage_colors_title" = "استخدام ملوّن";
 "menu_bar_usage_colors_subtitle" = "تلوين أيقونة شريط القوائم من الأخضر إلى الأحمر مع ارتفاع الاستخدام.";
+"menu_bar_usage_colors_target_title" = "يُطبَّق اللون على";
+"menu_bar_usage_colors_target_subtitle" = "«الأيقونة + النسبة» فقط. اختر أجزاء شريط القوائم التي تأخذ لون الاستخدام.";
+"menu_bar_usage_colors_target_icon" = "الأيقونة";
+"menu_bar_usage_colors_target_usage" = "قيم الاستخدام";
+"menu_bar_usage_colors_target_everything" = "الشريط بأكمله";
 "menu_bar_inactive_display_contrast_subtitle" = "استخدم عرضًا عالي التباين لإبقاء الأيقونة والمقياس قابلين للقراءة على الشاشات الأخرى.";
 "menu_bar_style_critters" = "الكائنات الصغيرة";
 "menu_bar_style_bars" = "أشرطة القياس";
@@ -1331,9 +1336,9 @@
 "menu_bar_layout_token_weekly" = "الأسبوعي %";
 "menu_bar_layout_token_auto" = "نسبة تلقائية";
 "menu_bar_layout_token_bar" = "شريط الاستخدام";
-"menu_bar_layout_token_session_pace" = "وتيرة الجلسة";
-"menu_bar_layout_token_weekly_pace" = "الوتيرة الأسبوعية";
-"menu_bar_layout_token_auto_pace" = "الوتيرة التلقائية";
+"menu_bar_layout_token_session_pace" = "الجلسة ±%";
+"menu_bar_layout_token_weekly_pace" = "الأسبوعي ±%";
+"menu_bar_layout_token_auto_pace" = "نسبة تلقائية ±%";
 "Session pace" = "وتيرة الجلسة";
 "Weekly pace" = "الوتيرة الأسبوعية";
 "Pace" = "الوتيرة";

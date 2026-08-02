@@ -17,11 +17,11 @@ struct MenuBarLayoutRendererTests {
         let expected: [(MenuBarLayoutToken, String)] = [
             (.providerName, "Codex"),
             (.accountLabel, "user@example.com"),
-            (.percent(window: .session), "5h 25%"),
+            (.percent(window: .session), "S 25%"),
             (.percent(window: .weekly), "W 60%"),
             (.percent(window: .automatic), "50%"),
             (.usageBar, "▮▮▯"),
-            (.pace(window: .session), "5h 10% in reserve"),
+            (.pace(window: .session), "S 10% in reserve"),
             (.pace(window: .weekly), "W 4% in deficit"),
             (.pace(window: .automatic), "10% in reserve"),
             (.resetCountdown, "in 2h"),
@@ -147,6 +147,89 @@ struct MenuBarLayoutRendererTests {
     }
 
     @Test
+    func `pace drops its prefix when the strip already labels that window`() {
+        let renderer = MenuBarLayoutRenderer()
+        let deduped = renderer.render(
+            layout: MenuBarLayout(lines: [[.percent(window: .session), .pace(window: .session)]]),
+            data: self.data(),
+            icon: nil,
+            options: self.options())
+        // The weekly pace keeps its prefix: no weekly percent token labels that window here.
+        let unlabeled = renderer.render(
+            layout: MenuBarLayout(lines: [[.percent(window: .session), .pace(window: .weekly)]]),
+            data: self.data(),
+            icon: nil,
+            options: self.options())
+
+        #expect(deduped.attributedTitle.string == "S 25%\u{2009}10% in reserve")
+        #expect(unlabeled.attributedTitle.string == "S 25%\u{2009}W 4% in deficit")
+    }
+
+    @Test
+    func `usage color target decides which tokens carry the tint`() throws {
+        let renderer = MenuBarLayoutRenderer()
+        let icon = NSImage(size: NSSize(width: 16, height: 16))
+        icon.isTemplate = true
+        let layout = MenuBarLayout(lines: [[.icon, .accountLabel, .percent(window: .automatic)]])
+        // `data()` reports 50% used, which is inside the tint ramp rather than at either clamp.
+        let tint = try #require(MenuBarUsageTint.color(forUsedPercent: 50))
+
+        func colors(target: MenuBarUsageColorTarget?) throws -> (account: NSColor?, percent: NSColor?) {
+            let output = renderer.render(
+                layout: layout,
+                data: self.data(),
+                icon: icon,
+                options: self.options(usageColorTarget: target))
+            let title = output.attributedTitle
+            let accountIndex = (title.string as NSString).range(of: "user@example.com").location
+            let percentIndex = (title.string as NSString).range(of: "50%").location
+            return (
+                title.attribute(.foregroundColor, at: accountIndex, effectiveRange: nil) as? NSColor,
+                title.attribute(.foregroundColor, at: percentIndex, effectiveRange: nil) as? NSColor)
+        }
+
+        let off = try colors(target: nil)
+        #expect(off.account == .controlTextColor)
+        #expect(off.percent == .controlTextColor)
+
+        let usageOnly = try colors(target: .usage)
+        #expect(usageOnly.account == .controlTextColor)
+        #expect(usageOnly.percent == tint)
+
+        let everything = try colors(target: .everything)
+        #expect(everything.account == tint)
+        #expect(everything.percent == tint)
+
+        let iconOnly = try colors(target: .icon)
+        #expect(iconOnly.account == .controlTextColor)
+        #expect(iconOnly.percent == .controlTextColor)
+    }
+
+    @Test
+    func `tinted icon stops being a template so AppKit keeps the color`() throws {
+        let renderer = MenuBarLayoutRenderer()
+        let icon = NSImage(size: NSSize(width: 16, height: 16))
+        icon.isTemplate = true
+
+        func attachmentImage(target: MenuBarUsageColorTarget?) throws -> NSImage {
+            let output = renderer.render(
+                layout: MenuBarLayout(lines: [[.icon]]),
+                data: self.data(),
+                icon: icon,
+                options: self.options(usageColorTarget: target))
+            let attachment = try #require(
+                output.attributedTitle.attribute(.attachment, at: 0, effectiveRange: nil) as? NSTextAttachment)
+            return try #require(attachment.image)
+        }
+
+        #expect(try attachmentImage(target: nil).isTemplate)
+        // Every target tints the icon, so none of them may leave it a template.
+        for target in MenuBarUsageColorTarget.allCases {
+            #expect(try !attachmentImage(target: target).isTemplate)
+        }
+    }
+
+    @Test
     func `two line title stays within menu bar height`() throws {
         let renderer = MenuBarLayoutRenderer()
         let output = try renderer.render(
@@ -158,7 +241,7 @@ struct MenuBarLayoutRendererTests {
             with: NSSize(width: 200, height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading])
 
-        #expect(output.attributedTitle.string == "5h 25%\nW 60%")
+        #expect(output.attributedTitle.string == "S 25%\nW 60%")
         #expect(output.accessibilityLabel.contains(L("menu_bar_layout_line", 2)))
         #expect(bounds.height <= 22)
     }
@@ -241,7 +324,8 @@ struct MenuBarLayoutRendererTests {
                 showUsed: false,
                 appearanceName: "aqua",
                 isDebugApp: false,
-                now: self.now))
+                now: self.now,
+                usageColorTarget: nil))
 
         #expect(output.attributedTitle.string == "▮▮▮")
     }
@@ -287,7 +371,8 @@ struct MenuBarLayoutRendererTests {
             showUsed: options.showUsed,
             appearanceName: options.appearanceName,
             isDebugApp: options.isDebugApp,
-            now: options.now)
+            now: options.now,
+            usageColorTarget: options.usageColorTarget)
         let output = renderer.render(
             layout: MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]]),
             data: self.data(),
@@ -327,14 +412,18 @@ struct MenuBarLayoutRendererTests {
             cost30d: "$20.00")
     }
 
-    private func options() -> MenuBarLayoutRenderOptions {
+    private func options(
+        usageColorTarget: MenuBarUsageColorTarget? = nil)
+        -> MenuBarLayoutRenderOptions
+    {
         MenuBarLayoutRenderOptions(
             size: .regular,
             highContrast: false,
             showUsed: true,
             appearanceName: "aqua",
             isDebugApp: false,
-            now: self.now)
+            now: self.now,
+            usageColorTarget: usageColorTarget)
     }
 
     private func averageBrightness(

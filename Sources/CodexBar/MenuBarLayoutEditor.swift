@@ -362,7 +362,9 @@ struct MenuBarLayoutEditor: View {
                 .foregroundStyle(.secondary)
             MenuBarLayoutPreview(
                 layout: self.layout,
-                provider: self.scopedProvider,
+                // All-providers scope previews whichever enabled provider best fits the layout, not just the
+                // first one alphabetically — that one may have no session window and preview as all dashes.
+                candidates: self.scope == .all ? self.providers : [self.scopedProvider].compactMap(\.self),
                 settings: self.settings,
                 store: self.store)
                 .frame(maxWidth: .infinity, minHeight: 30)
@@ -618,31 +620,46 @@ private struct MenuBarLayoutChipLabel: View {
 @MainActor
 private struct MenuBarLayoutPreview: View {
     let layout: MenuBarLayout
-    let provider: UsageProvider?
+    let candidates: [UsageProvider]
     @Bindable var settings: SettingsStore
     @Bindable var store: UsageStore
 
     private let renderer = MenuBarLayoutRenderer()
 
     var body: some View {
-        let provider = self.provider ?? .codex
-        let snapshot = self.store.snapshot(for: provider)
-        let data = snapshot.map { self.liveData(provider: provider, snapshot: $0) }
-            ?? self.representativeData(provider: provider)
-        let icon = ProviderBrandIcon.image(for: provider)
+        let resolved = self.resolvedPreviewSource()
         let minute = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970 / 60) * 60)
         let rendered = self.renderer.render(
             layout: self.layout,
-            data: data,
-            icon: icon,
+            data: resolved.data,
+            icon: ProviderBrandIcon.image(for: resolved.provider),
             options: MenuBarLayoutRenderOptions(
                 size: self.settings.menuBarLayoutSize,
                 highContrast: self.settings.menuBarHighContrastOnInactiveDisplays,
                 showUsed: self.settings.usageBarsShowUsed,
                 appearanceName: "preview",
                 isDebugApp: false,
-                now: minute))
+                now: minute,
+                usageColorTarget: self.settings.menuBarUsageColorsEnabled
+                    ? self.settings.menuBarUsageColorTarget
+                    : nil))
         MenuBarLayoutPreviewText(rendered: rendered)
+    }
+
+    /// Real data beats sample data, and a provider that fills the layout beats one that renders it as dashes.
+    /// Falling back to sample data keeps the preview showing what the layout *looks like* rather than what one
+    /// unconfigured provider happens to lack.
+    private func resolvedPreviewSource() -> (provider: UsageProvider, data: MenuBarLayoutRenderData) {
+        let candidates = self.candidates.isEmpty ? [.codex] : self.candidates
+        let live = candidates.compactMap { provider -> (UsageProvider, MenuBarLayoutRenderData)? in
+            guard let snapshot = self.store.snapshot(for: provider) else { return nil }
+            return (provider, self.liveData(provider: provider, snapshot: snapshot))
+        }
+        if let complete = live.first(where: { $0.1.populates(self.layout) }) {
+            return complete
+        }
+        let provider = live.first?.0 ?? candidates[0]
+        return (provider, self.representativeData(provider: provider))
     }
 
     private func liveData(provider: UsageProvider, snapshot: UsageSnapshot) -> MenuBarLayoutRenderData {
@@ -683,7 +700,7 @@ private struct MenuBarLayoutPreview: View {
         let runsOut = weeklyPaceDetail?.rightLabel
         let sessionPace = session
             .flatMap { UsagePaceText.sessionDetail(provider: provider, window: $0, now: now) }?
-            .leftLabel
+            .compactLabel
         let cost = self.store.tokenSnapshotForCurrentProviderConfig(for: provider)?.snapshot
         let costToday = MenuBarLayoutCostResolver.todayCostUSD(snapshot: cost, now: now)
         return MenuBarLayoutRenderData(
@@ -694,7 +711,7 @@ private struct MenuBarLayoutPreview: View {
             weekly: MenuBarLayoutRenderWindow(weekly),
             automatic: MenuBarLayoutRenderWindow(automatic),
             sessionPace: sessionPace,
-            weeklyPace: weeklyPaceDetail?.leftLabel,
+            weeklyPace: weeklyPaceDetail?.compactLabel,
             runsOut: runsOut,
             costToday: costToday.map {
                 UsageFormatter.currencyString($0, currencyCode: cost?.currencyCode ?? "USD")
@@ -723,8 +740,8 @@ private struct MenuBarLayoutPreview: View {
             session: MenuBarLayoutRenderWindow(session),
             weekly: MenuBarLayoutRenderWindow(weekly),
             automatic: MenuBarLayoutRenderWindow(session),
-            sessionPace: L("%d%% in reserve", 12),
-            weeklyPace: L("%d%% in deficit", 8),
+            sessionPace: "+\(UsageFormatter.percentString(12))",
+            weeklyPace: "-\(UsageFormatter.percentString(8))",
             runsOut: L("menu_bar_layout_sample_runs_out"),
             costToday: "$1.25",
             cost30d: "$20.00")
@@ -817,8 +834,9 @@ extension MenuBarLayoutToken {
         case .icon: "app.dashed"
         case .providerName: "textformat"
         case .accountLabel: "person.crop.circle"
-        case .percent: "percent"
-        case .pace: "speedometer"
+        // Pace renders a signed percentage, so it belongs to the percent family in the palette rather than
+        // carrying a speedometer that implies some other unit.
+        case .percent, .pace: "percent"
         case .usageBar: "chart.bar.fill"
         case .resetCountdown: "timer"
         case .resetAbsolute: "clock"

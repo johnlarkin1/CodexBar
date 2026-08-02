@@ -562,6 +562,11 @@
 "menu_bar_inactive_display_contrast_title" = "Повысить видимость на неактивных дисплеях";
 "menu_bar_usage_colors_title" = "Цветовая индикация расхода";
 "menu_bar_usage_colors_subtitle" = "Окрашивает значок в строке меню от зелёного к красному по мере роста расхода.";
+"menu_bar_usage_colors_target_title" = "Цвет применяется к";
+"menu_bar_usage_colors_target_subtitle" = "Только «Значок + процент». Выберите, какие части строки меню принимают цвет использования.";
+"menu_bar_usage_colors_target_icon" = "Значок";
+"menu_bar_usage_colors_target_usage" = "Значения использования";
+"menu_bar_usage_colors_target_everything" = "Вся строка";
 "menu_bar_inactive_display_contrast_subtitle" = "Использует высококонтрастную отрисовку, чтобы значок и показатель оставались читаемыми на других дисплеях.";
 "menu_bar_style_critters" = "Декоративные индикаторы";
 "menu_bar_style_bars" = "Полосы-индикаторы";
@@ -1329,9 +1334,9 @@
 "menu_bar_layout_token_weekly" = "Недельный %";
 "menu_bar_layout_token_auto" = "Авто %";
 "menu_bar_layout_token_bar" = "Индикатор использования";
-"menu_bar_layout_token_session_pace" = "Темп сеанса";
-"menu_bar_layout_token_weekly_pace" = "Недельный темп";
-"menu_bar_layout_token_auto_pace" = "Автоматический темп";
+"menu_bar_layout_token_session_pace" = "Сеанс ±%";
+"menu_bar_layout_token_weekly_pace" = "Недельный ±%";
+"menu_bar_layout_token_auto_pace" = "Авто ±%";
 "Session pace" = "Темп сеанса";
 "Weekly pace" = "Недельный темп";
 "Pace" = "Темп";

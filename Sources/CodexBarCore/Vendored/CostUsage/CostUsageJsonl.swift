@@ -298,7 +298,17 @@ enum CostUsageJsonl {
         var current = resumeState?.prefix ?? Data()
         current.reserveCapacity(4 * 1024)
         var lineBytes = resumeState?.lineBytes ?? 0
-        var truncated = resumeState?.truncated ?? false
+        // Local carry: written as a plain declaration plus a conditional assignment rather than
+        // `resumeState?.truncated ?? false`. The `??` form lets the Swift 6.2.3 optimizer sink this
+        // Bool's alloc_box into both arms of the resumeState branch, so the box reaches the nested
+        // functions below as a block argument. Those captures take a lexical borrow, and a lexical
+        // borrow of a block-argument box is illegal SIL — swift-frontend aborts with "Lexical borrows
+        // of SILBoxTypes must be of vars or captures" in release (-O) builds only. Allocating the box
+        // unconditionally in the entry block leaves nothing to sink.
+        var truncated = false
+        if let resumeState {
+            truncated = resumeState.truncated
+        }
         var bytesRead: Int64 = 0
         var lineStartOffset = resumeState?.lineStartOffset ?? startOffset
         var committedOffset = lineStartOffset

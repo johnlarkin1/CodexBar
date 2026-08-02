@@ -45,9 +45,23 @@ struct MenuBarPane: View {
                         L("menu_bar_usage_colors_title"),
                         subtitle: L("menu_bar_usage_colors_subtitle"))
                 }
-                // The meter icon is what carries the tint; Icon + Percent renders the provider brand logo
-                // through MenuBarLayoutRenderer, which this setting does not touch.
-                .disabled(self.settings.menuBarIconStyle == .iconAndPercent)
+
+                // Only the layout strip has more than one thing to tint. The meter icon is a single glyph,
+                // so the target picker would be a no-op choice on every other style.
+                SettingsMenuPicker(
+                    selection: self.$settings.menuBarUsageColorTarget,
+                    options: MenuBarUsageColorTarget.allCases,
+                    label: {
+                        SettingsRowLabel(
+                            L("menu_bar_usage_colors_target_title"),
+                            subtitle: L("menu_bar_usage_colors_target_subtitle"))
+                    },
+                    optionLabel: { target in
+                        Text(target.label)
+                    })
+                    .disabled(
+                        !self.settings.menuBarUsageColorsEnabled
+                            || self.settings.menuBarIconStyle != .iconAndPercent)
             } header: {
                 Text(L("section_icon"))
             }

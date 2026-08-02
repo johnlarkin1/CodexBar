@@ -30,6 +30,7 @@ struct SettingsDefaultsState {
     var menuBarShowsBrandIconWithPercent: Bool
     var menuBarHidesCritters: Bool
     var menuBarUsageColorsEnabled: Bool
+    var menuBarUsageColorTargetRaw: String
     var menuBarHighContrastOnInactiveDisplays: Bool
     var menuBarDisplayModeRaw: String?
     var menuBarShowsResetTimeWhenExhausted: Bool

@@ -242,8 +242,30 @@ struct UsagePaceTextTests {
 
         #expect(detail != nil)
         #expect(detail?.leftLabel == "20% in deficit")
+        // Menu bar form: spending ahead of the expected burn reads as negative headroom.
+        #expect(detail?.compactLabel == "-20%")
         #expect(detail?.rightLabel == "Projected empty in 45m")
         #expect(detail?.stage == .farAhead)
+    }
+
+    @Test
+    func `compact pace label signs reserve and deficit opposite ways`() {
+        let now = Date(timeIntervalSince1970: 0)
+        /// 300-minute window, 2h remaining => 3h elapsed, expected 60%.
+        func compactLabel(usedPercent: Double) -> String? {
+            UsagePaceText.sessionDetail(
+                provider: .claude,
+                window: RateWindow(
+                    usedPercent: usedPercent,
+                    windowMinutes: 300,
+                    resetsAt: now.addingTimeInterval(2 * 3600),
+                    resetDescription: nil),
+                now: now)?.compactLabel
+        }
+
+        #expect(compactLabel(usedPercent: 40) == "+20%")
+        #expect(compactLabel(usedPercent: 60) == "0%")
+        #expect(compactLabel(usedPercent: 80) == "-20%")
     }
 
     @Test
