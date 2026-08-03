@@ -9,6 +9,20 @@
 ### Changed
 - About: link the Website entry to codex.bar.
 
+## 0.46.0-jl.2 — 2026-08-02
+
+Fork release. Sits between upstream 0.46.0 and 0.46.1; carries only the fork delta on top of 0.46.0.
+
+### Added
+- Menu bar: color-coded usage now reaches the Icon + Percent layout strip, not just the meter icon, with a "Color applies to" setting — Icon, Usage values (default), or Whole strip (#32).
+
+### Changed
+- Menu bar: pace tokens render a signed delta (`+20%` / `-8%` / `0%`) instead of the dropdown's prose form, and drop their window prefix when a percent token already labels that window. Window prefixes are plain `S`/`W` rather than the window duration (#32).
+- Settings: the layout editor's all-providers preview picks a provider that actually fills the layout instead of the first one alphabetically, which could preview as all dashes (#32).
+
+### Fixed
+- Build: work around a Swift 6.2.3 SIL verifier abort in `CostUsageJsonl.scanBounded` that broke release builds (#32).
+
 ## 0.46.0 — 2026-07-29
 
 ### Added
