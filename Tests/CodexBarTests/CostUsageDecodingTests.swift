@@ -296,7 +296,7 @@ struct CostUsageDecodingTests {
     }
 
     @Test
-    func `selects most recent session`() throws {
+    func `session reports preserve all entries in wire order`() throws {
         let json = """
         {
           "type": "session",
@@ -327,12 +327,12 @@ struct CostUsageDecodingTests {
         """
 
         let report = try JSONDecoder().decode(CostUsageSessionReport.self, from: Data(json.utf8))
-        let selected = CostUsageFetcher.selectCurrentSession(from: report.data)
-        #expect(selected?.session == "B")
+        #expect(report.data.map(\.session) == ["A", "B", "C"])
+        #expect(report.data.map(\.totalTokens) == [100, 50, 200])
     }
 
     @Test
-    func `selects most recent supported month format`() throws {
+    func `monthly reports preserve provider month labels`() throws {
         let json = """
         {
           "type": "monthly",
@@ -345,9 +345,8 @@ struct CostUsageDecodingTests {
         """
 
         let report = try JSONDecoder().decode(CostUsageMonthlyReport.self, from: Data(json.utf8))
-        let selected = CostUsageFetcher.selectMostRecentMonth(from: report.data)
-        #expect(selected?.month == "2026-02")
-        #expect(selected?.totalTokens == 300)
+        #expect(report.data.map(\.month) == ["Dec 2025", "January 2026", "2026-02"])
+        #expect(report.data.map(\.totalTokens) == [100, 200, 300])
     }
 
     @Test
@@ -358,14 +357,12 @@ struct CostUsageDecodingTests {
             "2026-02-03",
             "Feb 3, 2026",
         ]
-        let monthInputs = ["Feb 2026", "February 2026", "2026-02"]
 
         await withTaskGroup(of: Bool.self) { group in
             for _ in 0..<32 {
                 group.addTask {
                     for _ in 0..<250 {
-                        guard dateInputs.allSatisfy({ CostUsageDateParser.parse($0) != nil }),
-                              monthInputs.allSatisfy({ CostUsageDateParser.parseMonth($0) != nil })
+                        guard dateInputs.allSatisfy({ CostUsageDateParser.parse($0) != nil })
                         else {
                             return false
                         }
@@ -499,5 +496,31 @@ struct CostUsageDecodingTests {
 
     private static func localNoon(year: Int, month: Int, day: Int) throws -> Date {
         try #require(Calendar.current.date(from: DateComponents(year: year, month: month, day: day, hour: 12)))
+    }
+}
+
+extension CostUsageDecodingTests {
+    @Test
+    func `legacy totals preserve their wire contract without reading modern fields`() throws {
+        let json = """
+        {"daily": [], "totals": {
+          "totalInputTokens": 11, "totalOutputTokens": 2,
+          "totalCacheReadTokens": 3, "totalCacheCreationTokens": 4,
+          "totalTokens": 13, "totalCost": 1.25,
+          "totalCostUSD": "ignored", "reasoningTokens": "ignored"
+        }}
+        """
+        let report = try JSONDecoder().decode(CostUsageDailyReport.self, from: Data(json.utf8))
+        let totals = try #require(report.summary)
+        #expect(totals.totalInputTokens == 11)
+        #expect(totals.totalOutputTokens == 2)
+        #expect(totals.cacheReadTokens == 3)
+        #expect(totals.cacheCreationTokens == 4)
+        #expect(totals.totalTokens == 13)
+        #expect(totals.totalCostUSD == 1.25)
+        #expect(totals.reasoningTokens == nil)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(CostUsageDailyReport.self, from: Data(#"{"daily":[],"totals":null}"#.utf8))
+        }
     }
 }

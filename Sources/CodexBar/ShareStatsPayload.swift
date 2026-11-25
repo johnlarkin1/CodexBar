@@ -2,7 +2,7 @@ import CodexBarCore
 import Foundation
 
 struct ShareStatsProviderPayload: Sendable, Equatable {
-    let provider: UsageProvider
+    let provider: ProviderInstanceID
     let providerName: String
     let subscriptionName: String?
     let currencyCode: String
@@ -12,7 +12,7 @@ struct ShareStatsProviderPayload: Sendable, Equatable {
 }
 
 struct ShareStatsModelPayload: Sendable, Equatable {
-    let provider: UsageProvider
+    let provider: ProviderInstanceID
     let providerName: String
     let modelName: String
     let currencyCode: String
@@ -21,70 +21,29 @@ struct ShareStatsModelPayload: Sendable, Equatable {
 }
 
 private struct ShareStatsModelFamilyKey: Hashable {
-    let provider: UsageProvider
+    let provider: ProviderInstanceID
     let providerName: String
     let modelName: String
     let currencyCode: String
-}
-
-private struct ShareStatsModelFamilyAccumulator {
-    let key: ShareStatsModelFamilyKey
-    private var totalTokens: Int?
-    private var estimatedCost: Double?
-    private var tokenOverflowed = false
-    private var costOverflowed = false
-    private var tokenIncomplete: Bool
-    private var costIncomplete: Bool
-
-    init(key: ShareStatsModelFamilyKey, row: ShareStatsModelPayload) {
-        self.key = key
-        self.totalTokens = row.totalTokens
-        self.estimatedCost = row.estimatedCost
-        self.tokenIncomplete = row.totalTokens == nil
-        self.costIncomplete = row.estimatedCost == nil
-    }
-
-    mutating func add(_ row: ShareStatsModelPayload) {
-        self.tokenIncomplete = self.tokenIncomplete || row.totalTokens == nil
-        self.costIncomplete = self.costIncomplete || row.estimatedCost == nil
-        if !self.tokenOverflowed, let value = row.totalTokens {
-            if let totalTokens {
-                let result = totalTokens.addingReportingOverflow(value)
-                self.totalTokens = result.overflow ? nil : result.partialValue
-                self.tokenOverflowed = result.overflow
-            } else {
-                self.totalTokens = value
-            }
-        }
-        if !self.costOverflowed, let value = row.estimatedCost {
-            if let estimatedCost {
-                let total = estimatedCost + value
-                self.estimatedCost = total.isFinite ? total : nil
-                self.costOverflowed = !total.isFinite
-            } else {
-                self.estimatedCost = value
-            }
-        }
-    }
-
-    var payload: ShareStatsModelPayload? {
-        let totalTokens = self.tokenIncomplete ? nil : self.totalTokens
-        let estimatedCost = self.costIncomplete ? nil : self.estimatedCost
-        guard totalTokens != nil || estimatedCost != nil else { return nil }
-        return ShareStatsModelPayload(
-            provider: self.key.provider,
-            providerName: self.key.providerName,
-            modelName: self.key.modelName,
-            currencyCode: self.key.currencyCode,
-            totalTokens: totalTokens,
-            estimatedCost: estimatedCost)
-    }
 }
 
 struct ShareStatsCurrencyPayload: Sendable, Equatable, Identifiable {
     let currencyCode: String
     let estimatedCost: Double?
     let coveredDayCount: Int
+    let isPartial: Bool
+
+    init(
+        currencyCode: String,
+        estimatedCost: Double?,
+        coveredDayCount: Int,
+        isPartial: Bool = false)
+    {
+        self.currencyCode = currencyCode
+        self.estimatedCost = estimatedCost
+        self.coveredDayCount = coveredDayCount
+        self.isPartial = isPartial
+    }
 
     var id: String {
         self.currencyCode
@@ -94,10 +53,39 @@ struct ShareStatsCurrencyPayload: Sendable, Equatable, Identifiable {
 struct ShareStatsPayload: Sendable, Equatable {
     let days: Int
     let periodEnd: Date
+    let periodEndTimeZone: TimeZone
     let providers: [ShareStatsProviderPayload]
     let topModels: [ShareStatsModelPayload]
     let currencies: [ShareStatsCurrencyPayload]
     let totalTokens: Int?
+    let hasPartialTokens: Bool
+    let hasPartialModels: Bool
+
+    init(
+        days: Int,
+        periodEnd: Date,
+        providers: [ShareStatsProviderPayload],
+        topModels: [ShareStatsModelPayload],
+        currencies: [ShareStatsCurrencyPayload],
+        totalTokens: Int?,
+        hasPartialTokens: Bool = false,
+        hasPartialModels: Bool = false,
+        periodEndTimeZone: TimeZone = .current)
+    {
+        self.days = days
+        self.periodEnd = periodEnd
+        self.periodEndTimeZone = periodEndTimeZone
+        self.providers = providers
+        self.topModels = topModels
+        self.currencies = currencies
+        self.totalTokens = totalTokens
+        self.hasPartialTokens = hasPartialTokens
+        self.hasPartialModels = hasPartialModels
+    }
+
+    var modelRankingDetail: String {
+        self.hasPartialModels ? L("PARTIAL") : L("BY USAGE")
+    }
 
     var hasShareableData: Bool {
         !self.providers.isEmpty && self.providers.contains { provider in
@@ -113,110 +101,16 @@ struct ShareStatsSubscriptionName: Sendable, Equatable {
         self.displayName = displayName
     }
 
-    private static let labelsByProvider: [String: [String: String]] = [
-        UsageProvider.codex.rawValue: [
-            "guest": "Guest", "free": "Free", "go": "Go", "plus": "Plus", "plus plan": "Plus",
-            "chatgpt plus": "Plus", "chatgpt-plus": "Plus", "chatgpt_plus": "Plus",
-            "pro": "Pro 20x", "codex pro": "Pro 20x",
-            "prolite": "Pro 5x", "pro_lite": "Pro 5x", "pro-lite": "Pro 5x",
-            "pro lite": "Pro 5x", "codex pro lite": "Pro 5x",
-            "free_workspace": "Free Workspace", "team": "Team", "business": "Business",
-            "education": "Education", "quorum": "Quorum", "k12": "K12",
-            "enterprise": "Enterprise", "edu": "Edu",
-        ],
-        UsageProvider.claude.rawValue: [
-            "free": "Free", "claude free": "Free", "pro": "Pro", "claude pro": "Pro",
-            "max": "Max", "claude max": "Max", "max 5x": "Max 5x", "claude max 5x": "Max 5x",
-            "max 20x": "Max 20x", "claude max 20x": "Max 20x", "team": "Team",
-            "claude team": "Team", "claude team standard": "Team Standard",
-            "claude team premium": "Team Premium", "enterprise": "Enterprise",
-            "claude enterprise": "Enterprise", "ultra": "Ultra", "claude ultra": "Ultra",
-        ],
-        UsageProvider.cursor.rawValue: [
-            "free": "Cursor Free", "cursor free": "Cursor Free",
-            "hobby": "Cursor Hobby", "cursor hobby": "Cursor Hobby",
-            "pro": "Cursor Pro", "cursor pro": "Cursor Pro",
-            "team": "Cursor Team", "cursor team": "Cursor Team",
-            "business": "Cursor Business", "cursor business": "Cursor Business",
-            "enterprise": "Cursor Enterprise", "cursor enterprise": "Cursor Enterprise",
-            "ultra": "Cursor Ultra", "cursor ultra": "Cursor Ultra",
-        ],
-        UsageProvider.alibaba.rawValue: [
-            "lite": "Lite", "coding plan lite": "Lite", "pro": "Pro", "active pro": "Pro",
-            "alibaba coding plan pro": "Pro", "starter": "Starter", "enterprise": "Enterprise",
-        ],
-        UsageProvider.alibabatokenplan.rawValue: [
-            "token plan": "Token Plan", "token plan pro": "Token Plan Pro",
-            "token plan plus": "Token Plan Plus",
-        ],
-        UsageProvider.gemini.rawValue: [
-            "free": "Free", "paid": "Paid", "plus": "Plus", "workspace": "Workspace",
-            "legacy": "Legacy", "gemini code assist in google one ai pro": "Google One AI Pro",
-        ],
-        UsageProvider.antigravity.rawValue: [
-            "free": "Free", "paid": "Paid", "pro": "Pro",
-            "ultra": "Google AI Ultra", "google ai ultra": "Google AI Ultra",
-        ],
-        UsageProvider.copilot.rawValue: [
-            "free": "Free", "individual": "Individual", "pro": "Individual",
-            "business": "Business", "enterprise": "Enterprise",
-        ],
-        UsageProvider.devin.rawValue: [
-            "free": "Free", "core": "Core", "pro": "Pro", "team": "Team", "enterprise": "Enterprise",
-        ],
-        UsageProvider.zai.rawValue: [
-            "free": "Free", "pro": "Pro", "max": "Max", "team": "Team",
-        ],
-        UsageProvider.minimax.rawValue: [
-            "free": "Free", "pro": "Pro", "plus": "Plus", "max": "Max", "ultra": "Ultra",
-            "minimax star": "MiniMax Star", "combo star": "Combo Star", "coding plan pro": "Coding Plan Pro",
-            "token plan pro": "Token Plan Pro", "token plan · tokenplanplus-年度会员": "Token Plan Plus",
-            "tokenplanplus-年度会员": "Token Plan Plus", "tokenplanmax-年度会员": "Token Plan Max",
-            "tokenplanultra-年度会员": "Token Plan Ultra",
-        ],
-        UsageProvider.augment.rawValue: [
-            "free": "Free", "community": "Community", "indie": "Indie", "pro": "Pro",
-            "team": "Team", "enterprise": "Enterprise",
-        ],
-        UsageProvider.elevenlabs.rawValue: [
-            "free": "Free", "starter": "Starter", "creator": "Creator", "pro": "Pro",
-            "scale": "Scale", "business": "Business", "growing business": "Business",
-            "enterprise": "Enterprise",
-        ],
-        UsageProvider.windsurf.rawValue: [
-            "free": "Free", "pro": "Pro", "team": "Teams", "teams": "Teams",
-            "enterprise": "Enterprise", "ultimate": "Ultimate",
-        ],
-        UsageProvider.zed.rawValue: [
-            "zed free": "Zed Free", "zed pro": "Zed Pro", "zed pro trial": "Zed Pro Trial",
-            "zed student": "Zed Student", "zed business": "Zed Business",
-        ],
-        UsageProvider.perplexity.rawValue: ["pro": "Pro", "max": "Max"],
-        UsageProvider.sakana.rawValue: [
-            "standard": "Standard", "standard $20/mo": "Standard", "pro": "Pro", "enterprise": "Enterprise",
-        ],
-        UsageProvider.abacus.rawValue: [
-            "basic": "Basic", "pro": "Pro", "team": "Team", "enterprise": "Enterprise",
-        ],
-        UsageProvider.synthetic.rawValue: [
-            "starter": "Starter", "pro": "Pro", "team": "Team", "enterprise": "Enterprise",
-        ],
-        UsageProvider.t3chat.rawValue: ["free": "Free", "pro": "Pro", "team": "Team"],
-        UsageProvider.sub2api.rawValue: [
-            "free": "Free", "pro": "Pro", "team": "Team", "claude team": "Team",
-            "enterprise": "Enterprise", "wallet plan": "Wallet",
-        ],
-    ]
-
     /// Converts plan-bearing provider identity into a closed, non-identifying share-card value.
     static func from(snapshot: UsageSnapshot?, provider: UsageProvider) -> Self? {
-        guard let identity = snapshot?.identity(for: provider),
+        guard let identity = snapshot?.identity(for: provider.instanceID),
               let rawName = identity.loginMethod,
               !Self.matchesAccountIdentity(rawName, identity: identity)
         else { return nil }
 
         let key = rawName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !key.isEmpty, let displayName = Self.labelsByProvider[provider.rawValue]?[key] else { return nil }
+        let labels = ProviderDescriptorRegistry.descriptor(for: provider).metadata.sharePlanLabels
+        guard !key.isEmpty, let displayName = labels[key] else { return nil }
         return Self(displayName: displayName)
     }
 
@@ -233,6 +127,11 @@ struct ShareStatsSubscriptionName: Sendable, Equatable {
 }
 
 enum ShareStatsSanitizer {
+    static func providerName(_ rawValue: String) -> String? {
+        guard !rawValue.contains("/"), !rawValue.contains("\\"), !rawValue.contains(":") else { return nil }
+        return self.safeLabel(rawValue, maximumLength: 72, maximumWords: 8, requireModelShape: false)
+    }
+
     static func modelName(_ rawValue: String) -> String? {
         guard let value = self.safeLabel(
             rawValue,
@@ -242,10 +141,20 @@ enum ShareStatsSanitizer {
         else { return nil }
 
         let normalized = value.lowercased()
+        guard !normalized.contains("://"), !normalized.contains("\\") else { return nil }
+        // Gateways add one namespace; shared output still uses fixed public family labels.
+        let components = normalized.split(separator: "/", omittingEmptySubsequences: false)
+        let model: String
+        switch components.count {
+        case 1: model = normalized
+        case 2 where !components[0].isEmpty && !components[1].isEmpty:
+            model = String(components[1])
+        default: return nil
+        }
         let regionalPrefixes = ["us.", "eu.", "apac.", "global."]
-        let familyName = regionalPrefixes.first { normalized.hasPrefix($0) }.map {
-            String(normalized.dropFirst($0.count))
-        } ?? normalized
+        let familyName = regionalPrefixes.first { model.hasPrefix($0) }.map {
+            String(model.dropFirst($0.count))
+        } ?? model
         let publicModelFamilies: [(prefixes: [String], label: String)] = [
             (["amazon.nova-", "nova-"], "Amazon Nova"),
             (["anthropic.claude-", "claude-", "claude "], "Claude"),
@@ -272,10 +181,6 @@ enum ShareStatsSanitizer {
             (["tts-"], "OpenAI TTS"),
             (["whisper-"], "Whisper"),
         ]
-        guard !normalized.contains("://"),
-              !normalized.contains("/"),
-              !normalized.contains("\\")
-        else { return nil }
         return publicModelFamilies.first { family in
             family.prefixes.contains(where: familyName.hasPrefix)
         }?.label
@@ -321,7 +226,8 @@ enum ShareStatsBuilder {
             group.providers.map { row in
                 ShareStatsProviderPayload(
                     provider: row.provider,
-                    providerName: row.displayName,
+                    providerName: row.provider.firstPartyProvider == nil
+                        ? ShareStatsSanitizer.providerName(row.displayName) ?? row.provider.rawValue : row.displayName,
                     subscriptionName: subscriptionNames[row.id]?.displayName,
                     currencyCode: group.currencyCode,
                     totalTokens: row.totalTokens,
@@ -329,38 +235,62 @@ enum ShareStatsBuilder {
                     coveredDayCount: row.coveredDayCount)
             }
         }
-        let sanitizedModels = model.groups.filter {
-            $0.modelHistoryCompleteness == .complete
-        }.flatMap { group in
-            group.models.compactMap { row -> ShareStatsModelPayload? in
+        var hasPartialModels = false
+        let sanitizedModels = model.groups.flatMap { group -> [ShareStatsModelPayload] in
+            let incompleteProviders = group.incompleteModelProviders.union(
+                group.providers.filter { $0.incompleteRequestCount > 0 }.map(\.provider))
+            hasPartialModels = hasPartialModels || !incompleteProviders.isEmpty
+            // Models can be day-scoped while shared totals still describe the full window.
+            guard group.selectedDay == nil else {
+                // Only proven-zero totals establish an idle full window.
+                hasPartialModels = hasPartialModels || !group.models.isEmpty || group.providers.contains {
+                    $0.totalTokens != 0 || $0.totalCost != 0
+                }
+                return []
+            }
+            return group.models.compactMap { row -> ShareStatsModelPayload? in
                 let estimatedCost = self.finiteCost(row.totalCost)
-                guard let modelName = ShareStatsSanitizer.modelName(row.modelName),
+                guard !incompleteProviders.contains(row.provider), row.incompleteRequestCount == 0,
+                      let modelName = ShareStatsSanitizer.modelName(row.modelName),
                       row.totalTokens != nil
-                else { return nil }
+                else {
+                    hasPartialModels = true
+                    return nil
+                }
                 return ShareStatsModelPayload(
                     provider: row.provider,
-                    providerName: row.providerName,
+                    providerName: row.provider.firstPartyProvider == nil
+                        ? ShareStatsSanitizer.providerName(row.providerName) ?? row.provider.rawValue : row
+                        .providerName,
                     modelName: modelName,
                     currencyCode: group.currencyCode,
                     totalTokens: row.totalTokens,
                     estimatedCost: estimatedCost)
             }
         }
-        var modelFamilies: [ShareStatsModelFamilyKey: ShareStatsModelFamilyAccumulator] = [:]
-        for row in sanitizedModels {
-            let key = ShareStatsModelFamilyKey(
+        let modelFamilies = Dictionary(grouping: sanitizedModels) { row in
+            ShareStatsModelFamilyKey(
                 provider: row.provider,
                 providerName: row.providerName,
                 modelName: row.modelName,
                 currencyCode: row.currencyCode)
-            if var existing = modelFamilies[key] {
-                existing.add(row)
-                modelFamilies[key] = existing
-            } else {
-                modelFamilies[key] = ShareStatsModelFamilyAccumulator(key: key, row: row)
-            }
         }
-        let topModels = modelFamilies.values.compactMap(\.payload).sorted { lhs, rhs in
+        let topModels = modelFamilies.compactMap { key, rows -> ShareStatsModelPayload? in
+            let totalTokens = self.combinedTotalTokens(rows.map(\.totalTokens))
+            let costs = rows.compactMap(\.estimatedCost)
+            let estimatedCost = costs.count == rows.count ? self.finiteCost(costs.reduce(0, +)) : nil
+            guard totalTokens != nil || estimatedCost != nil else {
+                hasPartialModels = true
+                return nil
+            }
+            return ShareStatsModelPayload(
+                provider: key.provider,
+                providerName: key.providerName,
+                modelName: key.modelName,
+                currencyCode: key.currencyCode,
+                totalTokens: totalTokens,
+                estimatedCost: estimatedCost)
+        }.sorted { lhs, rhs in
             switch (lhs.totalTokens, rhs.totalTokens) {
             case let (left?, right?) where left != right: return left > right
             case (_?, nil): return true
@@ -376,17 +306,29 @@ enum ShareStatsBuilder {
             ShareStatsCurrencyPayload(
                 currencyCode: $0.currencyCode,
                 estimatedCost: self.finiteCost($0.totalCost),
-                coveredDayCount: $0.coveredDayCount)
+                coveredDayCount: $0.coveredDayCount,
+                isPartial: $0.hasPartialCost)
         }
         let totalTokens = self.combinedTotalTokens(model.groups.map(\.totalTokens))
-        let periodEnd = model.groups.map(\.chartDomain.upperBound).max() ?? Date()
+        let hasPartialTokens = model.groups.contains(where: \.hasPartialTokens)
+        guard let periodGroup = model.groups.max(by: { $0.chartDomain.upperBound < $1.chartDomain.upperBound }) else {
+            return nil
+        }
+        // The chart extends through the next day's start; sharing names the last included civil day.
+        let lastIncludedInstant = max(
+            periodGroup.chartDomain.lowerBound,
+            periodGroup.chartDomain.upperBound.addingTimeInterval(-1))
+        let periodEnd = periodGroup.calendar.startOfDay(for: lastIncludedInstant)
         let payload = ShareStatsPayload(
             days: model.requestedDays,
             periodEnd: periodEnd,
             providers: providers,
             topModels: topModels,
             currencies: currencies,
-            totalTokens: totalTokens)
+            totalTokens: totalTokens,
+            hasPartialTokens: hasPartialTokens,
+            hasPartialModels: hasPartialModels,
+            periodEndTimeZone: periodGroup.timeZone)
         return payload.hasShareableData ? payload : nil
     }
 
@@ -396,26 +338,60 @@ enum ShareStatsBuilder {
     }
 
     static func combinedTotalTokens(_ values: [Int?]) -> Int? {
-        var total = 0
-        for value in values {
-            guard let value else { return nil }
-            let result = total.addingReportingOverflow(value)
-            guard !result.overflow else { return nil }
-            total = result.partialValue
+        let known = values.compactMap(\.self)
+        guard !known.isEmpty else { return nil }
+        return CheckedSum.integers(known)
+    }
+}
+
+@MainActor
+enum ShareStatsPayloadFactory {
+    static func make(model: SpendDashboardModel, store: UsageStore) -> ShareStatsPayload? {
+        ShareStatsBuilder.make(
+            model: model,
+            subscriptionNames: self.subscriptionNames(model: model, store: store))
+    }
+
+    private static func subscriptionNames(
+        model: SpendDashboardModel,
+        store: UsageStore) -> [String: ShareStatsSubscriptionName]
+    {
+        var names: [String: ShareStatsSubscriptionName] = [:]
+        for group in model.groups {
+            for row in group.providers {
+                guard let nativeProvider = row.provider.firstPartyProvider else { continue }
+                let snapshots: [UsageSnapshot?] = if row.provider == .codex,
+                                                     row.id.hasPrefix("codex:")
+                {
+                    [
+                        store.codexAccountSnapshots.first {
+                            row.id == "codex:\($0.id)"
+                        }?.snapshot,
+                    ]
+                } else {
+                    [store.snapshot(for: row.provider)]
+                }
+                if let name = ShareStatsSubscriptionName.first(from: snapshots, provider: nativeProvider) {
+                    names[row.id] = name
+                }
+            }
         }
-        return total
+        return names
     }
 }
 
 enum ShareStatsFormatting {
+    static func subscriptionSummary(count: Int) -> String {
+        count == 1 ? L("1 subscription") : L("%d subscriptions", count)
+    }
+
     static func compactCount(_ value: Int) -> String {
         let magnitude = abs(Double(value))
-        let divisor: Double
-        let suffix: String
+        let (divisor, suffix): (Double, String)
         switch magnitude {
-        case 1_000_000_000...: divisor = 1_000_000_000; suffix = "B"
-        case 1_000_000...: divisor = 1_000_000; suffix = "M"
-        case 1000...: divisor = 1000; suffix = "K"
+        case 1_000_000_000...: (divisor, suffix) = (1_000_000_000, "B")
+        case 1_000_000...: (divisor, suffix) = (1_000_000, "M")
+        case 1000...: (divisor, suffix) = (1000, "K")
         default: return value.formatted(.number.grouping(.automatic))
         }
         let scaled = Double(value) / divisor
@@ -427,56 +403,84 @@ enum ShareStatsFormatting {
         UsageFormatter.currencyString(value, currencyCode: code)
     }
 
+    static func dataThrough(_ payload: ShareStatsPayload) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = payload.periodEndTimeZone
+        return self.dataThrough(payload.periodEnd, calendar: calendar)
+    }
+
     static func dataThrough(_ date: Date, calendar: Calendar = .current) -> String {
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
-        formatter.locale = .current
+        formatter.locale = codexBarLocalizedLocale()
         formatter.setLocalizedDateFormatFromTemplate("MMM d, yyyy")
         return formatter.string(from: date)
     }
 
+    static func isAllTime(_ payload: ShareStatsPayload) -> Bool {
+        payload.days >= SpendDashboardSource.scanDays
+    }
+
+    static func periodHeadline(_ payload: ShareStatsPayload) -> String {
+        self.isAllTime(payload)
+            ? L("My AI subscriptions · all time")
+            : L("My AI subscriptions · last %d days", payload.days)
+    }
+
+    static func coverageFraction(covered: Int, payload: ShareStatsPayload) -> String {
+        self.isAllTime(payload)
+            ? L("%d/all", covered)
+            : L("%d/%d days", covered, payload.days)
+    }
+
     static func text(_ payload: ShareStatsPayload) -> String {
-        var lines = ["My AI subscriptions · last \(payload.days) days"]
+        var lines = [self.periodHeadline(payload)]
         if let tokens = payload.totalTokens {
-            lines.append("\(self.compactCount(tokens)) tracked tokens")
+            let count = self.compactCount(tokens)
+            lines.append(
+                payload.hasPartialTokens
+                    ? L("~%@ tracked tokens (partial)", count)
+                    : L("%@ tracked tokens", count))
         }
         lines.append(contentsOf: payload.currencies.map { currency in
-            let spend = currency.estimatedCost.map { "\(self.currency($0, code: currency.currencyCode)) estimated" }
-                ?? "Spend unavailable"
-            return "\(currency.currencyCode): \(spend) · "
-                + "coverage \(currency.coveredDayCount)/\(payload.days) days"
+            let spend = currency.estimatedCost.map { value in
+                let amount = L("%@ estimated", self.currency(value, code: currency.currencyCode))
+                return currency.isPartial ? L("%@ (partial)", amount) : amount
+            } ?? L("Spend unavailable")
+            let coverage = self.coverageFraction(covered: currency.coveredDayCount, payload: payload)
+            return L("%@: %@ · coverage %@", currency.currencyCode, spend, coverage)
         })
         lines.append(contentsOf: payload.providers.map { provider in
             var metrics: [String] = []
             if let tokens = provider.totalTokens {
-                metrics.append("\(self.compactCount(tokens)) tokens")
+                metrics.append(L("%@ tokens", self.compactCount(tokens)))
             }
             if let cost = provider.estimatedCost {
-                metrics.append("~\(self.currency(cost, code: provider.currencyCode)) est")
+                metrics.append(L("~%@ est", self.currency(cost, code: provider.currencyCode)))
             } else {
-                metrics.append("Spend unavailable")
+                metrics.append(L("Spend unavailable"))
             }
             if provider.estimatedCost != nil, provider.coveredDayCount < payload.days {
-                metrics.append("\(provider.coveredDayCount)/\(payload.days) days")
+                metrics.append(self.coverageFraction(covered: provider.coveredDayCount, payload: payload))
             }
             let subscription = provider.subscriptionName.map { " · \($0)" } ?? ""
             return "\(provider.providerName)\(subscription): \(metrics.joined(separator: " · "))"
         })
         if !payload.topModels.isEmpty {
-            lines.append("Top models:")
+            lines.append(payload.hasPartialModels ? L("Top models (partial):") : L("Top models:"))
             lines.append(contentsOf: payload.topModels.prefix(5).map { model in
                 var metrics: [String] = []
                 if let tokens = model.totalTokens {
-                    metrics.append("\(self.compactCount(tokens)) tokens")
+                    metrics.append(L("%@ tokens", self.compactCount(tokens)))
                 }
                 if let cost = model.estimatedCost {
-                    metrics.append("~\(self.currency(cost, code: model.currencyCode)) est")
+                    metrics.append(L("~%@ est", self.currency(cost, code: model.currencyCode)))
                 }
                 return "\(model.modelName) (\(model.providerName)): \(metrics.joined(separator: " · "))"
             })
         }
-        lines.append("Generated locally by CodexBar · Data through \(self.dataThrough(payload.periodEnd))")
+        lines.append(L("Generated locally by CodexBar · Data through %@", self.dataThrough(payload)))
         return lines.joined(separator: "\n")
     }
 }

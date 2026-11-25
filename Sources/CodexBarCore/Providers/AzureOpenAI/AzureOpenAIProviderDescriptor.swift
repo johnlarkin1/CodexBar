@@ -2,10 +2,24 @@ import Foundation
 
 public enum AzureOpenAIProviderDescriptor {
     public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    private static let credentials = ProviderCredentialAdapter.apiKey(
+        environmentKey: AzureOpenAISettingsReader.apiKeyEnvironmentKey,
+        apiKeyDebugLabel: AzureOpenAISettingsReader.apiKeyEnvironmentKey,
+        additionalProjections: [
+            .enterpriseHost(AzureOpenAISettingsReader.endpointEnvironmentKey),
+            .workspaceID(AzureOpenAISettingsReader.deploymentNameEnvironmentKey),
+            ProviderCredentialEnvironmentProjection(
+                key: AzureOpenAISettingsReader.apiVersionEnvironmentKey,
+                value: { $0.sanitizedAzureOpenAIAPIVersion }),
+        ],
+        resolve: AzureOpenAISettingsReader.apiKey,
+        missingCredentialMessage: { _ in AzureOpenAISettingsError.missingAPIKey.errorDescription })
 
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .azureopenai,
+            credentials: self.credentials,
+            config: ProviderConfigCapabilities(workspaceIDValidationOrder: 0, supportsEnterpriseHost: true),
             metadata: ProviderMetadata(
                 id: .azureopenai,
                 displayName: "Azure OpenAI",
@@ -18,6 +32,7 @@ public enum AzureOpenAIProviderDescriptor {
                 toggleTitle: "Show Azure OpenAI status",
                 cliName: "azure-openai",
                 defaultEnabled: false,
+                widgetSelectable: false,
                 isPrimaryProvider: false,
                 usesAccountFallback: false,
                 browserCookieOrder: nil,
@@ -25,7 +40,8 @@ public enum AzureOpenAIProviderDescriptor {
                 statusPageURL: nil,
                 statusLinkURL: "https://azure.status.microsoft/en-us/status"),
             branding: ProviderBranding(
-                iconStyle: .openai,
+                // Provider-specific by design: Azure OpenAI deliberately shares OpenAI's icon rendering style.
+                iconStyle: .init(provider: .openai),
                 iconResourceName: "ProviderIcon-codex",
                 color: ProviderColor(red: 0, green: 120 / 255, blue: 212 / 255),
                 confettiPalette: [
@@ -36,13 +52,35 @@ public enum AzureOpenAIProviderDescriptor {
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "Azure OpenAI usage history is not exposed by the deployment validation probe." }),
+            presentation: ProviderUsagePresentation(menu: ProviderMenuDescriptorPresentation(
+                primaryDescriptionIsDetail: { _ in true })),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .api],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [AzureOpenAIAPIFetchStrategy()] })),
             cli: ProviderCLIConfig(
                 name: "azure-openai",
                 aliases: ["azureopenai", "aoai"],
-                versionDetector: nil))
+                versionDetector: nil),
+            setup: ProviderSetup(routes: [.init(
+                id: "deployment-api-key",
+                method: .apiKey,
+                platforms: [.macOS, .linux],
+                requiredInputs: [
+                    .init(
+                        id: "api-key",
+                        configFields: ["apiKey"],
+                        environmentVariables: [AzureOpenAISettingsReader.apiKeyEnvironmentKey]),
+                    .init(
+                        id: "endpoint",
+                        configFields: ["enterpriseHost"],
+                        environmentVariables: [AzureOpenAISettingsReader.endpointEnvironmentKey]),
+                    .init(
+                        id: "deployment",
+                        configFields: ["workspaceID"],
+                        environmentVariables: [AzureOpenAISettingsReader.deploymentNameEnvironmentKey]),
+                ],
+                hint: "Supply a key, HTTPS resource endpoint, and deployment name. API version is optional. " +
+                    "A usage refresh sends a potentially billable validation request, not a usage-history query.")]))
     }
 }
 
@@ -84,7 +122,7 @@ struct AzureOpenAIAPIFetchStrategy: ProviderFetchStrategy {
     }
 
     private static func resolveAPIKey(environment: [String: String]) -> String? {
-        ProviderTokenResolver.azureOpenAIToken(environment: environment)
+        ProviderTokenResolver.token(for: .azureopenai, environment: environment)
     }
 
     private static func resolveEndpoint(environment: [String: String]) -> URL? {
@@ -93,5 +131,17 @@ struct AzureOpenAIAPIFetchStrategy: ProviderFetchStrategy {
 
     private static func resolveDeploymentName(environment: [String: String]) -> String? {
         AzureOpenAISettingsReader.deploymentName(environment: environment)
+    }
+}
+
+extension ProviderConfig {
+    /// Nil inherits AZURE_OPENAI_API_VERSION, falling back to AzureOpenAISettingsReader.defaultAPIVersion.
+    public var azureOpenAIAPIVersion: String? {
+        get { self.extensionValue(forKey: "azureOpenAIAPIVersion") }
+        set { self.setExtensionValue(newValue, forKey: "azureOpenAIAPIVersion") }
+    }
+
+    public var sanitizedAzureOpenAIAPIVersion: String? {
+        SettingsValue.cleaned(self.azureOpenAIAPIVersion)
     }
 }

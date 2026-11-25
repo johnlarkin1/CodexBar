@@ -78,19 +78,33 @@ public struct ClaudeStatusProbe: Sendable {
         "Claude CLI /usage returned a subscription notice without session quota data. " +
         "Local cost and token history remain available."
 
+    private static let usageInsightsMarker = "What's contributing to your limits usage?"
+
     public var claudeBinary: String = "claude"
     public var timeout: TimeInterval = 20.0
     public var keepCLISessionsAlive: Bool = false
-    private static let log = CodexBarLog.logger(LogCategories.claudeProbe)
+    @ProcessEnvironment public var environment: [String: String] = ProcessInfo.processInfo.environment
+    // Claude's interactive process binds account state at launch. Cross-refresh reuse is permitted only because the
+    // session actor also requires the hashed config-root + active-account scope to match.
+    static let accountScopedSessionReuseEnabled = true
+    private static let log = CodexBarLog.logger(LogCategories.provider(.claude, scope: "probe"))
     #if DEBUG
     public typealias FetchOverride = @Sendable (String, TimeInterval, Bool) async throws -> ClaudeStatusSnapshot
     @TaskLocal static var fetchOverride: FetchOverride?
+    /// Stands in for CodexBar's dedicated probe directory, so tests never use the real Application Support folder.
+    @TaskLocal static var dedicatedProbeDirectoryOverrideForTesting: URL?
     #endif
 
-    public init(claudeBinary: String = "claude", timeout: TimeInterval = 20.0, keepCLISessionsAlive: Bool = false) {
+    public init(
+        claudeBinary: String = "claude",
+        timeout: TimeInterval = 20.0,
+        keepCLISessionsAlive: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment)
+    {
         self.claudeBinary = claudeBinary
         self.timeout = timeout
         self.keepCLISessionsAlive = keepCLISessionsAlive
+        self.environment = environment
     }
 
     #if DEBUG
@@ -118,29 +132,45 @@ public struct ClaudeStatusProbe: Sendable {
     #endif
 
     public func fetch() async throws -> ClaudeStatusSnapshot {
-        let resolved = Self.resolvedBinaryPath(binaryName: self.claudeBinary)
+        let resolved = Self.resolvedBinaryPath(binaryName: self.claudeBinary, environment: self.environment)
         guard let resolved, Self.isBinaryAvailable(resolved) else {
             throw ClaudeStatusProbeError.claudeNotInstalled
         }
 
         // Run commands sequentially through a shared Claude session to avoid warm-up churn.
         let timeout = self.timeout
-        let keepAlive = self.keepCLISessionsAlive
+        let keepAlive = Self.shouldKeepCLISessionAlive(requested: self.keepCLISessionsAlive)
+        let accountScope = ClaudeAccountProfile.sessionScope(environment: self.environment)
         #if DEBUG
         if let override = Self.fetchOverride {
             return try await override(resolved, timeout, keepAlive)
         }
         #endif
         do {
-            var usage = try await Self.capture(subcommand: "/usage", binary: resolved, timeout: timeout)
+            var usage = try await Self.capture(
+                subcommand: "/usage",
+                binary: resolved,
+                accountScope: accountScope,
+                timeout: timeout,
+                environment: self.environment)
             if !Self.usageOutputLooksRelevant(usage) {
                 Self.log.debug("Claude CLI /usage looked like startup output; retrying once")
-                usage = try await Self.capture(subcommand: "/usage", binary: resolved, timeout: max(timeout, 14))
+                usage = try await Self.capture(
+                    subcommand: "/usage",
+                    binary: resolved,
+                    accountScope: accountScope,
+                    timeout: max(timeout, 14),
+                    environment: self.environment)
             }
             // `/status` only enriches a valid usage snapshot with identity. Terminal usage errors and loading stalls
             // cannot be repaired by it, so fail now instead of paying for another interactive CLI round trip.
             try Self.validateUsageBeforeStatusProbe(usage)
-            let status = try? await Self.capture(subcommand: "/status", binary: resolved, timeout: min(timeout, 12))
+            let status = try? await Self.capture(
+                subcommand: "/status",
+                binary: resolved,
+                accountScope: accountScope,
+                timeout: min(timeout, 12),
+                environment: self.environment)
             let snap = try Self.parse(text: usage, statusText: status)
 
             Self.log.info("Claude CLI scrape ok", metadata: [
@@ -149,27 +179,39 @@ public struct ClaudeStatusProbe: Sendable {
                 "opusPercentLeft": "\(snap.opusPercentLeft ?? -1)",
             ])
             if !keepAlive {
-                await Self.resetTransientCLISessionAndCleanupProbeArtifacts()
+                await Self.resetTransientCLISessionAndCleanupProbeArtifacts(environment: self.environment)
             }
             return snap
         } catch {
             if !keepAlive {
-                await Self.resetTransientCLISessionAndCleanupProbeArtifacts()
+                await Self.resetTransientCLISessionAndCleanupProbeArtifacts(environment: self.environment)
             }
             throw error
         }
     }
 
-    private static func resetTransientCLISessionAndCleanupProbeArtifacts() async {
+    private static func resetTransientCLISessionAndCleanupProbeArtifacts(environment: [String: String]) async {
         await ClaudeCLISession.current.reset()
-        let removed = ClaudeProbeSessionArtifactCleaner.cleanupProbeSessionArtifacts()
+        let removed = ClaudeProbeSessionArtifactCleaner.cleanupProbeSessionArtifacts(environment: environment)
         guard !removed.isEmpty else { return }
         Self.log.debug("Claude probe session artifacts removed", metadata: ["count": "\(removed.count)"])
+    }
+
+    static func shouldKeepCLISessionAlive(requested: Bool) -> Bool {
+        requested && self.accountScopedSessionReuseEnabled
     }
 }
 
 extension ClaudeStatusProbe {
     // MARK: - Parsing helpers
+
+    private static func cleanCapture(_ text: String) -> String {
+        // Keep the heading to classify insights-only reports, but exclude tool names and usage-share percentages.
+        let rendered = ClaudeCLIScreen.render(text, preservePlainReports: true)
+        guard let insights = rendered.range(of: self.usageInsightsMarker, options: .caseInsensitive)
+        else { return rendered }
+        return String(rendered[..<insights.upperBound])
+    }
 
     private struct LabelSearchContext {
         let lines: [String]
@@ -189,8 +231,8 @@ extension ClaudeStatusProbe {
     }
 
     public static func parse(text: String, statusText: String? = nil) throws -> ClaudeStatusSnapshot {
-        let clean = TextParsing.stripANSICodes(text)
-        let statusClean = statusText.map(TextParsing.stripANSICodes)
+        let clean = Self.cleanCapture(text)
+        let statusClean = statusText.map(Self.cleanCapture)
         guard !clean.isEmpty else { throw ClaudeStatusProbeError.timedOut }
 
         let shouldDump = ProcessInfo.processInfo.environment["DEBUG_CLAUDE_DUMP"] == "1"
@@ -238,16 +280,31 @@ extension ClaudeStatusProbe {
         let opusModels = Set(opusLabels.compactMap(self.weeklyModelName).map(self.normalizedForLabelSearch))
         let hasOpusLabel = !weeklyModels.isDisjoint(with: opusModels)
 
-        if sessionPct == nil {
+        // Without a session row, the first percentage belongs to a weekly window. A near-complete
+        // Current session label still allows recovery from a garbled TUI row ("Curretsession").
+        let hasSessionLabel = labelContext.normalizedLines.contains { self.editDistance($0, "currentsession") <= 1 }
+        if sessionPct == nil, hasSessionLabel {
             let ordered = self.allPercents(usagePanelText)
-            if sessionPct == nil, ordered.indices.contains(0) {
+            if ordered.indices.contains(0) {
                 sessionPct = ordered[0]
             }
         }
 
-        let identity = Self.parseIdentity(usageText: clean, statusText: statusClean)
+        let identity = Self.extractIdentity(usageText: clean, statusText: statusClean)
 
-        guard let sessionPct else {
+        let sessionReset = self.extractReset(labelSubstring: "Current session", context: labelContext)
+        let weeklyReset = hasAllModelsWeeklyLabel
+            ? self.extractReset(labelSubstring: "Current week (all models)", context: labelContext)
+            : nil
+        let opusReset = hasOpusLabel
+            ? self.extractReset(labelSubstrings: opusLabels, context: labelContext)
+            : nil
+        let scopedWeeklyUsages = self.extractScopedWeeklyUsages(context: labelContext)
+        let extraRateWindows = self.extraRateWindows(
+            fromScopedWeeklyUsages: scopedWeeklyUsages,
+            fallbackResetDescription: weeklyReset)
+
+        guard sessionPct != nil || weeklyPct != nil || opusPct != nil || !extraRateWindows.isEmpty else {
             Self.dumpIfNeeded(
                 enabled: shouldDump,
                 reason: "missing session label",
@@ -261,18 +318,6 @@ extension ClaudeStatusProbe {
             }
             throw ClaudeStatusProbeError.parseFailed("Missing Current session.")
         }
-
-        let sessionReset = self.extractReset(labelSubstring: "Current session", context: labelContext)
-        let weeklyReset = hasAllModelsWeeklyLabel
-            ? self.extractReset(labelSubstring: "Current week (all models)", context: labelContext)
-            : nil
-        let opusReset = hasOpusLabel
-            ? self.extractReset(labelSubstrings: opusLabels, context: labelContext)
-            : nil
-        let scopedWeeklyUsages = self.extractScopedWeeklyUsages(context: labelContext)
-        let extraRateWindows = self.extraRateWindows(
-            fromScopedWeeklyUsages: scopedWeeklyUsages,
-            fallbackResetDescription: weeklyReset)
 
         return ClaudeStatusSnapshot(
             sessionPercentLeft: sessionPct,
@@ -289,8 +334,8 @@ extension ClaudeStatusProbe {
     }
 
     public static func parseIdentity(usageText: String?, statusText: String?) -> ClaudeAccountIdentity {
-        let usageClean = usageText.map(TextParsing.stripANSICodes) ?? ""
-        let statusClean = statusText.map(TextParsing.stripANSICodes)
+        let usageClean = usageText.map(Self.cleanCapture) ?? ""
+        let statusClean = statusText.map(Self.cleanCapture)
         return self.extractIdentity(usageText: usageClean, statusText: statusClean)
     }
 
@@ -302,7 +347,12 @@ extension ClaudeStatusProbe {
         guard let resolved, self.isBinaryAvailable(resolved) else {
             throw ClaudeStatusProbeError.claudeNotInstalled
         }
-        let statusText = try await Self.capture(subcommand: "/status", binary: resolved, timeout: timeout)
+        let statusText = try await Self.capture(
+            subcommand: "/status",
+            binary: resolved,
+            accountScope: ClaudeAccountProfile.sessionScope(environment: environment),
+            timeout: timeout,
+            environment: environment)
         return Self.parseIdentity(usageText: nil, statusText: statusText)
     }
 
@@ -318,17 +368,19 @@ extension ClaudeStatusProbe {
             // Use a more robust capture configuration than the standard `/status` scrape:
             // - Avoid the short idle-timeout which can terminate the session while CLI auth checks are still running.
             // - We intentionally do not parse output here; success is "the command ran without timing out".
-            _ = try await ClaudeCLISession.shared.capture(
+            _ = try await ClaudeCLISession.current.capture(
                 subcommand: "/status",
                 binary: resolved,
+                accountScope: ClaudeAccountProfile.sessionScope(environment: environment),
                 timeout: timeout,
+                environment: environment,
                 idleTimeout: nil,
                 stopOnSubstrings: [],
                 settleAfterStop: 0.8,
                 sendEnterEvery: 0.8)
-            await ClaudeCLISession.shared.reset()
+            await ClaudeCLISession.current.reset()
         } catch {
-            await ClaudeCLISession.shared.reset()
+            await ClaudeCLISession.current.reset()
             throw error
         }
     }
@@ -385,7 +437,7 @@ extension ClaudeStatusProbe {
     }
 
     private static func usageOutputLooksRelevant(_ text: String) -> Bool {
-        let normalized = TextParsing.stripANSICodes(text).lowercased().filter { !$0.isWhitespace }
+        let normalized = Self.cleanCapture(text).lowercased().filter { !$0.isWhitespace }
         return normalized.contains("currentsession")
             || normalized.contains("currentweek")
             || normalized.contains("loadingusage")
@@ -394,7 +446,7 @@ extension ClaudeStatusProbe {
     }
 
     private static func validateUsageBeforeStatusProbe(_ text: String) throws {
-        let clean = TextParsing.stripANSICodes(text)
+        let clean = Self.cleanCapture(text)
         if let usageError = self.extractUsageError(text: clean) {
             throw self.usageProbeError(message: usageError)
         }
@@ -406,12 +458,7 @@ extension ClaudeStatusProbe {
     }
 
     private static func extractPercent(labelSubstrings: [String], context: LabelSearchContext) -> Int? {
-        for label in labelSubstrings {
-            if let value = self.extractPercent(labelSubstring: label, context: context) {
-                return value
-            }
-        }
-        return nil
+        labelSubstrings.lazy.compactMap { self.extractPercent(labelSubstring: $0, context: context) }.first
     }
 
     private struct ScopedWeeklyUsage {
@@ -641,7 +688,9 @@ extension ClaudeStatusProbe {
             return "Claude CLI usage endpoint is rate limited right now. Please try again later."
         }
         if self.isSubscriptionNoticeOnly(text: text) {
-            return self.subscriptionQuotaUnavailableDescription
+            return text.localizedCaseInsensitiveContains(self.usageInsightsMarker)
+                ? "Claude CLI /usage returned usage insights without quota data."
+                : self.subscriptionQuotaUnavailableDescription
         }
         if lower.contains("failed to load usage data") {
             return "Claude CLI could not load usage data. Open the CLI and retry `/usage`."
@@ -693,9 +742,9 @@ extension ClaudeStatusProbe {
     }
 
     private static func isUsageStillLoading(text: String) -> Bool {
-        let normalized = TextParsing.stripANSICodes(text).lowercased().filter { !$0.isWhitespace }
+        let normalized = Self.cleanCapture(text).lowercased().filter { !$0.isWhitespace }
         guard normalized.contains("loadingusage") else { return false }
-        return !self.usageCaptureHasSessionValue(normalized) && self.allPercents(text).isEmpty
+        return !self.usageCaptureHasQuotaValue(normalized) && self.allPercents(text).isEmpty
     }
 
     /// Returns true when the text contains only a subscription notice with no session/weekly quota data.
@@ -705,8 +754,8 @@ extension ClaudeStatusProbe {
     /// notice; `loadingusage` is not treated as quota data in this check so mixed captures surface correctly.
     private static func isSubscriptionNoticeOnly(text: String) -> Bool {
         let normalized = text.lowercased().filter { !$0.isWhitespace }
-        guard normalized.contains("currentlyusingyoursubscription") else { return false }
-        guard normalized.contains("claudecodeusage") else { return false }
+        guard normalized.contains("currentlyusingyoursubscription"),
+              normalized.contains("claudecodeusage") else { return false }
         // Only real session/week labels and actual percentage values count as quota data.
         // `loadingusage` is not quota data — a mixed loading+subscription PTY capture should
         // surface the subscription error, not a still-loading stall.
@@ -842,16 +891,18 @@ extension ClaudeStatusProbe {
     }
 
     private static func weeklyModelName(from line: String) -> String? {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"current\s*week\s*\(([^)]+)\)"#,
-            options: [.caseInsensitive])
-        else { return nil }
-        let range = NSRange(line.startIndex..<line.endIndex, in: line)
-        guard let match = regex.firstMatch(in: line, options: [], range: range),
-              match.numberOfRanges >= 2,
-              let modelRange = Range(match.range(at: 1), in: line)
-        else { return nil }
-        return String(line[modelRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        self.extractFirst(pattern: #"current\s*week\s*\(([^)]+)\)"#, text: line)
+    }
+
+    /// Stable `usage.details` row ID carrying the CLI's unavailable per-model breakdown notice.
+    public static let modelBreakdownDetailRowID = "claude-model-breakdown"
+
+    static func modelBreakdownNotice(in text: String) -> String? {
+        let clean = self.cleanCapture(text)
+        // Preserve the diagnostic, without advertising the CLI's interactive retry shortcut.
+        return self.extractFirst(
+            pattern: #"(Per-model breakdown unavailable(?:[ \t]*\([^\r\n)]*\))?)"#,
+            text: self.trimToLatestUsagePanel(clean) ?? clean)
     }
 
     /// Recognizes the "all models" weekly bucket even when the TUI capture dropped or duplicated a
@@ -865,7 +916,7 @@ extension ClaudeStatusProbe {
     }
 
     /// Levenshtein distance. Inputs here are short normalized model tokens, so the naive
-    /// single-row implementation is more than fast enough.
+    /// single-row implementation is more than fast enough for these quota labels.
     private static func editDistance(_ lhs: String, _ rhs: String) -> Int {
         let a = Array(lhs.unicodeScalars)
         let b = Array(rhs.unicodeScalars)
@@ -909,21 +960,6 @@ extension ClaudeStatusProbe {
 
     private static func normalizedForLabelSearch(_ text: String) -> String {
         String(text.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains))
-    }
-
-    /// Capture all "Reset"/"Resets" strings to surface in the menu.
-    private static func allResets(_ text: String) -> [String] {
-        let pat = #"\bResets?\b[^\r\n]*"#
-        guard let regex = try? NSRegularExpression(pattern: pat, options: [.caseInsensitive]) else { return [] }
-        let nsrange = NSRange(text.startIndex..<text.endIndex, in: text)
-        var results: [String] = []
-        regex.enumerateMatches(in: text, options: [], range: nsrange) { match, _, _ in
-            guard let match,
-                  let r = Range(match.range(at: 0), in: text) else { return }
-            let raw = String(text[r]).trimmingCharacters(in: .whitespacesAndNewlines)
-            results.append(self.cleanResetLine(raw))
-        }
-        return results
     }
 
     private static func cleanResetLine(_ raw: String) -> String {
@@ -1099,9 +1135,8 @@ extension ClaudeStatusProbe {
               let month = target.month,
               let day = target.day,
               let hour = target.hour,
-              let minute = target.minute
-        else { return [] }
-        guard let firstApproximation = calendar.date(from: target) else { return [] }
+              let minute = target.minute,
+              let firstApproximation = calendar.date(from: target) else { return [] }
         let approximationComponents = calendar.dateComponents(
             [.year, .month, .day, .hour, .minute, .second],
             from: firstApproximation)
@@ -1218,7 +1253,7 @@ extension ClaudeStatusProbe {
     private static func extractLoginMethod(text: String) -> String? {
         guard !text.isEmpty else { return nil }
         if let explicit = self.extractFirst(pattern: #"(?i)login\s+method:\s*(.+)"#, text: text) {
-            return ClaudePlan.cliCompatibilityLoginMethod(self.cleanPlan(explicit))
+            return ClaudePlan.cliCompatibilityLoginMethod(UsageFormatter.cleanPlanName(explicit))
         }
         // Capture any "Claude <...>" phrase (e.g., Max/Pro/Ultra/Team) to avoid future plan-name churn.
         // Strip any leading ANSI that may have survived (rare) before matching.
@@ -1233,9 +1268,8 @@ extension ClaudeStatusProbe {
                 guard let match,
                       match.numberOfRanges >= 2,
                       let r = Range(match.range(at: 1), in: text) else { return }
-                let raw = String(text[r])
-                let val = ClaudePlan.cliCompatibilityLoginMethod(Self.cleanPlan(raw)) ?? Self.cleanPlan(raw)
-                candidates.append(val)
+                let cleaned = UsageFormatter.cleanPlanName(String(text[r]))
+                candidates.append(ClaudePlan.cliCompatibilityLoginMethod(cleaned) ?? cleaned)
             }
         }
         if let plan = candidates.first(where: { cand in
@@ -1245,11 +1279,6 @@ extension ClaudeStatusProbe {
             return plan
         }
         return nil
-    }
-
-    /// Strips ANSI and stray bracketed codes like "[22m" that can survive CLI output.
-    private static func cleanPlan(_ text: String) -> String {
-        UsageFormatter.cleanPlanName(text)
     }
 
     private static func dumpIfNeeded(enabled: Bool, reason: String, usage: String, status: String?) {
@@ -1372,10 +1401,8 @@ extension ClaudeStatusProbe {
 
     static func probeWorkingDirectoryURL() -> URL {
         let fm = FileManager.default
-        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? fm.temporaryDirectory
-        let dir = base
-            .appendingPathComponent("CodexBar", isDirectory: true)
-            .appendingPathComponent("ClaudeProbe", isDirectory: true)
+        let dir = self.dedicatedProbeWorkingDirectoryURL()
+        guard self.isDedicatedProbeWorkingDirectory(dir) else { return fm.temporaryDirectory }
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
             return dir
@@ -1384,8 +1411,34 @@ extension ClaudeStatusProbe {
         }
     }
 
+    /// CodexBar's own probe directory. `probeWorkingDirectoryURL()` falls back to the shared temporary directory when
+    /// it cannot be created; only this directory may have Claude's workspace trust accepted on the user's behalf.
+    static func dedicatedProbeWorkingDirectoryURL() -> URL {
+        #if DEBUG
+        if let override = self.dedicatedProbeDirectoryOverrideForTesting {
+            return override
+        }
+        #endif
+        let fm = FileManager.default
+        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? fm.temporaryDirectory
+        return base
+            .appendingPathComponent("CodexBar", isDirectory: true)
+            .appendingPathComponent("ClaudeProbe", isDirectory: true)
+    }
+
+    static func isDedicatedProbeWorkingDirectory(_ directory: URL) -> Bool {
+        let expected = self.dedicatedProbeWorkingDirectoryURL().standardizedFileURL
+        let parent = expected.deletingLastPathComponent()
+        let unredirected = parent.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appendingPathComponent(parent.lastPathComponent, isDirectory: true)
+            .appendingPathComponent(expected.lastPathComponent, isDirectory: true)
+        return directory.standardizedFileURL.path == expected.path
+            && expected.resolvingSymlinksInPath().path == unredirected.path
+    }
+
     static func preparedProbeWorkingDirectoryURL() -> URL {
         let directory = self.probeWorkingDirectoryURL()
+        guard self.isDedicatedProbeWorkingDirectory(directory) else { return directory }
         do {
             try self.prepareProbeWorkingDirectory(at: directory)
         } catch {
@@ -1423,20 +1476,19 @@ extension ClaudeStatusProbe {
     }
 
     /// Run claude CLI inside a PTY so we can respond to interactive permission prompts.
-    private static func capture(subcommand: String, binary: String, timeout: TimeInterval) async throws -> String {
-        let stopOnSubstrings = subcommand == "/usage"
-            ? [
-                "Failed to load usage data",
-                "failed to load usage data",
-                "Failedto loadusagedata",
-                "failedtoloadusagedata",
-            ]
-            : []
+    private static func capture(
+        subcommand: String,
+        binary: String,
+        accountScope: String,
+        timeout: TimeInterval,
+        environment: [String: String]) async throws -> String
+    {
+        let stopOnSubstrings = subcommand == "/usage" ? ["Failed to load usage data"] : []
         let idleTimeout: TimeInterval? = subcommand == "/usage" ? nil : 3.0
         let sendEnterEvery: TimeInterval? = subcommand == "/usage" ? 0.8 : nil
         let stopWhenNormalized: (@Sendable (String) -> Bool)? = subcommand == "/usage"
             ? { @Sendable normalizedScan in
-                Self.usageCaptureHasSessionValue(normalizedScan)
+                Self.usageCaptureIsComplete(normalizedScan)
                     || Self.usageCaptureHasSubscriptionNotice(normalizedScan)
             }
             : nil
@@ -1444,16 +1496,15 @@ extension ClaudeStatusProbe {
             return try await ClaudeCLISession.current.capture(
                 subcommand: subcommand,
                 binary: binary,
+                accountScope: accountScope,
                 timeout: timeout,
+                environment: environment,
                 idleTimeout: idleTimeout,
                 stopOnSubstrings: stopOnSubstrings,
                 stopWhenNormalized: stopWhenNormalized,
                 settleAfterStop: subcommand == "/usage" ? 2.0 : 0.25,
                 sendEnterEvery: sendEnterEvery)
-        } catch ClaudeCLISession.SessionError.processExited {
-            await ClaudeCLISession.current.reset()
-            throw ClaudeStatusProbeError.timedOut
-        } catch ClaudeCLISession.SessionError.timedOut {
+        } catch ClaudeCLISession.SessionError.processExited, ClaudeCLISession.SessionError.timedOut {
             await ClaudeCLISession.current.reset()
             throw ClaudeStatusProbeError.timedOut
         } catch ClaudeCLISession.SessionError.launchFailed(_) {
@@ -1464,9 +1515,21 @@ extension ClaudeStatusProbe {
         }
     }
 
-    private static func usageCaptureHasSessionValue(_ normalizedText: String) -> Bool {
-        guard let labelRange = normalizedText.range(of: "currentsession") else { return false }
-        let tail = normalizedText[labelRange.upperBound...]
+    static func usageCaptureIsComplete(_ normalizedText: String) -> Bool {
+        // The CLI can show session quotas while its scoped weekly rows are still refreshing.
+        !normalizedText.contains("refreshing…esctocancel")
+            && !normalizedText.contains("refreshing...esctocancel")
+            && self.usageCaptureHasQuotaValue(normalizedText)
+    }
+
+    /// Plans without a five-hour session window start the quota rows at the weekly limit.
+    static func usageCaptureHasQuotaValue(_ normalizedText: String) -> Bool {
+        let insightsStart = normalizedText.range(of: "what'scontributingtoyourlimitsusage?")?.lowerBound
+            ?? normalizedText.endIndex
+        let quotaText = normalizedText[..<insightsStart]
+        guard let labelRange = quotaText.range(of: "currentsession") ?? quotaText.range(of: "currentweek")
+        else { return false }
+        let tail = quotaText[labelRange.upperBound...]
         return tail.range(of: #"[0-9]{1,3}(?:\.[0-9]+)?%"#, options: .regularExpression) != nil
     }
 

@@ -16,10 +16,92 @@ struct SyntheticSettingsReaderTests {
     }
 }
 
-struct SyntheticUsageSnapshotTests {
+struct SyntheticPluginGoldenTests {
     @Test
-    func `maps usage snapshot windows`() throws {
-        let json = """
+    func `search does not revive the legacy subscription counter`() async throws {
+        let snapshot = try await Self.fetch("""
+        {
+          "subscription": { "limit": 500, "requests": 0 },
+          "search": { "hourly": { "limit": 250, "requests": 5 } }
+        }
+        """)
+        #expect(snapshot.primary == nil)
+        #expect(snapshot.secondary == nil)
+        #expect(snapshot.tertiary?.usedPercent == 2)
+    }
+
+    @Test
+    func `subscription only responses retain the legacy counter`() async throws {
+        let snapshot = try await Self.fetch("""
+        { "subscription": { "limit": 500, "requests": 10 } }
+        """)
+        #expect(snapshot.primary?.usedPercent == 2)
+        #expect(snapshot.secondary == nil)
+        #expect(snapshot.tertiary == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func `plan weekly quota ignores retired subscription and preserves search`(wrapped: Bool) async throws {
+        let body = """
+        {
+          "subscription": { "limit": 500, "requests": 0, "renewsAt": "2026-10-31T15:15:05.743Z" },
+          "search": {
+            "hourly": { "limit": 250, "requests": 0, "renewsAt": "2026-10-31T11:15:05.743Z" }
+          },
+          "planWeeklyLimit": {
+            "nextRegenAt": "2026-10-31T12:14:13.000Z",
+            "percentRemaining": 99.47981765714286,
+            "nextRegenPercent": 2
+          }
+        }
+        """
+        let snapshot = try await Self.fetch(wrapped ? "{\"data\":\(body)}" : body)
+
+        #expect(snapshot.primary == nil)
+        let weekly = try #require(snapshot.secondary)
+        #expect(abs(weekly.usedPercent - 0.52018234285714) < 0.000001)
+        #expect(weekly.resetsAt == ISO8601DateFormatter().date(from: "2026-10-31T12:14:13Z"))
+        #expect(weekly.nextRegenPercent == 2)
+        #expect(snapshot.tertiary?.usedPercent == 0)
+        #expect(snapshot.providerCost == nil)
+    }
+
+    @Test(arguments: [0.0, 0.5, 1.0, 100.0])
+    func `plan weekly percentages use percentage points even near exhaustion`(remaining: Double) async throws {
+        let snapshot = try await Self.fetch("""
+        {
+          "planWeeklyLimit": {
+            "percentRemaining": \(remaining),
+            "nextRegenPercent": 0.5
+          }
+        }
+        """)
+
+        #expect(snapshot.primary == nil)
+        #expect(snapshot.secondary?.usedPercent == 100 - remaining)
+        #expect(snapshot.secondary?.nextRegenPercent == 0.5)
+        #expect(snapshot.tertiary == nil)
+    }
+
+    @Test
+    func `legacy rolling and weekly quotas retain fractional percentages`() async throws {
+        let snapshot = try await Self.fetch("""
+        {
+          "rollingFiveHourLimit": { "percentRemaining": 0.75, "tickPercent": 0.02 },
+          "weeklyTokenLimit": { "percentRemaining": 0.98 },
+          "search": { "hourly": { "limit": 250, "requests": 5 } }
+        }
+        """)
+
+        #expect(snapshot.primary?.usedPercent == 25)
+        #expect(snapshot.primary?.nextRegenPercent == 2)
+        #expect(snapshot.secondary?.usedPercent == 2)
+        #expect(snapshot.tertiary?.usedPercent == 2)
+    }
+
+    @Test
+    func `generic quota fixture matches the production golden`() async throws {
+        let snapshot = try await Self.fetch("""
         {
           "plan": "Starter",
           "quotas": [
@@ -27,177 +109,18 @@ struct SyntheticUsageSnapshotTests {
             { "name": "Daily", "max": 200, "remaining": 50, "window_minutes": 1440 }
           ]
         }
-        """
-        let data = try #require(json.data(using: .utf8))
-        let snapshot = try SyntheticUsageParser.parse(data: data, now: Date(timeIntervalSince1970: 123))
-        let usage = snapshot.toUsageSnapshot()
+        """)
 
-        #expect(usage.primary?.usedPercent == 25)
-        #expect(usage.secondary?.usedPercent == 75)
-        #expect(usage.secondary?.windowMinutes == 1440)
-        #expect(usage.loginMethod(for: .synthetic) == "Starter")
+        #expect(snapshot.primary?.usedPercent == 25)
+        #expect(snapshot.primary?.resetsAt == Date(timeIntervalSince1970: 1_735_689_600))
+        #expect(snapshot.secondary?.usedPercent == 75)
+        #expect(snapshot.secondary?.windowMinutes == 1440)
+        #expect(snapshot.identity?.loginMethod == "Starter")
     }
 
     @Test
-    func `parses subscription quota`() throws {
-        let json = """
-        {
-          "subscription": {
-            "limit": 1350,
-            "requests": 73.8,
-            "renewsAt": "2026-01-11T11:23:38.600Z"
-          }
-        }
-        """
-        let data = try #require(json.data(using: .utf8))
-        let snapshot = try SyntheticUsageParser.parse(data: data, now: Date(timeIntervalSince1970: 123))
-        let usage = snapshot.toUsageSnapshot()
-        let expected = (73.8 / 1350.0) * 100
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let expectedReset = try #require(formatter.date(from: "2026-01-11T11:23:38.600Z"))
-
-        #expect(abs((usage.primary?.usedPercent ?? 0) - expected) < 0.01)
-        #expect(usage.primary?.resetsAt == expectedReset)
-        #expect(usage.loginMethod(for: .synthetic) == nil)
-    }
-
-    @Test
-    func `parses nested subscription pack quota`() throws {
-        let json = """
-        {
-          "subscription": {
-            "packs": 2,
-            "rateLimit": {
-              "messages": 1000,
-              "requests": 250,
-              "period": "5hr",
-              "resetsAt": "2026-04-16T18:00:00Z"
-            }
-          }
-        }
-        """
-        let data = try #require(json.data(using: .utf8))
-        let snapshot = try SyntheticUsageParser.parse(data: data, now: Date(timeIntervalSince1970: 123))
-        let usage = snapshot.toUsageSnapshot()
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        let expectedReset = try #require(formatter.date(from: "2026-04-16T18:00:00Z"))
-
-        #expect(usage.primary?.usedPercent == 25)
-        #expect(usage.primary?.windowMinutes == 300)
-        #expect(usage.primary?.resetsAt == expectedReset)
-    }
-
-    @Test
-    func `parses live root level rolling and weekly quotas`() throws {
-        let json = """
-        {
-          "subscription": {
-            "limit": 750,
-            "requests": 0,
-            "renewsAt": "2026-04-17T08:35:49.493Z"
-          },
-          "weeklyTokenLimit": {
-            "nextRegenAt": "2026-04-17T05:19:30.000Z",
-            "percentRemaining": 98.05884722222223,
-            "maxCredits": "$36.00",
-            "remainingCredits": "$35.30",
-            "nextRegenCredits": "$0.72"
-          },
-          "rollingFiveHourLimit": {
-            "nextTickAt": "2026-04-17T03:44:11.000Z",
-            "tickPercent": 0.05,
-            "remaining": 750,
-            "max": 750,
-            "limited": false
-          },
-          "search": {
-            "hourly": {
-              "limit": 250,
-              "requests": 2,
-              "renewsAt": "2026-04-17T04:30:01.494Z"
-            }
-          }
-        }
-        """
-        let data = try #require(json.data(using: .utf8))
-        let snapshot = try SyntheticUsageParser.parse(data: data, now: Date(timeIntervalSince1970: 123))
-        let usage = snapshot.toUsageSnapshot()
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        let fractionalFormatter = ISO8601DateFormatter()
-        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let expectedPrimaryReset = try #require(formatter.date(from: "2026-04-17T03:44:11Z"))
-        let expectedSecondaryReset = try #require(formatter.date(from: "2026-04-17T05:19:30Z"))
-        let expectedTertiaryReset = try #require(fractionalFormatter.date(from: "2026-04-17T04:30:01.494Z"))
-
-        #expect(usage.primary?.usedPercent == 0)
-        #expect(usage.primary?.resetsAt == expectedPrimaryReset)
-        #expect(usage.primary?.resetDescription == nil)
-        #expect(abs((usage.secondary?.usedPercent ?? 0) - 1.9411527777777715) < 0.001)
-        #expect(usage.secondary?.resetsAt == expectedSecondaryReset)
-        #expect(usage.secondary?.resetDescription == nil)
-        #expect(usage.tertiary?.usedPercent == 0.8)
-        #expect(usage.tertiary?.resetsAt == expectedTertiaryReset)
-        #expect(usage.providerCost?.limit == 36)
-        #expect(abs((usage.providerCost?.used ?? 0) - 0.7) < 0.0001)
-        #expect(usage.providerCost?.nextRegenAmount == 0.72)
-    }
-
-    @Test
-    func `parses rolling lane tickPercent into primary nextRegenPercent`() throws {
-        let json = """
-        {
-          "rollingFiveHourLimit": {
-            "nextTickAt": "2026-04-17T03:44:11.000Z",
-            "tickPercent": 0.05,
-            "remaining": 750,
-            "max": 750,
-            "limited": false
-          }
-        }
-        """
-        let data = try #require(json.data(using: .utf8))
-        let snapshot = try SyntheticUsageParser.parse(data: data, now: Date(timeIntervalSince1970: 123))
-        let usage = snapshot.toUsageSnapshot()
-        #expect(usage.primary?.nextRegenPercent == 5.0)
-    }
-
-    @Test
-    func `omits nextRegenPercent when rolling lane lacks tickPercent`() throws {
-        let json = """
-        {
-          "rollingFiveHourLimit": {
-            "nextTickAt": "2026-04-17T03:44:11.000Z",
-            "remaining": 750,
-            "max": 750
-          }
-        }
-        """
-        let data = try #require(json.data(using: .utf8))
-        let snapshot = try SyntheticUsageParser.parse(data: data, now: Date(timeIntervalSince1970: 123))
-        let usage = snapshot.toUsageSnapshot()
-        #expect(usage.primary?.nextRegenPercent == nil)
-    }
-
-    @Test
-    func `parses time string suffixes covering minutes hours and days`() {
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "5min") == 5)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "5m") == 5)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "5hr") == 300)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "5h") == 300)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "5hours") == 300)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "2days") == 2880)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "2d") == 2880)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "1 hour") == 60)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "junk") == nil)
-        #expect(SyntheticUsageParser.windowMinutes(fromText: "") == nil)
-    }
-
-    @Test
-    func `preserves slot identity when rolling lane is missing`() throws {
-        let json = """
+    func `missing rolling lane keeps weekly and search slots`() async throws {
+        let snapshot = try await Self.fetch("""
         {
           "weeklyTokenLimit": {
             "nextRegenAt": "2026-04-17T05:19:30.000Z",
@@ -214,14 +137,25 @@ struct SyntheticUsageSnapshotTests {
             }
           }
         }
-        """
-        let data = try #require(json.data(using: .utf8))
-        let snapshot = try SyntheticUsageParser.parse(data: data, now: Date(timeIntervalSince1970: 123))
-        let usage = snapshot.toUsageSnapshot()
+        """)
 
-        #expect(usage.primary == nil)
-        #expect(abs((usage.secondary?.usedPercent ?? 0) - 2.0) < 0.001)
-        #expect(usage.tertiary?.usedPercent == 0.8)
-        #expect(usage.providerCost?.limit == 36)
+        #expect(snapshot.primary == nil)
+        #expect(snapshot.secondary?.usedPercent == 2)
+        #expect(snapshot.tertiary?.usedPercent == 0.8)
+        #expect(snapshot.providerCost?.limit == 36)
+        #expect(snapshot.providerCost?.used == 0.7000000000000028)
+    }
+
+    private static func fetch(_ body: String) async throws -> UsageSnapshot {
+        let transport = ProviderHTTPTransportHandler { request in
+            let response = try #require(HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]))
+            return (Data(body.utf8), response)
+        }
+        return try await ProviderPluginRuntime(bundledPlugin: "synthetic", transport: transport)
+            .fetchUsage(secrets: ["SYNTHETIC_API_KEY": "fixture-key"])
     }
 }

@@ -36,14 +36,14 @@ public enum UsageFormatter {
         self.localizationLock.unlock()
     }
 
-    private static func currentLocale() -> Locale {
+    static func currentLocale() -> Locale {
         self.localizationLock.lock()
         let provider = self.localeProvider
         self.localizationLock.unlock()
         return provider?() ?? Locale(identifier: "en_US_POSIX")
     }
 
-    private static func localized(_ key: String) -> String {
+    public static func localized(_ key: String) -> String {
         self.localizationLock.lock()
         let provider = self.localizationProvider
         self.localizationLock.unlock()
@@ -107,24 +107,45 @@ public enum UsageFormatter {
     }
 
     public static func resetCountdownDescription(from date: Date, now: Date = .init()) -> String {
-        let seconds = max(0, date.timeIntervalSince(now))
-        if seconds < 1 { return "now" }
+        self.countdownDescription(from: date, now: now, relative: true)
+    }
 
-        let totalMinutes = max(1, Int(ceil(seconds / 60.0)))
+    /// The countdown without a leading preposition, for sentences that supply their own ("Runs out in %@").
+    public static func resetCountdownDuration(from date: Date, now: Date = .init()) -> String {
+        self.countdownDescription(from: date, now: now, relative: false)
+    }
+
+    private static func countdownDescription(from date: Date, now: Date, relative: Bool) -> String {
+        guard let totalMinutes = self.resetCountdownMinutes(from: date, now: now) else {
+            return self.localized("Unknown")
+        }
+        if totalMinutes == 0 { return relative ? self.localized("now") : "now" }
         let days = totalMinutes / (24 * 60)
         let hours = (totalMinutes / 60) % 24
         let minutes = totalMinutes % 60
+        let prefix = relative ? "in " : ""
 
         if days > 0 {
-            if hours > 0 { return "in \(days)d \(hours)h" }
-            if minutes > 0 { return "in \(days)d \(minutes)m" }
-            return "in \(days)d"
+            if hours > 0 { return self.localized("\(prefix)%@d %@h", "\(days)", "\(hours)") }
+            if minutes > 0 {
+                guard relative else {
+                    return "\(self.localized("%@d", "\(days)")) \(self.localized("%@m", "\(minutes)"))"
+                }
+                return self.localized("in %@d %@m", "\(days)", "\(minutes)")
+            }
+            return self.localized("\(prefix)%@d", "\(days)")
         }
         if hours > 0 {
-            if minutes > 0 { return "in \(hours)h \(minutes)m" }
-            return "in \(hours)h"
+            if minutes > 0 { return self.localized("\(prefix)%@h %@m", "\(hours)", "\(minutes)") }
+            return self.localized("\(prefix)%@h", "\(hours)")
         }
-        return "in \(totalMinutes)m"
+        return self.localized("\(prefix)%@m", "\(totalMinutes)")
+    }
+
+    private static func resetCountdownMinutes(from date: Date, now: Date) -> Int? {
+        let seconds = date.timeIntervalSince(now)
+        guard let minutes = Int(exactly: ceil(seconds / 60)) else { return nil }
+        return seconds < 1 ? 0 : max(1, minutes)
     }
 
     public static func resetDescription(from date: Date, now: Date = .init()) -> String {
@@ -147,16 +168,13 @@ public enum UsageFormatter {
         style: ResetTimeDisplayStyle,
         now: Date = .init()) -> String?
     {
-        if let date = window.resetsAt {
+        if let date = window.resetsAt, self.resetCountdownMinutes(from: date, now: now) != nil {
             if style == .countdown {
-                let countdown = self.resetCountdownDescription(from: date, now: now)
-                if countdown == "now" {
+                let duration = self.resetCountdownDuration(from: date, now: now)
+                if duration == "now" {
                     return self.localized("Resets now")
                 }
-                if countdown.hasPrefix("in ") {
-                    return self.localized("Resets in %@", String(countdown.dropFirst(3)))
-                }
-                return self.localized("Resets %@", countdown)
+                return self.localized("Resets in %@", duration)
             }
             let text = self.resetDescription(from: date, now: now)
             return self.localized("Resets %@", text)
@@ -165,11 +183,12 @@ public enum UsageFormatter {
         if let desc = window.resetDescription {
             let trimmed = desc.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
-            if trimmed.lowercased().hasPrefix("resets in ") {
-                return self.localized("Resets in %@", String(trimmed.dropFirst("Resets in ".count)))
+            let lowercased = trimmed.lowercased()
+            for prefix in ["resets in ", "reset in "] where lowercased.hasPrefix(prefix) {
+                return self.localized("Resets in %@", String(trimmed.dropFirst(prefix.count)))
             }
-            if trimmed.lowercased().hasPrefix("resets ") {
-                return self.localized("Resets %@", String(trimmed.dropFirst("Resets ".count)))
+            for prefix in ["resets ", "reset "] where lowercased.hasPrefix(prefix) {
+                return self.localized("Resets %@", String(trimmed.dropFirst(prefix.count)))
             }
             return self.localized("Resets %@", trimmed)
         }
@@ -178,7 +197,10 @@ public enum UsageFormatter {
 
     public static func updatedString(from date: Date, now: Date = .init()) -> String {
         let delta = now.timeIntervalSince(date)
-        if abs(delta) < 60 {
+        guard let elapsedSeconds = Int(exactly: delta.rounded(.towardZero)) else {
+            return self.localized("Updated absolute %@", self.localized("Unknown"))
+        }
+        if elapsedSeconds > -60, elapsedSeconds < 60 {
             return self.localized("Updated just now")
         }
         if let hours = Calendar.current.dateComponents([.hour], from: date, to: now).hour, hours < 24 {
@@ -188,7 +210,7 @@ public enum UsageFormatter {
             rel.unitsStyle = .abbreviated
             return self.localized("Updated relative %@", rel.localizedString(for: date, relativeTo: now))
             #else
-            let seconds = max(0, Int(now.timeIntervalSince(date)))
+            let seconds = max(0, elapsedSeconds)
             if seconds < 3600 {
                 let minutes = max(1, seconds / 60)
                 return self.localized("Updated %@m ago", String(minutes))
@@ -204,7 +226,11 @@ public enum UsageFormatter {
     }
 
     public static func creditsString(from value: Double) -> String {
-        self.localized("%@ left", self.creditsNumberString(from: value))
+        self.remainingString(from: self.creditsNumberString(from: value))
+    }
+
+    public static func remainingString(from formattedValue: String) -> String {
+        self.localized("%@ left", formattedValue)
     }
 
     public static func creditsNumberString(from value: Double) -> String {
@@ -310,15 +336,7 @@ public enum UsageFormatter {
     public static let costEstimateHint = "Estimated from local logs · may differ from your bill"
 
     public static func costEstimateHint(provider: UsageProvider) -> String {
-        switch provider {
-        case .claude:
-            "Estimated from local Claude logs at API rates; token totals include cache read/write tokens " +
-                "and may differ from Claude Code /status."
-        case .cursor:
-            "From Cursor's usage dashboard at vendor token rates; may differ from your invoice."
-        default:
-            self.costEstimateHint
-        }
+        ProviderDescriptorRegistry.descriptor(for: provider).tokenCost.estimateDisclaimer
     }
 
     /// Formats a currency value with the specified currency code.
@@ -339,12 +357,13 @@ public enum UsageFormatter {
     }
 
     public static func tokenCountString(_ value: Int) -> String {
-        let absValue = abs(value)
+        let absValue = value.magnitude
         let sign = value < 0 ? "-" : ""
 
-        let units: [(threshold: Int, divisor: Double, suffix: String)] = [
-            (1_000_000_000, 1_000_000_000, "B"),
-            (1_000_000, 1_000_000, "M"),
+        // Promote at the point where whole lower units would round to 1000.
+        let units: [(threshold: UInt, divisor: Double, suffix: String)] = [
+            (999_500_000, 1_000_000_000, "B"),
+            (999_500, 1_000_000, "M"),
             (1000, 1000, "K"),
         ]
 
@@ -447,6 +466,7 @@ public enum UsageFormatter {
     public static func modelDisplayName(_ raw: String) -> String {
         var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return raw }
+        if cleaned == "codex-auto-review" { return "Codex Auto Review" }
         if CostUsagePricing.isCodexUnattributedModel(cleaned) { return "Unknown model" }
 
         let patterns = [
@@ -515,5 +535,26 @@ public enum UsageFormatter {
             return cleaned.prefix(1).uppercased() + cleaned.dropFirst()
         }
         return cleaned
+    }
+}
+
+extension UsageFormatter {
+    static func compactResetDescription(_ date: Date?, now: Date = Date()) -> String? {
+        guard let date else { return nil }
+        let interval = date.timeIntervalSince(now)
+        guard interval > 0 else { return "Expired" }
+
+        let hours = Int(interval / 3600)
+        let minutes = Int((interval.truncatingRemainder(dividingBy: 3600)) / 60)
+
+        if hours >= 24 {
+            let days = hours / 24
+            let remainingHours = hours % 24
+            return "Resets in \(days)d \(remainingHours)h"
+        } else if hours > 0 {
+            return "Resets in \(hours)h \(minutes)m"
+        } else {
+            return "Resets in \(minutes)m"
+        }
     }
 }

@@ -1,19 +1,21 @@
 import Foundation
 
 public struct OpenCodeGoUsageSnapshot: Sendable {
+    /// A quota-only refresh whose local cost scan is still running.
+    public internal(set) var localHistoryPending = false
     public let isBalanceOnly: Bool
     public let hasWeeklyUsage: Bool
     public let hasMonthlyUsage: Bool
     public let rollingUsagePercent: Double
     public let weeklyUsagePercent: Double
     public let monthlyUsagePercent: Double
-    public let rollingResetInSec: Int
-    public let weeklyResetInSec: Int
-    public let monthlyResetInSec: Int
+    public let rollingResetInSec: Int?
+    public let weeklyResetInSec: Int?
+    public let monthlyResetInSec: Int?
     public private(set) var zenBalanceUSD: Double?
-    public let renewsAt: Date?
+    public private(set) var renewsAt: Date?
     public private(set) var daily: [CostUsageDailyReport.Entry]
-    public let updatedAt: Date
+    public private(set) var updatedAt: Date
 
     public init(
         isBalanceOnly: Bool = false,
@@ -22,9 +24,9 @@ public struct OpenCodeGoUsageSnapshot: Sendable {
         rollingUsagePercent: Double,
         weeklyUsagePercent: Double,
         monthlyUsagePercent: Double,
-        rollingResetInSec: Int,
-        weeklyResetInSec: Int,
-        monthlyResetInSec: Int,
+        rollingResetInSec: Int?,
+        weeklyResetInSec: Int?,
+        monthlyResetInSec: Int?,
         zenBalanceUSD: Double? = nil,
         renewsAt: Date? = nil,
         daily: [CostUsageDailyReport.Entry] = [],
@@ -71,7 +73,7 @@ public struct OpenCodeGoUsageSnapshot: Sendable {
                 identity: nil)
         }
 
-        let rollingReset = self.updatedAt.addingTimeInterval(TimeInterval(self.rollingResetInSec))
+        let rollingReset = self.rollingResetInSec.map { self.updatedAt.addingTimeInterval(TimeInterval($0)) }
         let primary = RateWindow(
             usedPercent: self.rollingUsagePercent,
             windowMinutes: 5 * 60,
@@ -79,7 +81,7 @@ public struct OpenCodeGoUsageSnapshot: Sendable {
             resetDescription: nil)
         let secondary: RateWindow?
         if self.hasWeeklyUsage {
-            let weeklyReset = self.updatedAt.addingTimeInterval(TimeInterval(self.weeklyResetInSec))
+            let weeklyReset = self.weeklyResetInSec.map { self.updatedAt.addingTimeInterval(TimeInterval($0)) }
             secondary = RateWindow(
                 usedPercent: self.weeklyUsagePercent,
                 windowMinutes: 7 * 24 * 60,
@@ -90,7 +92,7 @@ public struct OpenCodeGoUsageSnapshot: Sendable {
         }
         let tertiary: RateWindow?
         if self.hasMonthlyUsage {
-            let monthlyReset = self.updatedAt.addingTimeInterval(TimeInterval(self.monthlyResetInSec))
+            let monthlyReset = self.monthlyResetInSec.map { self.updatedAt.addingTimeInterval(TimeInterval($0)) }
             tertiary = RateWindow(
                 usedPercent: self.monthlyUsagePercent,
                 windowMinutes: 30 * 24 * 60,
@@ -148,19 +150,11 @@ public struct OpenCodeGoUsageSnapshot: Sendable {
         guard !web.isBalanceOnly else {
             return self.withZenBalanceUSD(web.zenBalanceUSD ?? self.zenBalanceUSD)
         }
-        return OpenCodeGoUsageSnapshot(
-            hasWeeklyUsage: web.hasWeeklyUsage,
-            hasMonthlyUsage: web.hasMonthlyUsage,
-            rollingUsagePercent: web.rollingUsagePercent,
-            weeklyUsagePercent: web.weeklyUsagePercent,
-            monthlyUsagePercent: web.monthlyUsagePercent,
-            rollingResetInSec: web.rollingResetInSec,
-            weeklyResetInSec: web.weeklyResetInSec,
-            monthlyResetInSec: web.monthlyResetInSec,
-            zenBalanceUSD: web.zenBalanceUSD ?? self.zenBalanceUSD,
-            renewsAt: web.renewsAt ?? self.renewsAt,
-            daily: self.daily,
-            updatedAt: self.updatedAt)
+        var copy = web.withDaily(self.daily)
+        copy.zenBalanceUSD = web.zenBalanceUSD ?? self.zenBalanceUSD
+        copy.renewsAt = web.renewsAt ?? self.renewsAt
+        copy.updatedAt = self.updatedAt
+        return copy
     }
 
     public func withDaily(_ daily: [CostUsageDailyReport.Entry]) -> OpenCodeGoUsageSnapshot {
@@ -171,10 +165,15 @@ public struct OpenCodeGoUsageSnapshot: Sendable {
 
     /// Projects the local per-day cost buckets into the shared cost-history model so OpenCode Go
     /// can reuse the same daily usage chart as Codex/Claude instead of a bespoke view.
-    public func toCostUsageTokenSnapshot(historyDays: Int = 30) -> CostUsageTokenSnapshot {
+    public func toCostUsageTokenSnapshot(
+        historyDays: Int = 30,
+        calendar: Calendar = .current) -> CostUsageTokenSnapshot
+    {
         CostUsageFetcher.tokenSnapshot(
             from: CostUsageDailyReport(data: self.daily, summary: nil),
             now: self.updatedAt,
-            historyDays: historyDays)
+            historyDays: historyDays,
+            calendar: calendar,
+            costProvenance: .listPriceEstimate)
     }
 }

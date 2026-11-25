@@ -4,6 +4,12 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
     public enum Provider: String, Codable, Sendable {
         case codex
         case claude
+        case pi
+    }
+
+    public enum Dialect: String, Codable, Sendable {
+        case pi
+        case omp
     }
 
     public enum Source: String, Codable, Sendable {
@@ -20,6 +26,7 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
 
     public var id: String
     public var provider: Provider
+    public var dialect: Dialect?
     public var source: Source
     public var state: State
     public var pid: Int32?
@@ -34,6 +41,7 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
     public init(
         id: String,
         provider: Provider,
+        dialect: Dialect? = nil,
         source: Source,
         state: State,
         pid: Int32?,
@@ -47,6 +55,7 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
     {
         self.id = id
         self.provider = provider
+        self.dialect = dialect
         self.source = source
         self.state = state
         self.pid = pid
@@ -140,6 +149,22 @@ struct DirectoryMetadataScanBudget {
         clock() < self.deadline
     }
 
+    func compactMapWhileTimeRemains<Result>(
+        _ urls: [URL],
+        clock: () -> Date = Date.init,
+        transform: (URL) -> Result?) -> [Result]
+    {
+        var results: [Result] = []
+        for url in urls {
+            // Enumeration already charged the entry count; enrichment shares its deadline.
+            guard self.hasTimeRemaining(clock: clock) else { break }
+            if let result = transform(url) {
+                results.append(result)
+            }
+        }
+        return results
+    }
+
     private mutating func entries(
         in directory: URL,
         fileManager: FileManager,
@@ -159,10 +184,38 @@ struct DirectoryMetadataScanBudget {
             guard let url = enumerator.nextObject() as? URL else { break }
             self.remainingEntryCount -= 1
             self.didVisitEntry?()
+            guard self.hasTimeRemaining(clock: clock) else { break }
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
             entries.append((url, isDirectory))
         }
         return entries
+    }
+}
+
+enum AgentProcessPath {
+    /// Foundation's tilde rules vary by runtime/SDK. An explicit directory hint avoids a metadata probe.
+    static let expandsBareTilde = URL(fileURLWithPath: "~", isDirectory: false).relativePath != "~"
+
+    static func basename(
+        _ path: String,
+        currentDirectory: @autoclosure () -> String = FileManager.default.currentDirectoryPath,
+        expandTilde: (String) -> String = { ($0 as NSString).expandingTildeInPath },
+        expandsBareTilde: Bool = Self.expandsBareTilde) -> String
+    {
+        let path = path.hasPrefix("~") && (expandsBareTilde || path.hasPrefix("~/")) ? expandTilde(path) : path
+        let basename = (path as NSString).lastPathComponent
+        if path.hasPrefix("/") { return basename }
+        guard basename.isEmpty || basename == "." || basename == ".." else { return basename }
+        // File URLs resolve relative dot components against CWD, but leave absolute ones alone.
+        var components = currentDirectory().components(separatedBy: "/")
+        for component in path.components(separatedBy: "/") {
+            if component == ".." {
+                if components.count > 1 { components.removeLast() }
+            } else if component != "." {
+                components.append(component)
+            }
+        }
+        return components.last(where: { !$0.isEmpty }) ?? "/"
     }
 }
 
@@ -171,22 +224,40 @@ public struct AgentProcessRecord: Equatable, Sendable {
     public let ppid: Int32
     public let startedAt: Date?
     public let command: String
+    /// Original argv when the platform exposes it. `command` remains the portable fallback.
+    public let arguments: [String]?
+    /// Only Pi root selectors; nil means unavailable and an empty map means a known empty selection.
+    @ProcessEnvironment public private(set) var piSelectorEnvironment: [String: String]?
 
-    public init(pid: Int32, ppid: Int32, startedAt: Date?, command: String) {
+    public init(
+        pid: Int32,
+        ppid: Int32,
+        startedAt: Date?,
+        command: String,
+        arguments: [String]? = nil,
+        piSelectorEnvironment: [String: String]? = nil)
+    {
         self.pid = pid
         self.ppid = ppid
         self.startedAt = startedAt
         self.command = command
+        self.arguments = arguments
+        self.piSelectorEnvironment = PiProcessEnvironment.filtered(piSelectorEnvironment)
+    }
+
+    func withPiSelectorEnvironment(_ environment: [String: String]?) -> Self {
+        var record = self
+        record.piSelectorEnvironment = PiProcessEnvironment.filtered(environment)
+        return record
     }
 
     public var executableBasename: String {
-        let firstToken = self.command.split(whereSeparator: \ .isWhitespace).first.map(String.init) ?? ""
-        let firstBasename = URL(fileURLWithPath: firstToken).lastPathComponent
-        if firstBasename == "disclaimer" {
-            return firstBasename
-        }
-        if self.command.contains("Application Support/Claude/claude-code/claude") {
-            return "claude"
+        let firstToken = self.arguments?.first ?? self.command.split(whereSeparator: \ .isWhitespace).first
+            .map(String.init) ?? ""
+        let firstBasename = AgentProcessPath.basename(firstToken)
+        let executable = self.arguments?.first ?? self.command
+        if firstBasename != "disclaimer", executable.contains("Application Support/Claude/claude-code/claude") {
+            return AgentSession.Provider.claude.rawValue
         }
         return firstBasename
     }
@@ -214,19 +285,25 @@ public enum AgentPSOutputParser {
     }
 
     public static func agentProcesses(from records: [AgentProcessRecord]) -> [AgentProcessRecord] {
+        // Prefer argv[0] for bundle checks; prompts may contain app paths. Keep the full command fallback
+        // because an unquoted executable path can contain spaces, such as "Codex Computer Use.app".
         let candidates = records.filter { record in
             let basename = record.executableBasename.lowercased()
-            if basename == "codex" {
-                let arguments = self.arguments(record.command)
-                return self.isCodexAgentExecutable(record.command) &&
+            if self.piDialect(for: record) != nil {
+                return !self.isObviousPiFamilyHelper(record.command)
+            }
+            let executable = record.arguments?.first ?? record.command
+            if basename == AgentSession.Provider.codex.rawValue {
+                let arguments = self.arguments(record)
+                return self.isCodexAgentExecutable(executable) &&
                     !arguments.contains("app-server") &&
                     !arguments.contains("--help") &&
                     !arguments.contains("--version")
             }
-            if basename == "claude" {
-                return self.isClaudeAgentExecutable(record.command) && !self.isObviousClaudeHelper(record.command)
+            if basename == AgentSession.Provider.claude.rawValue {
+                return self.isClaudeAgentExecutable(executable) && !self.isObviousClaudeHelper(record.command)
             }
-            return basename == "disclaimer" && record.command.contains("claude")
+            return basename == "disclaimer" && record.command.contains(AgentSession.Provider.claude.rawValue)
         }
 
         let recordsByPID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.pid, $0) })
@@ -234,7 +311,7 @@ public enum AgentPSOutputParser {
             guard record.executableBasename.lowercased() == "disclaimer" else { return true }
             return !candidates.contains { child in
                 child.ppid == record.pid &&
-                    child.executableBasename.lowercased() == "claude" &&
+                    child.executableBasename.lowercased() == AgentSession.Provider.claude.rawValue &&
                     self.normalizedClaudeArguments(child.command) == self.normalizedClaudeArguments(record.command)
             } && recordsByPID[record.ppid] == nil
         }
@@ -242,38 +319,86 @@ public enum AgentPSOutputParser {
 
     public static func provider(for record: AgentProcessRecord) -> AgentSession.Provider? {
         let basename = record.executableBasename.lowercased()
-        if basename == "codex" {
-            return .codex
+        if let provider = AgentSession.Provider(rawValue: basename), provider != .pi {
+            return provider
         }
-        if basename == "claude" || basename == "disclaimer" {
+        if basename == "disclaimer" {
             return .claude
+        }
+        if self.piDialect(for: record) != nil, !self.isObviousPiFamilyHelper(record.command) {
+            return .pi
         }
         return nil
     }
 
+    public static func piDialect(for record: AgentProcessRecord) -> AgentSession.Dialect? {
+        self.piDialect(executableBasename: record.executableBasename, arguments: self.arguments(record))
+    }
+
+    static func piDialect(arguments: [String]) -> AgentSession.Dialect? {
+        self.piDialect(
+            executableBasename: AgentProcessPath.basename(arguments.first ?? ""),
+            arguments: Array(arguments.dropFirst()))
+    }
+
+    static func piDialect(
+        executableBasename: String,
+        arguments: @autoclosure () -> [String]) -> AgentSession.Dialect?
+    {
+        let firstBasename = AgentProcessPath.basename(executableBasename).lowercased()
+        if firstBasename == AgentSession.Provider.pi.rawValue {
+            return .pi
+        }
+        if firstBasename == "omp" {
+            return .omp
+        }
+        guard firstBasename == "bun" else { return nil }
+        return arguments().contains {
+            AgentProcessPath.basename($0).lowercased() == "omp"
+        } ? .omp : nil
+    }
+
     public static func source(for record: AgentProcessRecord) -> AgentSession.Source {
         guard self.provider(for: record) == .claude else { return .cli }
-        return record.command.contains("Application Support/Claude/claude-code") ? .desktopApp : .cli
+        let command = record.executableBasename.lowercased() == "disclaimer"
+            ? record.command : record.arguments?.first ?? record.command
+        return command.contains("Application Support/Claude/claude-code") ? .desktopApp : .cli
     }
 
     public static func hasCodexAppServer(in records: [AgentProcessRecord]) -> Bool {
         records.contains { record in
-            record.executableBasename.lowercased() == "codex" &&
-                self.isCodexAgentExecutable(record.command) &&
-                self.arguments(record.command).contains("app-server")
+            record.executableBasename.lowercased() == AgentSession.Provider.codex.rawValue &&
+                self.isCodexAgentExecutable(record.arguments?.first ?? record.command) &&
+                self.arguments(record).contains("app-server")
         }
     }
 
-    private static func arguments(_ command: String) -> [String] {
-        command.split(whereSeparator: \ .isWhitespace).dropFirst().map(String.init)
+    static let chatGPTCodexExecutablePaths: Set<String> = [
+        "/Applications/ChatGPT.app/Contents/Resources/codex",
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    ]
+
+    static func hasTrustedChatGPTCodexAppServer(
+        in records: [AgentProcessRecord],
+        validator: (AgentProcessRecord) -> Bool) -> Bool
+    {
+        records.contains { record in
+            let executable = record.arguments?.first ?? record.command.split(whereSeparator: \ .isWhitespace)
+                .first.map(String.init) ?? ""
+            return self.chatGPTCodexExecutablePaths.contains(executable) &&
+                self.arguments(record).contains("app-server") && validator(record)
+        }
+    }
+
+    private static func arguments(_ record: AgentProcessRecord) -> [String] {
+        Array((record.arguments ?? record.command.split(whereSeparator: \ .isWhitespace).map(String.init)).dropFirst())
     }
 
     private static func normalizedClaudeArguments(_ command: String) -> [String] {
-        let arguments = self.arguments(command)
-        if let index = arguments.firstIndex(where: { URL(fileURLWithPath: $0).lastPathComponent == "claude" }) {
-            return Array(arguments.suffix(from: arguments.index(after: index)))
-        }
-        return arguments
+        let arguments = command.split(whereSeparator: \ .isWhitespace).dropFirst().map(String.init)
+        return arguments.firstIndex(where: {
+            AgentProcessPath.basename($0) == AgentSession.Provider.claude.rawValue
+        }).map { Array(arguments.dropFirst($0 + 1)) } ?? arguments
     }
 
     private static func isObviousClaudeHelper(_ command: String) -> Bool {
@@ -286,13 +411,22 @@ public enum AgentPSOutputParser {
     private static func isCodexAgentExecutable(_ command: String) -> Bool {
         let lowercased = command.lowercased()
         guard lowercased.contains(".app/") else { return true }
-        return lowercased.hasPrefix("/applications/codex.app/contents/resources/codex ") ||
-            lowercased.hasPrefix("/applications/codex.app/contents/resources/codex\t")
+        let executable = lowercased.split(whereSeparator: \ .isWhitespace).first.map(String.init)
+        return executable == "/applications/codex.app/contents/resources/codex" ||
+            executable == "/applications/chatgpt.app/contents/resources/codex"
     }
 
     private static func isClaudeAgentExecutable(_ command: String) -> Bool {
         let lowercased = command.lowercased()
         return !lowercased.contains(".app/") || lowercased.contains("application support/claude/claude-code/claude")
+    }
+
+    private static func isObviousPiFamilyHelper(_ command: String) -> Bool {
+        let lowercased = command.lowercased()
+        return lowercased.contains("--help") ||
+            lowercased.contains("--version") ||
+            lowercased.contains("--smoke-test") ||
+            lowercased.contains("__omp_worker_")
     }
 }
 
@@ -535,15 +669,16 @@ public struct CodexRolloutMetadata: Equatable, Sendable {
     }
 
     public func descriptiveName(threadMetadata: CodexThreadMetadata?) -> String? {
-        if self.isGuardian {
-            return "Approval review"
+        let taskName: String? = if self.isGuardian {
+            "Approval review"
+        } else if let agentPath = threadMetadata?.agentPath ?? self.agentPath {
+            AgentSessionNameFormatter.agentPath(agentPath)
+        } else {
+            nil
         }
-        if let agentPath = threadMetadata?.agentPath ?? self.agentPath,
-           let name = AgentSessionNameFormatter.agentPath(agentPath)
-        {
-            return name
-        }
-        return threadMetadata?.title.flatMap { AgentSessionNameFormatter.title($0) }
+        return AgentSessionNameFormatter.sessionName(
+            title: threadMetadata?.title,
+            taskName: taskName)
     }
 }
 
@@ -597,8 +732,39 @@ private enum AgentSessionNameFormatter {
         }
 
         let compact = line.split(whereSeparator: \ .isWhitespace).joined(separator: " ")
-        guard compact.count > maximumLength else { return compact }
-        return compact.prefix(maximumLength - 1).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        return self.truncated(compact, maximumLength: maximumLength)
+    }
+
+    static func sessionName(title: String?, taskName: String?, maximumLength: Int = 64) -> String? {
+        let chatName = title.flatMap { self.title($0, maximumLength: .max) }
+        guard let chatName else {
+            return taskName.map { self.truncated($0, maximumLength: maximumLength) }
+        }
+        guard let taskName,
+              chatName.caseInsensitiveCompare(taskName) != .orderedSame
+        else {
+            return self.truncated(chatName, maximumLength: maximumLength)
+        }
+
+        let separator = " · "
+        let combined = chatName + separator + taskName
+        guard combined.count > maximumLength else { return combined }
+
+        let initialTaskLength = min(taskName.count, maximumLength / 3)
+        var compactTaskName = self.truncated(taskName, maximumLength: initialTaskLength)
+        let chatLength = max(1, maximumLength - separator.count - compactTaskName.count)
+        let compactChatName = self.truncated(chatName, maximumLength: chatLength)
+        if compactChatName.count == chatName.count {
+            let taskLength = max(1, maximumLength - separator.count - compactChatName.count)
+            compactTaskName = self.truncated(taskName, maximumLength: taskLength)
+        }
+        return compactChatName + separator + compactTaskName
+    }
+
+    private static func truncated(_ value: String, maximumLength: Int) -> String {
+        guard value.count > maximumLength else { return value }
+        guard maximumLength > 1 else { return String(value.prefix(max(0, maximumLength))) }
+        return value.prefix(maximumLength - 1).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 }
 
@@ -650,6 +816,7 @@ public enum CodexRolloutFirstLineParser {
     {
         guard pid != nil || now.timeIntervalSince(modifiedAt) <= config.fileOnlyWindow else { return nil }
         let cwd = metadata.cwd
+        // Provider-specific by design: Codex rollout metadata constructs Codex-owned local agent sessions.
         return AgentSession(
             id: metadata.sessionID,
             provider: .codex,

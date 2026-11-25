@@ -13,6 +13,51 @@ resolve_package_signing_mode() {
   SIGNING_MODE="$requested"
 }
 
+resolve_package_signing_identity() {
+  if [[ "$SIGNING_MODE" == "adhoc" ]]; then
+    APP_TEAM_ID="${APP_TEAM_ID:-P3Q6VLD666}"
+    return
+  fi
+
+  local requested="${APP_IDENTITY:-Developer ID Application: John Larkin (P3Q6VLD666)}"
+  local identities line name hash selected_name="" selected_hash="" matches=0
+  if ! identities=$(security find-identity -p codesigning -v); then
+    echo "ERROR: Unable to list valid code-signing identities." >&2
+    return 1
+  fi
+  local identity_pattern='^[[:space:]]*[[:digit:]]+\)[[:space:]]+([[:xdigit:]]{40})[[:space:]]+"([^"]+)"[[:space:]]*$'
+  local requested_hash
+  requested_hash=$(printf '%s' "$requested" | tr '[:lower:]' '[:upper:]')
+  while IFS= read -r line; do
+    [[ "$line" =~ $identity_pattern ]] || continue
+    hash="${BASH_REMATCH[1]}"
+    name="${BASH_REMATCH[2]}"
+    if [[ "$hash" == "$requested_hash" || "$name" == *"$requested"* ]]; then
+      selected_name="$name"
+      selected_hash="$hash"
+      matches=$((matches + 1))
+    fi
+  done <<<"$identities"
+  if [[ "$matches" != "1" ]]; then
+    echo "ERROR: APP_IDENTITY must match exactly one valid identity (found $matches); use its full name or SHA-1 hash." >&2
+    return 1
+  fi
+  # Developer ID names end in the Team ID; development names may end in a personal ID instead.
+  local team_pattern='^Developer ID Application: .+ \(([A-Z0-9]{10})\)$'
+  if [[ ! "$selected_name" =~ $team_pattern ]]; then
+    echo "ERROR: Cannot derive a Team ID from APP_IDENTITY; use a Developer ID Application identity." >&2
+    return 1
+  fi
+  local team="${BASH_REMATCH[1]}"
+  if [[ -n "${APP_TEAM_ID:-}" && "$APP_TEAM_ID" != "$team" ]]; then
+    echo "ERROR: APP_TEAM_ID does not match the selected signing identity." >&2
+    return 1
+  fi
+  APP_TEAM_ID="$team"
+  # Sign with the same certificate whose team authorized the entitlement selection.
+  CODESIGN_ID="$selected_hash"
+}
+
 verify_no_quarantine_attribute() {
   local bundle="$1"
   local quarantined
@@ -51,6 +96,12 @@ esac
 source "$ROOT/version.env"
 source "$ROOT/Scripts/package_product_paths.sh"
 source "$ROOT/Scripts/sparkle_signing_paths.sh"
+
+# SwiftBuild can record the deployment target as the SDK, enabling legacy native UI.
+CODEXBAR_MACOS_SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
+SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)
+BUILD_ARGS=(--sdk "$CODEXBAR_MACOS_SDK_PATH"
+  -Xlinker -platform_version -Xlinker macos -Xlinker 14.0 -Xlinker "$SDK_VERSION")
 
 # Clean build only when explicitly requested (slower).
 if [[ "${CODEXBAR_FORCE_CLEAN:-0}" == "1" ]]; then
@@ -143,7 +194,7 @@ PY
 
 KEYBOARD_SHORTCUTS_UTIL="$ROOT/.build/checkouts/KeyboardShortcuts/Sources/KeyboardShortcuts/Utilities.swift"
 if [[ ! -f "$KEYBOARD_SHORTCUTS_UTIL" ]]; then
-  swift build -c "$CONF" --arch "${ARCH_LIST[0]}"
+  swift build "${BUILD_ARGS[@]}" -c "$CONF" --arch "${ARCH_LIST[0]}"
 fi
 patch_keyboard_shortcuts
 
@@ -190,6 +241,14 @@ stage_build_products() {
       echo "ERROR: ${product} does not contain required architecture: ${arch}" >&2
       return 1
     fi
+    if ! otool -arch "$arch" -l "$product" | awk -v sdk="$SDK_VERSION" '
+      $1 == "cmd" { build = ($2 == "LC_BUILD_VERSION") }
+      build && $1 == "minos" { minimum = ($2 == "14.0") }
+      build && $1 == "sdk" { valid = (minimum && $2 == sdk) }
+      END { exit !valid }'; then
+      echo "ERROR: Expected macOS 14.0 / SDK ${SDK_VERSION} for ${product} (${arch})." >&2
+      return 1
+    fi
     cp "$product" "$stage_dir/$name"
   done
   if [[ -d "$bin_dir/CodexBar.dSYM" ]]; then
@@ -198,7 +257,7 @@ stage_build_products() {
 }
 
 for ARCH in "${ARCH_LIST[@]}"; do
-  swift build -c "$CONF" --arch "$ARCH"
+  swift build "${BUILD_ARGS[@]}" -c "$CONF" --arch "$ARCH"
   stage_build_products "$ARCH"
 done
 
@@ -232,11 +291,8 @@ if [[ "$SIGNING_MODE" == "adhoc" ]]; then
   AUTO_CHECKS=false
 fi
 WIDGET_BUNDLE_ID="${BUNDLE_ID}.widget"
-APP_TEAM_ID="${APP_TEAM_ID:-P3Q6VLD666}"
-APP_GROUP_ID="${APP_TEAM_ID}.com.steipete.codexbar"
-if [[ "$BUNDLE_ID" == *".debug"* ]]; then
-  APP_GROUP_ID="${APP_TEAM_ID}.com.steipete.codexbar.debug"
-fi
+resolve_package_signing_identity
+APP_GROUP_ID="${APP_TEAM_ID}.${BUNDLE_ID}"
 ENTITLEMENTS_DIR="$ROOT/.build/entitlements"
 APP_ENTITLEMENTS="${ENTITLEMENTS_DIR}/CodexBar.entitlements"
 WIDGET_ENTITLEMENTS="${ENTITLEMENTS_DIR}/CodexBarWidget.entitlements"
@@ -244,6 +300,36 @@ mkdir -p "$ENTITLEMENTS_DIR"
 if [[ "$ALLOW_LLDB" == "1" && "$LOWER_CONF" != "debug" ]]; then
   echo "ERROR: CODEXBAR_ALLOW_LLDB requires debug configuration" >&2
   exit 1
+fi
+# iCloud sync (CloudKit) requires restricted entitlements authorized by an embedded
+# Developer ID provisioning profile. Only upstream-team identity-signed release builds of the primary
+# bundle ID carry them; other teams and adhoc/debug builds run with sync unavailable.
+PROVISIONING_PROFILE_SOURCE="$ROOT/Scripts/profiles/CodexBar-DeveloperID.provisionprofile"
+EMBED_PROVISIONING_PROFILE=0
+ICLOUD_ENTITLEMENT_KEYS=""
+if [[ "$SIGNING_MODE" == "identity" && "$LOWER_CONF" == "release" && "$BUNDLE_ID" == "com.steipete.codexbar" && "$APP_TEAM_ID" == "Y5PE65HELJ" ]]; then
+  if [[ ! -f "$PROVISIONING_PROFILE_SOURCE" ]]; then
+    echo "ERROR: Missing $PROVISIONING_PROFILE_SOURCE (required for iCloud entitlements in release builds)" >&2
+    exit 1
+  fi
+  EMBED_PROVISIONING_PROFILE=1
+  ICLOUD_ENTITLEMENT_KEYS=$(cat <<ICLOUD
+    <key>com.apple.application-identifier</key>
+    <string>${APP_TEAM_ID}.${BUNDLE_ID}</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>${APP_TEAM_ID}</string>
+    <key>com.apple.developer.icloud-services</key>
+    <array>
+        <string>CloudKit</string>
+    </array>
+    <key>com.apple.developer.icloud-container-identifiers</key>
+    <array>
+        <string>iCloud.${BUNDLE_ID}</string>
+    </array>
+    <key>com.apple.developer.icloud-container-environment</key>
+    <string>Production</string>
+ICLOUD
+)
 fi
 cat > "$APP_ENTITLEMENTS" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -254,6 +340,7 @@ cat > "$APP_ENTITLEMENTS" <<PLIST
     <array>
         <string>${APP_GROUP_ID}</string>
     </array>
+${ICLOUD_ENTITLEMENT_KEYS}
     $(if [[ "$ALLOW_LLDB" == "1" ]]; then echo "    <key>com.apple.security.get-task-allow</key><true/>"; fi)
 </dict>
 </plist>
@@ -289,11 +376,16 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
+    <key>LSEnvironment</key>
+    <dict>
+        <key>MallocLargeCache</key><string>0</string>
+    </dict>
     <key>CFBundleIconFile</key><string>Icon</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Peter Steinberger. MIT License.</string>
     <key>SUFeedURL</key><string>${FEED_URL}</string>
     <key>SUPublicEDKey</key><string>AGCY8w5vHirVfGGDGc8Szc5iuOqupZSh9pMj/Qs67XI=</string>
     <key>SUEnableAutomaticChecks</key><${AUTO_CHECKS}/>
+    <key>SUAutomaticallyUpdate</key><true/>
     <key>CodexBuildTimestamp</key><string>${BUILD_TIMESTAMP}</string>
     <key>CodexGitCommit</key><string>${GIT_COMMIT}</string>
     <key>CodexBarTeamID</key><string>${APP_TEAM_ID}</string>
@@ -500,7 +592,6 @@ elif [[ "$ALLOW_LLDB" == "1" ]]; then
   CODESIGN_ID="-"
   CODESIGN_ARGS=(--force --sign "$CODESIGN_ID")
 else
-  CODESIGN_ID="${APP_IDENTITY:-Developer ID Application: John Larkin (P3Q6VLD666)}"
   CODESIGN_ARGS=(--force --timestamp --options runtime --sign "$CODESIGN_ID")
 fi
 function resign() { codesign "${CODESIGN_ARGS[@]}" "$1"; }
@@ -540,6 +631,17 @@ if [[ ! -d "$APP/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle" 
   exit 1
 fi
 
+# The helper CLI resolves CodexBarCore resources beside its executable. Keep a
+# dedicated copy in Helpers; the app copy above remains in Contents/Resources.
+CORE_RESOURCE_BUNDLE="${PREFERRED_BUILD_DIR}/CodexBar_CodexBarCore.bundle"
+if [[ ! -d "$CORE_RESOURCE_BUNDLE" ]]; then
+  echo "ERROR: Missing CodexBarCore SwiftPM resource bundle for CodexBarCLI." >&2
+  echo "Expected: ${CORE_RESOURCE_BUNDLE}" >&2
+  exit 1
+fi
+rm -rf "$APP/Contents/Helpers/CodexBar_CodexBarCore.bundle"
+cp -R "$CORE_RESOURCE_BUNDLE" "$APP/Contents/Helpers/"
+
 # Ensure contents are writable before stripping attributes and signing.
 chmod -R u+w "$APP"
 
@@ -550,6 +652,9 @@ find "$APP" -name '._*' -delete
 # Sign helper binaries if present
 if [[ -f "${APP}/Contents/Helpers/CodexBarCLI" ]]; then
   codesign "${CODESIGN_ARGS[@]}" "${APP}/Contents/Helpers/CodexBarCLI"
+fi
+if [[ -d "${APP}/Contents/Helpers/CodexBar_CodexBarCore.bundle" ]]; then
+  codesign "${CODESIGN_ARGS[@]}" "${APP}/Contents/Helpers/CodexBar_CodexBarCore.bundle"
 fi
 if [[ -f "${APP}/Contents/Helpers/CodexBarClaudeWatchdog" ]]; then
   codesign "${CODESIGN_ARGS[@]}" "${APP}/Contents/Helpers/CodexBarClaudeWatchdog"
@@ -565,6 +670,12 @@ if [[ -d "${APP}/Contents/PlugIns/CodexBarWidget.appex" ]]; then
     "$APP/Contents/PlugIns/CodexBarWidget.appex"
 fi
 
+# Embed the Developer ID provisioning profile (authorizes the iCloud entitlements;
+# Gatekeeper re-validates it at every launch, so it must be sealed into the signature).
+if [[ "$EMBED_PROVISIONING_PROFILE" == "1" ]]; then
+  cp "$PROVISIONING_PROFILE_SOURCE" "$APP/Contents/embedded.provisionprofile"
+fi
+
 # Finally sign the app bundle itself
 codesign "${CODESIGN_ARGS[@]}" \
   --entitlements "$APP_ENTITLEMENTS" \
@@ -574,4 +685,10 @@ rm -rf "$APP_FINAL"
 mv "$APP" "$APP_FINAL"
 APP="$APP_FINAL"
 verify_packaged_app_integrity "$APP"
+# Release gate for the 0.48.0 crash class (#2738): launch the packaged binary
+# with the build checkout unreadable so a `Bundle.module`-style compile-time
+# path dependency fails packaging here instead of on user machines.
+if [[ "$LOWER_CONF" == "release" ]]; then
+  "$ROOT/Scripts/verify_packaged_app_launch.sh" "$APP"
+fi
 echo "Created $APP"

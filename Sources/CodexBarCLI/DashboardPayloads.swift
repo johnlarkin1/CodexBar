@@ -1,12 +1,17 @@
 import CodexBarCore
 import Foundation
 
-/// How much account identity a dashboard snapshot exposes. `codexbar serve`
-/// always uses `.redacted`; the other modes exist for the builder contract.
+/// How much account identity a dashboard snapshot exposes. Dashboard commands
+/// retain ordinary snapshot defaults; live account expansion defaults to `.none`.
 enum DashboardIdentityMode: String, Equatable, Sendable {
     case none
     case redacted
     case full
+}
+
+enum DashboardSnapshotDetail: String, Equatable, Sendable {
+    case full
+    case shell
 }
 
 struct DashboardSnapshotPayload: Encodable {
@@ -20,16 +25,19 @@ struct DashboardSnapshotPayload: Encodable {
 struct DashboardHostPayload: Encodable {
     let codexBarVersion: String?
     let refreshIntervalSeconds: Int
+    let usageBarsShowUsed: Bool
 
     private enum CodingKeys: String, CodingKey {
         case codexBarVersion
         case refreshIntervalSeconds
+        case usageBarsShowUsed
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(self.codexBarVersion, forKey: .codexBarVersion)
         try container.encode(self.refreshIntervalSeconds, forKey: .refreshIntervalSeconds)
+        try container.encode(self.usageBarsShowUsed, forKey: .usageBarsShowUsed)
     }
 }
 
@@ -46,6 +54,50 @@ struct DashboardProviderPayload: Encodable {
     let display: DashboardDisplayPayload
     let error: ProviderErrorPayload?
     let updatedAt: Date?
+    /// Saved managed Codex and Claude-swap entries; additional live accounts are opt-in.
+    /// Additive schema-v1 data; absent for providers without such a source.
+    let accounts: [DashboardAccountPayload]?
+    /// Row-local failure of the multi-account source; the ambient provider row stays intact.
+    let accountsError: String?
+    /// Additive schema-v1 data; absent unless the provider reported a partial-data condition.
+    let warnings: [DashboardWarningCode]?
+    private let detail: DashboardSnapshotDetail
+
+    init(
+        id: String,
+        name: String,
+        enabled: Bool,
+        source: String,
+        status: DashboardStatusPayload?,
+        identity: DashboardIdentityPayload?,
+        windows: [DashboardWindowPayload],
+        credits: DashboardCreditsPayload?,
+        cost: DashboardCostPayload?,
+        display: DashboardDisplayPayload,
+        error: ProviderErrorPayload?,
+        updatedAt: Date?,
+        accounts: [DashboardAccountPayload]?,
+        accountsError: String?,
+        warnings: [DashboardWarningCode]? = nil,
+        detail: DashboardSnapshotDetail = .full)
+    {
+        self.id = id
+        self.name = name
+        self.enabled = enabled
+        self.source = source
+        self.status = status
+        self.identity = identity
+        self.windows = windows
+        self.credits = credits
+        self.cost = cost
+        self.display = display
+        self.error = error
+        self.updatedAt = updatedAt
+        self.accounts = accounts
+        self.accountsError = accountsError
+        self.warnings = warnings?.isEmpty == false ? warnings : nil
+        self.detail = detail
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -60,6 +112,9 @@ struct DashboardProviderPayload: Encodable {
         case display
         case error
         case updatedAt
+        case accounts
+        case accountsError
+        case warnings
     }
 
     func encode(to encoder: Encoder) throws {
@@ -67,13 +122,56 @@ struct DashboardProviderPayload: Encodable {
         try container.encode(self.id, forKey: .id)
         try container.encode(self.name, forKey: .name)
         try container.encode(self.enabled, forKey: .enabled)
+        try container.encode(self.display, forKey: .display)
+        guard self.detail == .full else { return }
         try container.encode(self.source, forKey: .source)
         try container.encode(self.status, forKey: .status)
         try container.encode(self.identity, forKey: .identity)
         try container.encode(self.windows, forKey: .windows)
         try container.encode(self.credits, forKey: .credits)
         try container.encode(self.cost, forKey: .cost)
-        try container.encode(self.display, forKey: .display)
+        try container.encode(self.error, forKey: .error)
+        try container.encode(self.updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(self.accounts, forKey: .accounts)
+        try container.encodeIfPresent(self.accountsError, forKey: .accountsError)
+        try container.encodeIfPresent(self.warnings, forKey: .warnings)
+    }
+}
+
+/// Fixed partial-data codes; provider notice text never crosses the dashboard identity boundary.
+enum DashboardWarningCode: String, Encodable, Equatable {
+    case modelBreakdownUnavailable = "model-breakdown-unavailable"
+}
+
+struct DashboardAccountPayload: Encodable {
+    let id: String
+    let label: String
+    let active: Bool
+    let identity: DashboardIdentityPayload?
+    let windows: [DashboardWindowPayload]
+    let pace: ProviderPacePayload?
+    let error: String?
+    let updatedAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case label
+        case active
+        case identity
+        case windows
+        case pace
+        case error
+        case updatedAt
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.id, forKey: .id)
+        try container.encode(self.label, forKey: .label)
+        try container.encode(self.active, forKey: .active)
+        try container.encode(self.identity, forKey: .identity)
+        try container.encode(self.windows, forKey: .windows)
+        try container.encode(self.pace, forKey: .pace)
         try container.encode(self.error, forKey: .error)
         try container.encode(self.updatedAt, forKey: .updatedAt)
     }
@@ -120,6 +218,28 @@ struct DashboardWindowPayload: Encodable {
     let usedPercent: Double
     let remainingPercent: Double
     let resetAt: Date?
+    /// Whether a display client should skip this window. The producer sets it when the window belongs
+    /// to a model family that reports no usage at all, which a client cannot work out on its own
+    /// because a zero `usedPercent` also stands for a lane whose usage the provider never reported.
+    /// Additive schema-v1 extension: the key appears only when it is `true`, so every payload that
+    /// carries no idle window is byte-identical to the previous shape.
+    let idle: Bool
+
+    init(
+        kind: String,
+        label: String,
+        usedPercent: Double,
+        remainingPercent: Double,
+        resetAt: Date?,
+        idle: Bool = false)
+    {
+        self.kind = kind
+        self.label = label
+        self.usedPercent = usedPercent
+        self.remainingPercent = remainingPercent
+        self.resetAt = resetAt
+        self.idle = idle
+    }
 
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -127,6 +247,7 @@ struct DashboardWindowPayload: Encodable {
         case usedPercent
         case remainingPercent
         case resetAt
+        case idle
     }
 
     func encode(to encoder: Encoder) throws {
@@ -136,6 +257,9 @@ struct DashboardWindowPayload: Encodable {
         try container.encode(self.usedPercent, forKey: .usedPercent)
         try container.encode(self.remainingPercent, forKey: .remainingPercent)
         try container.encode(self.resetAt, forKey: .resetAt)
+        if self.idle {
+            try container.encode(true, forKey: .idle)
+        }
     }
 }
 
@@ -148,13 +272,32 @@ struct DashboardCostPayload: Encodable {
     let todayUSD: Double?
     let last30DaysUSD: Double?
 
+    let todayIncompleteRequestCount: Int?
+    let last30DaysIncompleteRequestCount: Int?
+
+    init(
+        todayUSD: Double?,
+        last30DaysUSD: Double?,
+        todayIncompleteRequestCount: Int? = nil,
+        last30DaysIncompleteRequestCount: Int? = nil)
+    {
+        self.todayUSD = todayUSD
+        self.last30DaysUSD = last30DaysUSD
+        self.todayIncompleteRequestCount = todayIncompleteRequestCount.flatMap { $0 > 0 ? $0 : nil }
+        self.last30DaysIncompleteRequestCount = last30DaysIncompleteRequestCount.flatMap { $0 > 0 ? $0 : nil }
+    }
+
     private enum CodingKeys: String, CodingKey {
+        case todayIncompleteRequestCount
+        case last30DaysIncompleteRequestCount
         case todayUSD
         case last30DaysUSD
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(self.todayIncompleteRequestCount, forKey: .todayIncompleteRequestCount)
+        try container.encodeIfPresent(self.last30DaysIncompleteRequestCount, forKey: .last30DaysIncompleteRequestCount)
         try container.encode(self.todayUSD, forKey: .todayUSD)
         try container.encode(self.last30DaysUSD, forKey: .last30DaysUSD)
     }

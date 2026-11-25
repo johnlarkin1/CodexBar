@@ -31,17 +31,11 @@ final class ShareStatsWindowController: NSWindowController, NSWindowDelegate {
         window.center()
         super.init(window: window)
         window.delegate = self
-        self.installContent()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-
-    func update(payload: ShareStatsPayload) {
-        self.payload = payload
-        self.installContent()
     }
 
     func present() {
@@ -50,7 +44,17 @@ final class ShareStatsWindowController: NSWindowController, NSWindowDelegate {
         self.window?.makeKeyAndOrderFront(nil)
     }
 
-    private func installContent() {
+    func windowWillClose(_ notification: Notification) {
+        guard let window else { return }
+        let frame = window.frame
+        // Clearing the controller resizes the window; keep its reusable geometry with an empty view.
+        window.contentViewController = nil
+        window.contentView = NSView()
+        window.setFrame(frame, display: false)
+    }
+
+    func update(payload: ShareStatsPayload) {
+        self.payload = payload
         self.window?.contentViewController = NSHostingController(rootView: ShareStatsPreviewView(
             payload: self.payload,
             copyImage: { [weak self] in
@@ -64,7 +68,25 @@ final class ShareStatsWindowController: NSWindowController, NSWindowDelegate {
             saveImage: { [weak self] in
                 guard let self else { return false }
                 return ShareStatsExporter.saveImage(self.payload)
-            }))
+            }).codexBarLocalized())
+    }
+}
+
+enum ShareStatsImageCopyFeedback: Equatable {
+    case idle
+    case copied
+    case failed
+
+    var title: String {
+        switch self {
+        case .idle: L("Copy Image")
+        case .copied: L("Image copied")
+        case .failed: L("Could not copy image")
+        }
+    }
+
+    var systemImage: String {
+        self == .copied ? "checkmark" : "photo.on.rectangle"
     }
 }
 
@@ -75,6 +97,9 @@ private struct ShareStatsPreviewView: View {
     let saveImage: @MainActor () -> Bool
 
     @State private var statusMessage: String?
+    @State private var imageCopyFeedback: ShareStatsImageCopyFeedback = .idle
+    @State private var imageCopyResetTask: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 20) {
@@ -88,11 +113,15 @@ private struct ShareStatsPreviewView: View {
 
             HStack(spacing: 12) {
                 Button {
-                    self.statusMessage = self.copyImage() ? L("Image copied") : L("Could not copy image")
+                    self.copyImageToPasteboard()
                 } label: {
-                    Label(L("Copy Image"), systemImage: "photo.on.rectangle")
+                    Label(
+                        self.imageCopyFeedback.title,
+                        systemImage: self.imageCopyFeedback.systemImage)
+                        .contentTransition(self.reduceMotion ? .identity : .symbolEffect(.replace))
                 }
                 .keyboardShortcut(.defaultAction)
+                .accessibilityLabel(self.imageCopyFeedback.title)
 
                 Button {
                     self.copyText()
@@ -120,6 +149,45 @@ private struct ShareStatsPreviewView: View {
         }
         .padding(24)
         .frame(minWidth: 780, minHeight: 525)
+        .onDisappear {
+            self.imageCopyResetTask?.cancel()
+        }
+    }
+
+    private func copyImageToPasteboard() {
+        self.imageCopyResetTask?.cancel()
+        guard self.copyImage() else {
+            self.imageCopyFeedback = .failed
+            self.statusMessage = self.imageCopyFeedback.title
+            self.imageCopyResetTask = self.makeCopyFeedbackResetTask()
+            return
+        }
+        if !self.reduceMotion {
+            withAnimation(.easeOut(duration: 0.12)) {
+                self.imageCopyFeedback = .copied
+            }
+        } else {
+            self.imageCopyFeedback = .copied
+        }
+        self.statusMessage = self.imageCopyFeedback.title
+        self.imageCopyResetTask = self.makeCopyFeedbackResetTask()
+    }
+
+    /// Returns the button to its idle label after a beat. Failure needs this as much as success:
+    /// without it a single failed copy leaves "Could not copy image" on the control, and on its
+    /// accessibility label, until the window is closed and reopened.
+    private func makeCopyFeedbackResetTask() -> Task<Void, Never> {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(0.9))
+            guard !Task.isCancelled else { return }
+            if !self.reduceMotion {
+                withAnimation(.easeOut(duration: 0.12)) {
+                    self.imageCopyFeedback = .idle
+                }
+            } else {
+                self.imageCopyFeedback = .idle
+            }
+        }
     }
 }
 

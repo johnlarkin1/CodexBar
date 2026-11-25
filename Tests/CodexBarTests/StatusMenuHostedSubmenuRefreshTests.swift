@@ -1,5 +1,6 @@
 import AppKit
 import CodexBarCore
+import SwiftUI
 import Testing
 @testable import CodexBar
 
@@ -301,10 +302,6 @@ struct StatusMenuHostedSubmenuRefreshTests {
             chartID: StatusItemController.storageBreakdownID,
             provider: .claude,
             seed: Self.seedStorageFootprint)
-        try self.assertHostedSubmenuPreservesIdentity(
-            chartID: StatusItemController.zaiHourlyUsageChartID,
-            provider: .zai,
-            seed: Self.seedZaiHourlyUsage)
     }
 
     @Test
@@ -330,29 +327,6 @@ struct StatusMenuHostedSubmenuRefreshTests {
         { controller, submenu, width in
             controller.appendStorageBreakdownItem(to: submenu, provider: .claude, width: width)
         }
-    }
-
-    @Test
-    func `zai chart render signature follows time range boundaries`() throws {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        let beforeMidnight = try #require(formatter.date(from: "2026-01-01 23:30"))
-        let afterMidnight = try #require(formatter.date(from: "2026-01-02 00:30"))
-        let modelUsage = ZaiModelUsageData(
-            xTime: ["2026-01-01 23:00"],
-            modelDataList: [
-                ZaiModelDataItem(modelName: "glm-4.5", tokensUsage: [100]),
-            ])
-
-        let before = StatusItemController.zaiHourlyUsageRenderSignature(
-            modelUsage: modelUsage,
-            now: beforeMidnight)
-        let after = StatusItemController.zaiHourlyUsageRenderSignature(
-            modelUsage: modelUsage,
-            now: afterMidnight)
-
-        #expect(before != after)
     }
 
     @Test
@@ -405,6 +379,216 @@ struct StatusMenuHostedSubmenuRefreshTests {
 
         let bobView = try #require(submenu.items.first?.view)
         #expect(bobView !== aliceView)
+    }
+
+    @Test
+    func `active saved quota keeps utilization history accessible through submenu refresh`() throws {
+        let previousMenuCardRendering = StatusItemController.menuCardRenderingEnabled
+        StatusItemController.menuCardRenderingEnabled = true
+        defer { StatusItemController.menuCardRenderingEnabled = previousMenuCardRendering }
+        let settings = Self.makeSettings()
+        settings.statusChecksEnabled = false
+        settings.refreshFrequency = .manual
+        Self.enableOnlyClaude(settings)
+        let fetcher = UsageFetcher()
+        let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
+        Self.seedClaudeSnapshots(in: store)
+        let now = Date()
+        store.planUtilizationHistory[.claude] = PlanUtilizationHistoryBuckets(unscoped: [
+            PlanUtilizationSeriesHistory(
+                name: .weekly,
+                windowMinutes: 10080,
+                entries: [.init(
+                    capturedAt: now.addingTimeInterval(-21600),
+                    usedPercent: 24,
+                    resetsAt: now.addingTimeInterval(86400))]),
+        ])
+        let controller = StatusItemController(
+            store: store,
+            settings: settings,
+            account: fetcher.loadAccountInfo(),
+            updater: DisabledUpdaterController(),
+            preferencesSelection: PreferencesSelection(),
+            statusBar: .system)
+        defer { controller.releaseStatusItemsForTesting() }
+        let submenu = try #require(controller.makeUsageHistorySubmenu(
+            provider: .claude,
+            width: StatusItemController.menuCardBaseWidth))
+        controller.menuWillOpen(submenu)
+
+        #expect(submenu.items.count == 3)
+        #expect(submenu.items.first?.view is NSHostingView<QuotaBurndownChartMenuView>)
+        #expect(submenu.items[1].isSeparatorItem)
+        #expect(submenu.items.last?.view is NSHostingView<PlanUtilizationHistoryChartMenuView>)
+
+        store.planUtilizationHistory[.claude] = PlanUtilizationHistoryBuckets(unscoped: [Self.makePlanHistory(
+            usedPercent: 30)])
+        store.planUtilizationHistoryRevision &+= 1
+        controller.refreshHostedSubviewMenu(submenu)
+
+        #expect(submenu.items.count == 1)
+        #expect(submenu.items.first?.view is NSHostingView<PlanUtilizationHistoryChartMenuView>)
+    }
+
+    @Test
+    func `plan usage submenu follows the presented claude swap account`() async throws {
+        let settings = Self.makeSettings()
+        settings.statusChecksEnabled = false
+        settings.refreshFrequency = .manual
+        settings.multiAccountMenuLayout = .segmented
+        Self.enableOnlyClaude(settings)
+        let fetcher = UsageFetcher(environment: [:])
+        let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
+        store.planUtilizationHistoryLoaded = true
+        // Ambient history that stopped refreshing, including a retired model-scoped weekly series.
+        let staleKey = "stale-ambient-account"
+        store.planUtilizationHistory[.claude] = PlanUtilizationHistoryBuckets(
+            preferredAccountKey: staleKey,
+            accounts: [staleKey: [
+                Self.makePlanHistory(usedPercent: 24),
+                PlanUtilizationSeriesHistory(
+                    name: .opus,
+                    windowMinutes: 10080,
+                    entries: [.init(
+                        capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                        usedPercent: 12,
+                        resetsAt: Date(timeIntervalSince1970: 1_700_604_800))]),
+            ]])
+        let accounts = Self.claudeSwapAccounts(sessionUsed: [1: 35, 2: 50])
+        store.claudeSwapAccountSnapshots = accounts
+        await store.recordClaudeSwapPlanUtilizationHistory(accounts)
+
+        let controller = StatusItemController(
+            store: store,
+            settings: settings,
+            account: AccountInfo(email: nil, plan: nil),
+            updater: DisabledUpdaterController(),
+            preferencesSelection: PreferencesSelection(),
+            statusBar: .system,
+            menuCardRenderingEnabled: true,
+            menuRefreshEnabled: true)
+        defer { controller.releaseStatusItemsForTesting() }
+
+        func chartSeries(_ submenu: NSMenu) throws -> [PlanUtilizationHistoryChartMenuView.VisibleSeries] {
+            let hosting = try #require(
+                submenu.items.last?.view as? NSHostingView<PlanUtilizationHistoryChartMenuView>)
+            return hosting.rootView.visibleSeries
+        }
+        func sessionPercents(_ series: [PlanUtilizationHistoryChartMenuView.VisibleSeries]) -> [Double]? {
+            series.first { $0.selection.name == .session }?.history.entries.map(\.usedPercent)
+        }
+
+        let submenu = try #require(controller.makeUsageHistorySubmenu(
+            provider: .claude,
+            width: StatusItemController.menuCardBaseWidth))
+        controller.menuWillOpen(submenu)
+        let activeSeries = try chartSeries(submenu)
+        #expect(Set(activeSeries.map(\.selection.name)) == [.session, .weekly])
+        #expect(sessionPercents(activeSeries) == [35])
+
+        controller.claudeSwapInspectedAccountID = accounts[1].id
+        controller.refreshHostedSubviewMenu(submenu)
+        #expect(try sessionPercents(chartSeries(submenu)) == [50])
+
+        controller.claudeSwapInspectedAccountID = nil
+        store.claudeSwapAccountSnapshots = []
+        controller.refreshHostedSubviewMenu(submenu)
+        let ambientSeries = try chartSeries(submenu)
+        #expect(ambientSeries.contains { $0.selection.name == .opus })
+        #expect(sessionPercents(ambientSeries) == [24])
+    }
+
+    @Test
+    func `plan usage submenu keeps the ambient source when a fleet card owns the claude menu`() async throws {
+        let settings = Self.makeSettings()
+        settings.statusChecksEnabled = false
+        settings.refreshFrequency = .manual
+        settings.multiAccountMenuLayout = .segmented
+        settings.iCloudSyncEnabled = true
+        settings.iCloudSyncSnapshotsEnabled = true
+        settings.iCloudSyncShowFleetAccounts = true
+        Self.enableOnlyClaude(settings)
+        let fetcher = UsageFetcher(environment: [:])
+        let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
+        store.planUtilizationHistoryLoaded = true
+        let ambientKey = "ambient-account"
+        store.planUtilizationHistory[.claude] = PlanUtilizationHistoryBuckets(
+            preferredAccountKey: ambientKey,
+            accounts: [ambientKey: [Self.makePlanHistory(usedPercent: 24)]])
+        // Saved swap history from earlier refreshes; the rows now have no usage (expired tokens, no last-good).
+        await store.recordClaudeSwapPlanUtilizationHistory(Self.claudeSwapAccounts(sessionUsed: [1: 35, 2: 50]))
+        let expiredAccounts = Self.claudeSwapAccounts(sessionUsed: [1: 35, 2: 50], usageStatus: .tokenExpired)
+        #expect(expiredAccounts.allSatisfy { $0.snapshot == nil && $0.historyAccountKey != nil })
+        store.claudeSwapAccountSnapshots = expiredAccounts
+
+        let controller = StatusItemController(
+            store: store,
+            settings: settings,
+            account: AccountInfo(email: nil, plan: nil),
+            updater: DisabledUpdaterController(),
+            preferencesSelection: PreferencesSelection(),
+            statusBar: .system,
+            menuCardRenderingEnabled: true,
+            menuRefreshEnabled: true)
+        defer { controller.releaseStatusItemsForTesting() }
+        let remoteAt = Date(timeIntervalSince1970: 1_800_000_000)
+        controller.cloudSyncState.fleetSnapshots["remote-claude"] = AccountSnapshotSyncPayload(
+            provider: .claude,
+            deviceID: "remote-device",
+            accountKey: "remote-account",
+            fetchedAt: remoteAt,
+            displayLabel: "remote@example.com",
+            usage: UsageSnapshot(
+                primary: RateWindow(usedPercent: 80, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+                secondary: nil,
+                updatedAt: remoteAt))
+        #expect(controller.fleetAccountProjection(for: .claude).fallback != nil)
+
+        func sessionPercents(_ submenu: NSMenu) throws -> [Double]? {
+            let hosting = try #require(
+                submenu.items.last?.view as? NSHostingView<PlanUtilizationHistoryChartMenuView>)
+            return hosting.rootView.visibleSeries
+                .first { $0.selection.name == .session }?.history.entries.map(\.usedPercent)
+        }
+
+        let submenu = try #require(controller.makeUsageHistorySubmenu(
+            provider: .claude,
+            width: StatusItemController.menuCardBaseWidth))
+        controller.menuWillOpen(submenu)
+        #expect(try sessionPercents(submenu) == [24])
+
+        // Once the Fleet card no longer owns the menu, the presented swap account's history returns.
+        controller.cloudSyncState.fleetSnapshots = [:]
+        controller.refreshHostedSubviewMenu(submenu)
+        #expect(try sessionPercents(submenu) == [35])
+    }
+
+    private static func claudeSwapAccounts(
+        sessionUsed: [Int: Double],
+        usageStatus: ClaudeSwapUsageStatus = .ok) -> [ProviderAccountUsageSnapshot]
+    {
+        let fetchedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let hasUsage = usageStatus == .ok
+        let rows = sessionUsed.keys.sorted().map { number in
+            ClaudeSwapAccountRow(
+                number: number,
+                email: "account\(number)@example.com",
+                organizationUuid: "",
+                isActive: number == 1,
+                usageStatus: usageStatus,
+                fiveHour: hasUsage ? ClaudeSwapUsageWindow(
+                    usedPercent: sessionUsed[number] ?? 0,
+                    resetsAt: fetchedAt.addingTimeInterval(3600)) : nil,
+                sevenDay: hasUsage
+                    ? ClaudeSwapUsageWindow(usedPercent: 64, resetsAt: fetchedAt.addingTimeInterval(3 * 86400))
+                    : nil,
+                usageFetchedAt: hasUsage ? fetchedAt : nil,
+                lastGoodUsage: nil)
+        }
+        return ClaudeSwapAccountProjection.accountSnapshots(
+            from: ClaudeSwapAccountList(activeAccountNumber: 1, accounts: rows),
+            source: .claudeSwap,
+            now: fetchedAt)
     }
 
     private func assertHostedChartItemHeightMatchesRefresh(
@@ -467,7 +651,7 @@ struct StatusMenuHostedSubmenuRefreshTests {
         settings.statusChecksEnabled = false
         settings.refreshFrequency = .manual
         settings.mergeIcons = true
-        settings.selectedMenuProvider = provider
+        settings.selectedMenuProvider = provider.instanceID
         settings.costUsageEnabled = true
         settings.providerStorageFootprintsEnabled = true
         Self.enableOnly(settings, provider: provider)
@@ -498,13 +682,6 @@ struct StatusMenuHostedSubmenuRefreshTests {
         #expect(hydratedItem.view != nil)
         #expect(hydratedItem.title != "No data available")
         let hydratedView = hydratedItem.view
-        let inflatedHeight = hydratedView.map { view -> CGFloat in
-            let inflatedHeight = view.frame.height + 100
-            if chartID == StatusItemController.zaiHourlyUsageChartID {
-                view.frame.size.height = inflatedHeight
-            }
-            return inflatedHeight
-        }
 
         controller.refreshHostedSubviewMenu(submenu)
 
@@ -514,9 +691,6 @@ struct StatusMenuHostedSubmenuRefreshTests {
         #expect(refreshedItem.view != nil)
         #expect(refreshedItem.title != "No data available")
         #expect(refreshedItem.view === hydratedView)
-        if chartID == StatusItemController.zaiHourlyUsageChartID {
-            #expect(refreshedItem.view?.frame.height != inflatedHeight)
-        }
 
         if chartID == StatusItemController.costHistoryChartID, provider == .claude {
             store._setTokenSnapshotForTesting(Self.makeTokenSnapshot(dailyCost: 2.34), provider: .claude)
@@ -529,14 +703,10 @@ struct StatusMenuHostedSubmenuRefreshTests {
     }
 
     private static func makeSettings() -> SettingsStore {
-        let suite = "StatusMenuHostedSubmenuRefreshTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return SettingsStore(
-            userDefaults: defaults,
-            configStore: testConfigStore(suiteName: suite),
-            zaiTokenStore: NoopZaiTokenStore(),
-            syntheticTokenStore: NoopSyntheticTokenStore())
+        testSettingsStore(
+            suiteName: "StatusMenuHostedSubmenuRefreshTests",
+            userDefaults: InMemoryUserDefaults(),
+            config: testConfigWithAllProvidersDisabled())
     }
 
     private static func enableOnlyClaude(_ settings: SettingsStore) {
@@ -628,31 +798,6 @@ struct StatusMenuHostedSubmenuRefreshTests {
             unreadablePaths: [],
             components: [.init(path: "\(root)/projects", totalBytes: 1024)],
             updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
-    }
-
-    private static func seedZaiHourlyUsage(in store: UsageStore) {
-        let modelUsage = ZaiModelUsageData(
-            xTime: ["2026-05-26 00:00"],
-            modelDataList: [
-                ZaiModelDataItem(modelName: "glm-4.5", tokensUsage: [512]),
-            ])
-        let snapshot = UsageSnapshot(
-            primary: nil,
-            secondary: nil,
-            tertiary: nil,
-            zaiUsage: ZaiUsageSnapshot(
-                tokenLimit: nil,
-                timeLimit: nil,
-                planName: "Pro",
-                modelUsage: modelUsage,
-                updatedAt: Date(timeIntervalSince1970: 1_700_000_000)),
-            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            identity: ProviderIdentitySnapshot(
-                providerID: .zai,
-                accountEmail: "zai@example.com",
-                accountOrganization: nil,
-                loginMethod: "OAuth"))
-        store._setSnapshotForTesting(snapshot, provider: .zai)
     }
 
     private static func makeTokenSnapshot(

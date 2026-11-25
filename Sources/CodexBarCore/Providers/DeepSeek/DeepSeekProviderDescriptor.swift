@@ -2,6 +2,33 @@ import Foundation
 
 public enum DeepSeekProviderDescriptor {
     public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    private static let credentials = ProviderCredentialAdapter(
+        environmentProjections: [
+            .cookieHeader(DeepSeekSettingsReader.platformTokenEnvironmentKey),
+            ProviderCredentialEnvironmentProjection(
+                key: DeepSeekSettingsReader.profileIDEnvironmentKey,
+                value: { $0.sanitizedDeepSeekProfileID }),
+            ProviderCredentialEnvironmentProjection(
+                key: DeepSeekSettingsReader.profileScopeEnvironmentKey,
+                value: { $0.sanitizedDeepSeekProfileScope }),
+        ],
+        tokenResolver: { kind, environment, _ in
+            guard kind == .primary, let token = DeepSeekSettingsReader.apiKey(environment: environment) else {
+                return nil
+            }
+            return ProviderTokenResolution(token: token, source: .environment)
+        },
+        tokenAccountSupport: TokenAccountSupport(
+            title: "API tokens",
+            subtitle: "Store multiple DeepSeek API keys.",
+            placeholder: "Paste API key…",
+            injection: .environment(key: DeepSeekSettingsReader.apiKeyEnvironmentKey),
+            requiresManualCookieSource: false,
+            cookieName: nil),
+        authDetector: { environment, _ in
+            DeepSeekSettingsReader.apiKey(environment: environment) == nil ? [] : ["api"]
+        },
+        missingCredentialMessage: { _ in DeepSeekUsageError.missingCredentials.errorDescription })
 
     private static let optionalResolutionJoinGrace: Duration = .seconds(5)
     private static let platformResolutionJoinGrace: Duration = .seconds(20)
@@ -43,6 +70,7 @@ public enum DeepSeekProviderDescriptor {
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .deepseek,
+            credentials: self.credentials,
             metadata: ProviderMetadata(
                 id: .deepseek,
                 displayName: "DeepSeek",
@@ -55,31 +83,73 @@ public enum DeepSeekProviderDescriptor {
                 toggleTitle: "Show DeepSeek usage",
                 cliName: "deepseek",
                 defaultEnabled: false,
+                widgetSelectable: true,
                 isPrimaryProvider: false,
                 usesAccountFallback: false,
+                balanceOnly: true,
+                usesDetailBackedWindow: true,
                 browserCookieOrder: nil,
                 dashboardURL: "https://platform.deepseek.com/usage",
                 statusPageURL: nil,
                 statusLinkURL: "https://status.deepseek.com"),
             branding: ProviderBranding(
-                iconStyle: .deepseek,
+                iconStyle: .init(provider: .deepseek),
                 iconResourceName: "ProviderIcon-deepseek",
-                color: ProviderColor(red: 0.32, green: 0.49, blue: 0.94),
+                color: ProviderColor(hex: 0x4D6BFE),
                 confettiPalette: [
                     ProviderColor(hex: 0x4D6BFE),
                     ProviderColor(hex: 0x3982FF),
                     ProviderColor(hex: 0x020E36),
                 ]),
             tokenCost: ProviderTokenCostConfig(
-                supportsTokenCost: false,
-                noDataMessage: { "DeepSeek per-day cost history is not available via API." }),
+                supportsTokenCost: true,
+                noDataMessage: { "Detailed usage unavailable." },
+                isUsageUnavailable: { $0.costUsage == nil },
+                showsCostMenuSection: false,
+                primaryValue: .latestDaily,
+                showsRequestHistory: false),
+            presentation: ProviderUsagePresentation(
+                menuCard: ProviderMenuCardPresentation(
+                    usageNotesResolver: { context in
+                        if context.isRefreshing {
+                            return .localized([])
+                        }
+                        let credentialNote: [String]? = switch context.snapshot?.deepseekDetailedUsageState {
+                        case .webSessionRequired:
+                            ["Sign in to DeepSeek Platform in a Chromium-based browser for detailed usage."]
+                        case .profileSelectionRequired:
+                            ["Select a DeepSeek browser profile in Settings."]
+                        default: nil
+                        }
+                        if context.snapshot?.primary == nil, let credentialNote {
+                            return .localized(credentialNote)
+                        }
+                        guard context.costSummaryInlineEnabled, context.showOptionalUsage else {
+                            return .unhandled
+                        }
+                        guard context.snapshot?.details.isEmpty == false else {
+                            return .localized(credentialNote ?? ["Detailed usage unavailable."])
+                        }
+                        return .unhandled
+                    },
+                    showsPrimaryBalanceDescription: true,
+                    hidesPrimaryResetWithoutDate: true,
+                    movePrimaryDetailToStatus: { _ in true }),
+                menu: ProviderMenuDescriptorPresentation(primaryDescriptionIsDetail: { _ in true }),
+                optionalDetails: ProviderOptionalDetailsPresentation(
+                    hidesAllWithoutOptionalUsage: true,
+                    costSummaryTitles: ["Usage", "Spend"])),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .api, .web],
                 pipeline: ProviderFetchPipeline(resolveStrategies: self.resolveStrategies)),
             cli: ProviderCLIConfig(
                 name: "deepseek",
                 aliases: ["deep-seek", "ds"],
-                versionDetector: nil))
+                versionDetector: nil),
+            configNormalizer: { config in
+                config.deepseekProfileID = config.sanitizedDeepSeekProfileID
+                config.deepseekProfileScope = config.sanitizedDeepSeekProfileScope
+            })
     }
 
     private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
@@ -89,7 +159,7 @@ public enum DeepSeekProviderDescriptor {
         case .web:
             [DeepSeekPlatformFetchStrategy()]
         case .auto:
-            if ProviderTokenResolver.deepseekToken(environment: context.env) != nil {
+            if ProviderTokenResolver.token(for: .deepseek, environment: context.env) != nil {
                 [DeepSeekAPIFetchStrategy()]
             } else {
                 [DeepSeekPlatformFetchStrategy()]
@@ -199,6 +269,7 @@ public enum DeepSeekProviderDescriptor {
             usageSummary: resolution.selectedSummary,
             detailedUsageState: resolution.detailedUsageState,
             platformProfiles: resolution.profiles,
+            platformBalanceOwner: balance.platformBalanceOwner,
             updatedAt: balance.updatedAt).toUsageSnapshot()
     }
 
@@ -210,7 +281,7 @@ public enum DeepSeekProviderDescriptor {
         if let session = DeepSeekSettingsReader.scopedPlatformToken(
             environment: context.env,
             selectedTokenAccountID: context.selectedTokenAccountID,
-            apiKey: ProviderTokenResolver.deepseekToken(environment: context.env))
+            apiKey: ProviderTokenResolver.token(for: .deepseek, environment: context.env))
         {
             return try await DeepSeekUsageFetcher.fetchPlatformUsage(
                 platformToken: session,
@@ -220,7 +291,7 @@ public enum DeepSeekProviderDescriptor {
         let profileSelection = DeepSeekSettingsReader.profileSelection(
             environment: context.env,
             selectedTokenAccountID: context.selectedTokenAccountID,
-            apiKey: ProviderTokenResolver.deepseekToken(environment: context.env))
+            apiKey: ProviderTokenResolver.token(for: .deepseek, environment: context.env))
         let resolutionTask = Task<DeepSeekPlatformTokenImporter.Resolution, Error> {
             await operations.resolveAutomaticSession(
                 profileSelection.profileID,
@@ -236,13 +307,22 @@ public enum DeepSeekProviderDescriptor {
         case let .value(value):
             resolution = value
         case .timedOut:
-            throw DeepSeekUsageError.networkError("Chrome session resolution timed out")
+            let timeout = DeepSeekUsageError.networkError("Browser session resolution timed out")
+            if let transport = DeepSeekPlatformTransportError(
+                owner: nil,
+                underlyingError: URLError(.timedOut),
+                description: timeout.localizedDescription)
+            {
+                throw transport
+            }
+            throw timeout
         case let .failure(error):
             throw error
         }
         try Task.checkCancellation()
         if resolution.selectedBalance == nil, resolution.detailedUsageState == .unavailable {
-            throw DeepSeekUsageError.networkError("Chrome session resolution unavailable")
+            if let error = resolution.selectedTransportError { throw error }
+            throw DeepSeekUsageError.networkError("Browser session resolution unavailable")
         }
         let balance = resolution.selectedBalance ?? DeepSeekUsageSnapshot(
             hasBalance: false,
@@ -285,11 +365,11 @@ private struct DeepSeekAPIFetchStrategy: ProviderFetchStrategy {
     let kind: ProviderFetchKind = .apiToken
 
     func isAvailable(_ context: ProviderFetchContext) async -> Bool {
-        context.sourceMode == .api || ProviderTokenResolver.deepseekToken(environment: context.env) != nil
+        context.sourceMode == .api || ProviderTokenResolver.token(for: .deepseek, environment: context.env) != nil
     }
 
     func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
-        guard let apiKey = ProviderTokenResolver.deepseekToken(environment: context.env) else {
+        guard let apiKey = ProviderTokenResolver.token(for: .deepseek, environment: context.env) else {
             throw DeepSeekUsageError.missingCredentials
         }
         let usage = try await DeepSeekProviderDescriptor.loadAPIUsage(apiKey: apiKey, context: context)

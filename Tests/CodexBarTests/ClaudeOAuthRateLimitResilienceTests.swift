@@ -54,7 +54,10 @@ struct ClaudeOAuthRateLimitResilienceTests {
     @Test
     func `segmented account keeps only its exact O auth cache without recording history`() async throws {
         let store = try self.makeStore(suite: "ClaudeOAuthRateLimit-segmented", layout: .segmented)
-        store.settings.addTokenAccount(provider: .claude, label: "Primary", token: "test-auth-token")
+        store.settings.addTokenAccount(
+            provider: .claude,
+            label: "Primary",
+            token: "sk-ant-oat-test-primary")
         let account = try #require(store.settings.selectedTokenAccount(for: .claude))
         let prior = self.snapshot(usedPercent: 31)
         self.seedAccountSnapshot(store: store, account: account, snapshot: prior)
@@ -77,7 +80,10 @@ struct ClaudeOAuthRateLimitResilienceTests {
     @Test
     func `edited account cannot reuse its previous O auth cache`() async throws {
         let store = try self.makeStore(suite: "ClaudeOAuthRateLimit-edited", layout: .segmented)
-        store.settings.addTokenAccount(provider: .claude, label: "Primary", token: "test-auth-token")
+        store.settings.addTokenAccount(
+            provider: .claude,
+            label: "Primary",
+            token: "sk-ant-oat-test-primary")
         let original = try #require(store.settings.selectedTokenAccount(for: .claude))
         self.seedAccountSnapshot(store: store, account: original, snapshot: self.snapshot(usedPercent: 47))
         store.settings.updateTokenAccount(
@@ -97,8 +103,14 @@ struct ClaudeOAuthRateLimitResilienceTests {
     @Test
     func `stacked accounts keep exact O auth caches without recording cached history`() async throws {
         let store = try self.makeStore(suite: "ClaudeOAuthRateLimit-stacked", layout: .stacked)
-        store.settings.addTokenAccount(provider: .claude, label: "Primary", token: "test-auth-token")
-        store.settings.addTokenAccount(provider: .claude, label: "Secondary", token: "test-token-placeholder")
+        store.settings.addTokenAccount(
+            provider: .claude,
+            label: "Primary",
+            token: "sk-ant-oat-test-primary")
+        store.settings.addTokenAccount(
+            provider: .claude,
+            label: "Secondary",
+            token: "sk-ant-oat-test-secondary")
         let accounts = store.settings.tokenAccounts(for: .claude)
         let primary = try #require(accounts.first)
         let secondary = try #require(accounts.last)
@@ -125,33 +137,27 @@ struct ClaudeOAuthRateLimitResilienceTests {
     }
 
     @MainActor
+    @Test
+    func `equally named fixtures keep preferences and config independent`() throws {
+        let first = try self.makeStore(suite: "ClaudeOAuthRateLimit-shared", layout: .stacked)
+        let second = try self.makeStore(suite: "ClaudeOAuthRateLimit-shared", layout: .segmented)
+        #expect(first.settings.multiAccountMenuLayout == .stacked)
+        #expect(second.settings.multiAccountMenuLayout == .segmented)
+        #expect(first.settings.configStore.fileURL != second.settings.configStore.fileURL)
+        first.settings.userDefaults.set("first", forKey: "fixture-owner")
+        second.settings.userDefaults.set("second", forKey: "fixture-owner")
+        #expect(first.settings.userDefaults.string(forKey: "fixture-owner") == "first")
+    }
+
+    @MainActor
     private func makeStore(
         suite: String,
         layout: MultiAccountMenuLayout = .segmented) throws -> UsageStore
     {
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        let settings = SettingsStore(
-            userDefaults: defaults,
-            configStore: testConfigStore(suiteName: suite),
-            zaiTokenStore: NoopZaiTokenStore(),
-            syntheticTokenStore: NoopSyntheticTokenStore(),
-            codexCookieStore: InMemoryCookieHeaderStore(),
-            claudeCookieStore: InMemoryCookieHeaderStore(),
-            cursorCookieStore: InMemoryCookieHeaderStore(),
-            opencodeCookieStore: InMemoryCookieHeaderStore(),
-            factoryCookieStore: InMemoryCookieHeaderStore(),
-            minimaxCookieStore: InMemoryMiniMaxCookieStore(),
-            minimaxAPITokenStore: InMemoryMiniMaxAPITokenStore(),
-            kimiTokenStore: InMemoryKimiTokenStore(),
-            augmentCookieStore: InMemoryCookieHeaderStore(),
-            ampCookieStore: InMemoryCookieHeaderStore(),
-            copilotTokenStore: InMemoryCopilotTokenStore(),
-            tokenAccountStore: InMemoryTokenAccountStore())
+        let settings = testSettingsStore(suiteName: suite, userDefaults: InMemoryUserDefaults())
         settings.providerDetectionCompleted = true
         settings.refreshFrequency = .manual
         settings.statusChecksEnabled = false
-        settings.claudeUsageDataSource = .oauth
         settings.claudeOAuthKeychainPromptMode = .never
         settings.multiAccountMenuLayout = layout
         let metadata = try #require(ProviderRegistry.shared.metadata[.claude])
@@ -173,7 +179,7 @@ struct ClaudeOAuthRateLimitResilienceTests {
             branding: baseSpec.descriptor.branding,
             tokenCost: baseSpec.descriptor.tokenCost,
             fetchPlan: ProviderFetchPlan(
-                sourceModes: [.oauth],
+                sourceModes: [.auto, .oauth],
                 pipeline: ProviderFetchPipeline { _ in [ClaudeOAuthRateLimitStrategy()] }),
             cli: baseSpec.descriptor.cli)
         store.providerSpecs[.claude] = ProviderSpec(

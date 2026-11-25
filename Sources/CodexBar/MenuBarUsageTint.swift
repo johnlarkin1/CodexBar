@@ -11,6 +11,7 @@ import Foundation
 /// The values are mid-luminance and high-chroma so they stay legible against a light menu bar, a dark menu bar,
 /// and a translucent one over an arbitrary wallpaper. `NSColor.systemGreen` in particular is far too light on
 /// white. Color is never the only signal: the bar fill length already encodes the same value.
+///
 /// Which part of a menu bar layout strip `MenuBarUsageTint` colors.
 ///
 /// The meter icon is a single glyph, so the legacy render path has nothing to choose between. A layout strip is a
@@ -65,5 +66,39 @@ enum MenuBarUsageTint {
             return Self.medium.blended(withFraction: fraction, of: Self.high) ?? Self.medium
         }
         return Self.high
+    }
+}
+
+extension MenuBarLayoutToken {
+    /// Tokens whose value the usage tint restates, colored under `MenuBarUsageColorTarget.usage`.
+    var carriesUsageTint: Bool {
+        switch self {
+        case .percent, .lanePercent, .extraPercent, .pace, .usageBar, .progressBar, .runsOut, .runsOutCompact:
+            true
+        case .icon, .providerName, .accountLabel, .resetCountdown, .resetAbsolute, .windowResetCountdown,
+             .windowResetAbsolute, .balance, .costToday, .tokensPerMinute, .tokensSparkline, .costWindow,
+             .spendAmount, .spendBudget, .separatorDot, .separator, .space, .hidden, .conditional:
+            false
+        }
+    }
+}
+
+extension MenuBarLayoutRenderer {
+    /// Fork: the strip has no single meter to read, so the tint follows whichever window the layout would show
+    /// first. `automatic` is what the default layout renders; session/weekly cover strips that skip it.
+    static func usageTint(data: MenuBarLayoutRenderData, options: MenuBarLayoutRenderOptions) -> NSColor? {
+        guard options.usageColorTarget != nil else { return nil }
+        return MenuBarUsageTint.color(forUsedPercent: (data.automatic ?? data.session ?? data.weekly)?.usedPercent)
+    }
+
+    /// Fork: `attributes` recolored with the usage tint, or unchanged when the token does not carry it.
+    static func attributes(
+        _ attributes: [NSAttributedString.Key: Any],
+        usageTint: NSColor?) -> [NSAttributedString.Key: Any]
+    {
+        guard let usageTint else { return attributes }
+        var tinted = attributes
+        tinted[.foregroundColor] = usageTint
+        return tinted
     }
 }

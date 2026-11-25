@@ -14,7 +14,6 @@ struct OverviewMenuCardVisibilityTests {
             snapshot: nil,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -40,7 +39,6 @@ struct OverviewMenuCardVisibilityTests {
             snapshot: nil,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -55,6 +53,42 @@ struct OverviewMenuCardVisibilityTests {
             now: Date()))
 
         #expect(model.placeholder == "Limits not available")
+        #expect(!model.isOverviewErrorOnly)
+    }
+
+    @Test
+    func `overview keeps Grok cards with reset credits and an error subtitle`() throws {
+        let metadata = try #require(ProviderDefaults.metadata[.grok])
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = UsageSnapshot(
+            primary: nil,
+            secondary: nil,
+            grokResetCredits: GrokRateLimitResetCreditsSnapshot(
+                expirations: [now.addingTimeInterval(86400)],
+                updatedAt: now),
+            updatedAt: now)
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .grok,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: GrokStatusProbe.usageUnavailableMessage,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.subtitleStyle == .error)
+        #expect(model.metrics.isEmpty)
+        #expect(model.limitResetCredits != nil)
         #expect(!model.isOverviewErrorOnly)
     }
 
@@ -77,7 +111,6 @@ struct OverviewMenuCardVisibilityTests {
             snapshot: nil,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: tokenSnapshot,
             tokenError: nil,
@@ -124,7 +157,6 @@ struct ProviderInlineDashboardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -139,7 +171,7 @@ struct ProviderInlineDashboardModelTests {
             now: now))
 
         #expect(model.metrics.map(\.id) == ["secondary", "primary"])
-        #expect(model.metrics.map(\.title) == ["Rate Limit", "Weekly"])
+        #expect(model.metrics.map(\.title) == ["5-hour usage", "7-day usage"])
         #expect(model.metrics.map(\.detailLeftText) == ["11% in reserve", "25% in reserve"])
         #expect(model.metrics.map(\.detailRightText) == ["Lasts until reset", "Lasts until reset"])
         #expect(model.metrics.allSatisfy { $0.pacePercent != nil })
@@ -160,7 +192,6 @@ struct ProviderInlineDashboardModelTests {
             keyUsageDaily: 1.25,
             keyUsageWeekly: 7.5,
             keyUsageMonthly: 18.75,
-            rateLimit: OpenRouterRateLimit(requests: 100, interval: "10s"),
             updatedAt: now)
 
         let model = UsageMenuCardView.Model.make(.init(
@@ -169,7 +200,6 @@ struct ProviderInlineDashboardModelTests {
             snapshot: usage.toUsageSnapshot(),
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -183,9 +213,10 @@ struct ProviderInlineDashboardModelTests {
             hidePersonalInfo: false,
             now: now))
 
-        #expect(model.inlineUsageDashboard?.kpis.first?.value == "$60.00")
-        #expect(model.inlineUsageDashboard?.points.map(\.label) == ["Today", "Week", "Month"])
-        #expect(model.inlineUsageDashboard?.detailLines.contains("Rate limit: 100 / 10s") == true)
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.providerDetails.first?.rows.first?.value == "$60.00")
+        #expect(model.providerDetails.last?.chart?.points.map(\.label) == ["Today", "This week", "This month"])
+        #expect(!model.providerDetails.flatMap(\.rows).contains { $0.label == "Rate limit" })
     }
 
     @Test
@@ -237,7 +268,6 @@ struct ProviderInlineDashboardModelTests {
                 updatedAt: now),
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: tokenSnapshot,
             tokenError: nil,
@@ -252,7 +282,7 @@ struct ProviderInlineDashboardModelTests {
             now: now))
 
         #expect(model.inlineUsageDashboard?.kpis.first?.value == "$0.25")
-        #expect(model.inlineUsageDashboard?.points.count == 2)
+        #expect(model.inlineUsageDashboard?.points.count == 30)
         #expect(model.inlineUsageDashboard?.detailLines.contains { $0.contains("claude-opus-4") } == true)
         #expect(model.tokenUsage?.sessionLine.contains("$0.25") == true)
         #expect(model.tokenUsage?.monthLine.contains("$0.37") == true)
@@ -296,7 +326,6 @@ struct ProviderInlineDashboardModelTests {
             snapshot: snapshot.toUsageSnapshot(),
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -306,13 +335,20 @@ struct ProviderInlineDashboardModelTests {
             usageBarsShowUsed: false,
             resetTimeDisplayStyle: .countdown,
             tokenCostUsageEnabled: false,
-            tokenCostInlineDashboardEnabled: true,
+            costSummaryInlineEnabled: true,
             showOptionalCreditsAndExtraUsage: true,
             hidePersonalInfo: false,
+            costUsageBucketCalendar: CostUsageBucketTimeZone.calendar(identifier: "America/Los_Angeles"),
             now: now))
 
         #expect(model.inlineUsageDashboard?.kpis.first?.value == "€1.50")
-        #expect(model.inlineUsageDashboard?.points.first?.accessibilityValue == "2023-11-14: €1.50")
+        #expect(model.inlineUsageDashboard?.points.first?.accessibilityValue ==
+            "Nov 14, 2023: €1.50 · 150 tokens")
+        #expect(model.inlineUsageDashboard?.points.first?.hoverDetail == .init(
+            dateLabel: "Nov 14, 2023",
+            cost: 1.5,
+            tokenCount: 150,
+            currencyCode: "EUR"))
         #expect(model.inlineUsageDashboard?.detailLines.contains("Top model: mistral-large") == true)
     }
 
@@ -357,7 +393,6 @@ struct ProviderInlineDashboardModelTests {
             snapshot: snapshot.toUsageSnapshot(),
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: snapshot.toCostUsageTokenSnapshot(historyDays: 30),
             tokenError: nil,
@@ -381,24 +416,34 @@ struct ProviderInlineDashboardModelTests {
     func `zai hourly usage gets inline dashboard`() throws {
         let now = try #require(Self.zaiDate("2023-11-15 12:00"))
         let metadata = try #require(ProviderDefaults.metadata[.zai])
-        let usage = ZaiUsageSnapshot(
-            tokenLimit: nil,
-            timeLimit: nil,
-            planName: "Pro",
-            modelUsage: ZaiModelUsageData(
-                xTime: ["2023-11-14 12:00", "2023-11-15 12:00"],
-                modelDataList: [
-                    ZaiModelDataItem(modelName: "glm-4.5", tokensUsage: [100, 200]),
-                ]),
-            updatedAt: now)
+        let details = try ProviderDetailSection(
+            title: "Hourly tokens",
+            rows: [.init(label: "glm-4.5", value: "300")],
+            chart: .init(
+                kind: .bars,
+                title: "Hourly tokens",
+                unit: "tokens",
+                points: [
+                    .init(label: "2023-11-14 12:00", value: 100),
+                    .init(label: "2023-11-15 12:00", value: 200),
+                ]))
+        let snapshot = UsageSnapshot(
+            primary: nil,
+            secondary: nil,
+            details: [details],
+            updatedAt: now,
+            identity: ProviderIdentitySnapshot(
+                providerID: .zai,
+                accountEmail: nil,
+                accountOrganization: nil,
+                loginMethod: "Pro"))
 
         let model = UsageMenuCardView.Model.make(.init(
             provider: .zai,
             metadata: metadata,
-            snapshot: usage.toUsageSnapshot(),
+            snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -408,14 +453,14 @@ struct ProviderInlineDashboardModelTests {
             usageBarsShowUsed: false,
             resetTimeDisplayStyle: .countdown,
             tokenCostUsageEnabled: false,
+            costSummaryInlineEnabled: true,
             showOptionalCreditsAndExtraUsage: true,
             hidePersonalInfo: false,
             now: now))
 
-        #expect(model.inlineUsageDashboard?.kpis.first?.value == "300")
-        #expect(model.inlineUsageDashboard?.points.map(\.label) == ["12", "12"])
-        #expect(Set(model.inlineUsageDashboard?.points.map(\.id) ?? []).count == 2)
-        #expect(model.inlineUsageDashboard?.detailLines.contains("Top model: glm-4.5") == true)
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.providerDetails.last?.chart?.points.map(\.value) == [100, 200])
+        #expect(model.providerDetails.last?.rows.first?.label == "glm-4.5")
     }
 
     private static func zaiDate(_ text: String) -> Date? {
@@ -444,7 +489,6 @@ struct FactoryMenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -459,6 +503,41 @@ struct FactoryMenuCardModelTests {
             now: now))
 
         #expect(model.metrics.map(\.title) == ["5-hour", "Weekly", "Monthly"])
+    }
+
+    @Test
+    func `factory time window labels localize in simplified chinese`() throws {
+        try CodexBarLocalizationOverride.$appLanguage.withValue("zh-Hans") {
+            let now = Date()
+            let snapshot = UsageSnapshot(
+                primary: RateWindow(usedPercent: 12, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+                secondary: RateWindow(usedPercent: 34, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+                tertiary: RateWindow(usedPercent: 56, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+                updatedAt: now,
+                identity: nil)
+            let metadata = try #require(ProviderDefaults.metadata[.factory])
+
+            let model = UsageMenuCardView.Model.make(.init(
+                provider: .factory,
+                metadata: metadata,
+                snapshot: snapshot,
+                credits: nil,
+                creditsError: nil,
+                dashboardError: nil,
+                tokenSnapshot: nil,
+                tokenError: nil,
+                account: AccountInfo(email: nil, plan: nil),
+                isRefreshing: false,
+                lastError: nil,
+                usageBarsShowUsed: true,
+                resetTimeDisplayStyle: .countdown,
+                tokenCostUsageEnabled: false,
+                showOptionalCreditsAndExtraUsage: true,
+                hidePersonalInfo: false,
+                now: now))
+
+            #expect(model.metrics.map(\.title) == ["5 小时", "每周", "每月"])
+        }
     }
 
     @Test
@@ -477,7 +556,6 @@ struct FactoryMenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -517,7 +595,6 @@ struct FactoryMenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -541,7 +618,6 @@ struct FactoryMenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -582,16 +658,7 @@ struct MiniMaxMenuCardModelTests {
                     resetsAt: now.addingTimeInterval(3600),
                     resetDescription: "Resets in 1 hour"),
             ])
-        let snapshot = UsageSnapshot(
-            primary: RateWindow(usedPercent: 20, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
-            secondary: nil,
-            minimaxUsage: minimax,
-            updatedAt: now,
-            identity: ProviderIdentitySnapshot(
-                providerID: .minimax,
-                accountEmail: nil,
-                accountOrganization: nil,
-                loginMethod: "Max"))
+        let snapshot = minimax.toUsageSnapshot()
         let metadata = try #require(ProviderDefaults.metadata[.minimax])
 
         let used = UsageMenuCardView.Model.make(.init(
@@ -600,7 +667,6 @@ struct MiniMaxMenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -614,12 +680,9 @@ struct MiniMaxMenuCardModelTests {
             hidePersonalInfo: false,
             now: now))
 
-        #expect(used.metrics.first?.title == "Text Generation")
-        #expect(used.metrics.first?.detailLeftText == "Usage: 2 / 10")
-        #expect(used.metrics.first?.detailRightText == nil)
-        #expect(used.metrics.first?.detailText == nil)
-        #expect(used.metrics.first?.percent == 20)
-        #expect(used.metrics.first?.cardStyle == false)
+        #expect(used.providerDetails.first?.rows.first?.label == "Text Generation")
+        #expect(used.providerDetails.first?.rows.first?.value == "2 / 10")
+        #expect(used.providerDetails.first?.rows.first?.secondaryValue == "20% used · Resets in 1 hour")
     }
 
     @Test
@@ -654,16 +717,7 @@ struct MiniMaxMenuCardModelTests {
                     resetsAt: now.addingTimeInterval(7200),
                     resetDescription: "Resets in 2 hours"),
             ])
-        let snapshot = UsageSnapshot(
-            primary: RateWindow(usedPercent: 20, windowMinutes: 1440, resetsAt: nil, resetDescription: nil),
-            secondary: nil,
-            minimaxUsage: minimax,
-            updatedAt: now,
-            identity: ProviderIdentitySnapshot(
-                providerID: .minimax,
-                accountEmail: nil,
-                accountOrganization: nil,
-                loginMethod: "Max"))
+        let snapshot = minimax.toUsageSnapshot()
         let metadata = try #require(ProviderDefaults.metadata[.minimax])
 
         let model = UsageMenuCardView.Model.make(.init(
@@ -672,7 +726,6 @@ struct MiniMaxMenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -686,9 +739,10 @@ struct MiniMaxMenuCardModelTests {
             hidePersonalInfo: false,
             now: now))
 
-        #expect(model.metrics.count == 2)
-        #expect(model.metrics[0].title == "Text Generation · Today")
-        #expect(model.metrics[1].title == "Text Generation · Weekly")
+        #expect(model.providerDetails.first?.rows.map(\.label) == [
+            "Text Generation · Today",
+            "Text Generation · Weekly",
+        ])
     }
 
     @Test
@@ -734,7 +788,6 @@ struct MiniMaxMenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -749,19 +802,14 @@ struct MiniMaxMenuCardModelTests {
             now: now))
 
         #expect(model.planText == "Plus")
-        #expect(model.metrics[0].title == "Text Generation · 5h")
-        #expect(model.metrics[1].title == "Text Generation · Weekly")
-        #expect(model.metrics[0].detailLeftText == "Usage: 4 / 100")
-        #expect(model.metrics[1].detailLeftText == "Usage: 1 / 100")
-        #expect(model.metrics[0].detailRightText == nil)
-        #expect(model.metrics[1].detailRightText == nil)
-        #expect(model.metrics[0].detailText == nil)
-        #expect(model.metrics[1].detailText == nil)
-        #expect(model.metrics[0].cardStyle == false)
-        #expect(model.metrics[1].cardStyle == false)
+        #expect(model.providerDetails.first?.rows.map(\.label) == [
+            "Text Generation · 5 hours",
+            "Text Generation · Weekly",
+        ])
+        #expect(model.providerDetails.first?.rows.map(\.value) == ["4 / 100", "1 / 100"])
         #expect(model.providerCost?.title == "Credits")
         #expect(model.providerCost?.spendLine == "Balance: 14000")
-        #expect(model.usageNotes == [String(format: L("Renews: %@"), minimaxRenewDate(1_810_569_600))])
+        #expect(model.usageNotes == [String(format: L("Plan renews: %@"), minimaxRenewDate(1_810_569_600))])
     }
 }
 
@@ -818,7 +866,6 @@ struct MenuCardModelTests {
             codexProjection: codexProjection,
             credits: CreditsSnapshot(remaining: 12, events: [], updatedAt: now),
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -869,7 +916,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -897,7 +943,6 @@ struct MenuCardModelTests {
             snapshot: nil,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -938,7 +983,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: tokenSnapshot,
             tokenError: nil,
@@ -966,7 +1010,6 @@ struct MenuCardModelTests {
             snapshot: nil,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1007,7 +1050,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1036,7 +1078,6 @@ struct MenuCardModelTests {
             usedPercent: 90.779119265,
             keyLimit: 20,
             keyUsage: 0.5,
-            rateLimit: nil,
             updatedAt: now).toUsageSnapshot()
 
         let model = UsageMenuCardView.Model.make(.init(
@@ -1045,7 +1086,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1067,7 +1107,8 @@ struct MenuCardModelTests {
             provider: .openrouter,
             metric: metric)
         #expect(popupTitle == "API key limit")
-        #expect(metric.resetText == "$19.50/$20.00 left")
+        #expect(metric.resetText == nil)
+        #expect(model.providerDetails.flatMap(\.rows).first { $0.label == "API key limit" }?.value == "$20.00")
         #expect(metric.detailRightText == nil)
     }
 
@@ -1083,7 +1124,6 @@ struct MenuCardModelTests {
             keyDataFetched: true,
             keyLimit: nil,
             keyUsage: nil,
-            rateLimit: nil,
             updatedAt: now).toUsageSnapshot()
 
         let model = UsageMenuCardView.Model.make(.init(
@@ -1092,7 +1132,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1109,7 +1148,9 @@ struct MenuCardModelTests {
         #expect(model.metrics.isEmpty)
         #expect(model.creditsText == nil)
         #expect(model.placeholder == nil)
-        #expect(model.usageNotes == ["No limit set for the API key"])
+        #expect(model.usageNotes.isEmpty)
+        #expect(model.providerDetails.flatMap(\.rows).first { $0.label == "API key limit" }?.value ==
+            "No limit configured")
     }
 
     @Test
@@ -1124,7 +1165,6 @@ struct MenuCardModelTests {
             keyDataFetched: false,
             keyLimit: nil,
             keyUsage: nil,
-            rateLimit: nil,
             updatedAt: now).toUsageSnapshot()
 
         let model = UsageMenuCardView.Model.make(.init(
@@ -1133,7 +1173,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1148,7 +1187,9 @@ struct MenuCardModelTests {
             now: now))
 
         #expect(model.metrics.isEmpty)
-        #expect(model.usageNotes == ["API key limit unavailable right now"])
+        #expect(model.usageNotes.isEmpty)
+        #expect(model.providerDetails.flatMap(\.rows).first { $0.label == "API key limit" }?.value ==
+            "Unavailable right now")
     }
 
     @Test
@@ -1173,7 +1214,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: "OpenAI dashboard signed in as codex@example.com.",
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1218,7 +1258,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1260,7 +1299,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1303,7 +1341,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1325,7 +1362,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1370,7 +1406,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1408,7 +1443,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1454,7 +1488,6 @@ struct MenuCardModelTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,

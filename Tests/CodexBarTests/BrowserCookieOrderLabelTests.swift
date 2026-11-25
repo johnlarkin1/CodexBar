@@ -17,6 +17,44 @@ struct BrowserCookieOrderStatusStringTests {
     }
 
     @Test
+    func `Chrome Dev follows Canary without changing explicit Chrome selection`() throws {
+        let order = Browser.defaultImportOrder
+        let dev = try #require(Browser(rawValue: "chromeDev"))
+        let canaryIndex = try #require(order.firstIndex(of: .chromeCanary))
+        #expect(order[canaryIndex + 1] == dev)
+        #expect(dev.displayName == "Chrome Dev")
+        #expect(order.filter { $0.rawValue == "chrome" } == [.chrome])
+    }
+
+    @Test
+    func `orders listing Brave also include Brave Origin with its distinct display name`() throws {
+        let origin = try #require(Browser.defaultImportOrder.first { $0.displayName == "Brave Origin" })
+        let violators = ProviderDefaults.metadata.compactMap { provider, metadata -> UsageProvider? in
+            guard let order = metadata.browserCookieOrder, order.contains(.brave) else { return nil }
+            return order.contains(origin) ? nil : provider
+        }
+        #expect(violators.isEmpty, "orders missing Brave Origin: \(violators)")
+    }
+
+    @Test
+    func `claude cookie import prefers chrome without dropping fallback browsers`() throws {
+        let order = try #require(ProviderDefaults.metadata[.claude]?.browserCookieOrder)
+
+        #expect(order.first == .chrome)
+        #expect(order.count == Browser.defaultImportOrder.count + 1)
+        #expect(Set(order) == Set(Browser.defaultImportOrder + [.claudeDesktop]))
+    }
+
+    @Test
+    func `Claude desktop import requires explicit selection and excludes other browsers`() {
+        #expect(!ClaudeWebAPIFetcher.cookieImportOrder.contains(.claudeDesktop))
+        ClaudeWebSessionKeyImport.$desktopApp.withValue(true) {
+            #expect(ClaudeWebAPIFetcher.cookieImportOrder == [.claudeDesktop])
+        }
+        #expect(ClaudeWebAPIFetcher.cookieImportOrder.first == .chrome)
+    }
+
+    @Test
     func `cursor no session includes browser login hint`() {
         let order = ProviderDefaults.metadata[.cursor]?.browserCookieOrder ?? Browser.defaultImportOrder
         let message = CursorStatusProbeError.noSessionCookie.errorDescription ?? ""
@@ -49,68 +87,31 @@ struct BrowserCookieOrderStatusStringTests {
     }
 
     @Test
-    func `opencode automatic cookies only use chrome and dia`() {
+    func `opencode automatic cookies use the shared browser order`() {
         let order = OpenCodeWebCookieSupport.automaticImportOrder(provider: .opencode)
         #expect(order == ProviderDefaults.metadata[.opencode]?.browserCookieOrder)
-        #expect(order == ProviderBrowserCookieDefaults.opencodeCookieImportOrder)
-        #expect(order == [.chrome, .dia])
+        #expect(order == Browser.defaultImportOrder)
     }
 
     @Test
-    func `opencode automatic cookies bound keychain prompt labels to chrome and dia`() {
-        let order = OpenCodeWebCookieSupport.automaticImportOrder(provider: .opencode)
-        let labels = order.flatMap(\.safeStorageLabels).map(\.service)
-
-        #expect(labels == ["Chrome Safe Storage", "Dia Safe Storage"])
-        #expect(!order.contains(.safari))
-        #expect(!order.contains(.firefox))
-        #expect(!order.contains(.edge))
-        #expect(!order.contains(.brave))
-        #expect(!order.contains(.arc))
-        #expect(!order.contains(.chromium))
-    }
-
-    @Test
-    func `mimo cookie import order supports safari firefox and edge`() {
-        let order = ProviderDefaults.metadata[.mimo]?.browserCookieOrder ?? Browser.defaultImportOrder
-        #expect(order == ProviderBrowserCookieDefaults.mimoCookieImportOrder)
-        #expect(order == [.safari, .chrome, .chromeBeta, .chromeCanary, .firefox, .edge])
-        #expect(order.first == .safari)
-        #expect(order.contains(.firefox))
-        #expect(order.contains(.edge))
-        #expect(!order.contains(.arc))
-    }
-
-    @Test
-    func `copilot cookie imports default to chrome only`() {
-        #expect(ProviderDefaults.metadata[.copilot]?.browserCookieOrder == [.chrome])
-        #expect(ProviderBrowserCookieDefaults.copilotCookieImportOrder == [.chrome])
-    }
-
-    @Test
-    func `mistral cookie import order supports chrome firefox and safari`() {
+    func `mistral cookie importer preserves explicit browser overrides`() {
         let order = ProviderDefaults.metadata[.mistral]?.browserCookieOrder ?? Browser.defaultImportOrder
-        #expect(order == ProviderBrowserCookieDefaults.mistralCookieImportOrder)
-        #expect(order == [.chrome, .firefox, .safari])
-        #expect(order.first == .chrome)
-        #expect(order.contains(.firefox))
-        #expect(!order.contains(.edge))
-        #expect(!order.contains(.arc))
+        #expect(order == Browser.defaultImportOrder)
         #expect(MistralCookieImporter.resolvedImportOrder(nil) == order)
         #expect(MistralCookieImporter.resolvedImportOrder([]) == order)
         #expect(MistralCookieImporter.resolvedImportOrder([.firefox]) == [.firefox])
     }
 
     @Test
-    func `longcat cookie import order supports chrome and firefox`() {
-        let metadataOrder = ProviderDefaults.metadata[.longcat]?.browserCookieOrder
-        let defaultOrder = ProviderBrowserCookieDefaults.longcatCookieImportOrder
-
-        #expect(metadataOrder == [.chrome, .firefox])
-        #expect(defaultOrder == [.chrome, .firefox])
-        #expect(defaultOrder?.first == .chrome)
-        #expect(defaultOrder?.contains(.firefox) == true)
-        #expect(defaultOrder?.contains(.safari) == false)
+    func `orders listing firefox also include its release channels`() {
+        // Channel-owned profiles share `Firefox/Profiles` but only import through their own
+        // `Browser` case, so an order that stops at `.firefox` can never reach them.
+        let family: Set<Browser> = [.firefox, .firefoxBeta, .firefoxDeveloperEdition, .firefoxNightly]
+        let violators = ProviderDefaults.metadata.compactMap { provider, metadata -> UsageProvider? in
+            guard let order = metadata.browserCookieOrder, order.contains(where: family.contains) else { return nil }
+            return family.isSubset(of: Set(order)) ? nil : provider
+        }
+        #expect(violators.isEmpty, "orders missing Firefox release channels: \(violators)")
     }
     #endif
 }

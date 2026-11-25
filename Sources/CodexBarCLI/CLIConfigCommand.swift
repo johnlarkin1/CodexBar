@@ -3,8 +3,14 @@ import Commander
 import Foundation
 
 extension CodexBarCLI {
-    static func runConfig(path: [String], values: ParsedValues) {
+    static func runConfig(path: [String], values: ParsedValues) async {
         switch path {
+        case ["config", "login"]:
+            await self.runConfigLogin(values)
+        case ["config", "preferences", "export"]:
+            self.runConfigPreferences(values, importing: false)
+        case ["config", "preferences", "import"]:
+            self.runConfigPreferences(values, importing: true)
         case ["config", "validate"]:
             self.runConfigValidate(values)
         case ["config", "dump"]:
@@ -15,8 +21,14 @@ extension CodexBarCLI {
             self.runConfigSetProviderEnabled(values, enabled: true)
         case ["config", "disable"]:
             self.runConfigSetProviderEnabled(values, enabled: false)
+        case ["config", "set-source"]:
+            self.runConfigSetSource(values)
         case ["config", "set-api-key"]:
             self.runConfigSetAPIKey(values)
+        case ["config", "set-cookie"]:
+            self.runConfigSetCookie(values)
+        case ["config", "clear-credential"]:
+            self.runConfigClearCredential(values)
         default:
             self.exit(
                 code: .failure,
@@ -56,7 +68,13 @@ extension CodexBarCLI {
         let output = CLIOutputPreferences.from(values: values)
         let showSecrets = values.flags.contains("showSecrets")
         let config = Self.loadConfig(output: output).sanitizedForDump(showSecrets: showSecrets)
-        Self.printJSON(config, pretty: output.pretty)
+        do {
+            let data = try config.encodedData(pretty: output.pretty)
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        } catch {
+            Self.exit(code: .failure, message: error.localizedDescription, output: output, kind: .config)
+        }
         Self.exit(code: .success, output: output, kind: .config)
     }
 
@@ -119,6 +137,15 @@ extension CodexBarCLI {
         Self.exit(code: .success, output: output, kind: .config)
     }
 
+    static func unsupportedAPIKeyErrorMessage(for provider: UsageProvider, rawProvider: String) -> String {
+        // Provider-specific by design: Codex users are redirected to the separate OpenAI Platform provider ID.
+        if provider == .codex {
+            "\(rawProvider) does not support config API keys. For OpenAI Platform API keys, use '--provider openai'."
+        } else {
+            "\(rawProvider) does not support config API keys."
+        }
+    }
+
     static func runConfigSetAPIKey(_ values: ParsedValues) {
         let output = CLIOutputPreferences.from(values: values)
 
@@ -134,7 +161,7 @@ extension CodexBarCLI {
         guard ProviderConfigEnvironment.supportsAPIKeyOverride(for: provider) else {
             Self.exit(
                 code: .failure,
-                message: "\(rawProvider) does not support config API keys.",
+                message: Self.unsupportedAPIKeyErrorMessage(for: provider, rawProvider: rawProvider),
                 output: output,
                 kind: .args)
         }
@@ -177,7 +204,7 @@ extension CodexBarCLI {
 
         let result = ConfigSetAPIKeyResult(
             provider: provider.rawValue,
-            enabled: config.providerConfig(for: provider)?.enabled ?? false,
+            enabled: config.providerConfig(for: provider.instanceID)?.enabled ?? false,
             configPath: store.fileURL.path)
 
         switch output.format {
@@ -204,7 +231,7 @@ extension CodexBarCLI {
             apiKey
         }
 
-        guard let value = Self.cleanConfigSecret(raw) else {
+        guard let value = SettingsValue.cleaned(raw) else {
             throw CLIArgumentError("Missing API key. Pass --api-key <key> or pipe it with --stdin.")
         }
         return value
@@ -218,7 +245,7 @@ extension CodexBarCLI {
         accountOptions: ConfigAPIKeyAccountOptions? = nil) -> CodexBarConfig
     {
         var updated = config.normalized()
-        var providerConfig = updated.providerConfig(for: provider) ?? ProviderConfig(id: provider)
+        var providerConfig = updated.providerConfig(for: provider.instanceID) ?? ProviderConfig(id: provider.instanceID)
         if let accountOptions {
             let existing = providerConfig.tokenAccounts
             let accounts = existing?.accounts ?? []
@@ -243,6 +270,10 @@ extension CodexBarCLI {
             return updated
         }
         providerConfig.apiKey = apiKey
+        // Provider-specific by design: legacy Moonshot config binds a newly set key to its existing/default region.
+        if provider == .moonshot {
+            providerConfig.apiKeyRegion = providerConfig.sanitizedRegion ?? MoonshotRegion.international.rawValue
+        }
         if enableProvider {
             providerConfig.enabled = true
         }
@@ -257,8 +288,8 @@ extension CodexBarCLI {
         organizationID: String?,
         workspaceID: String?) throws -> ConfigAPIKeyAccountOptions?
     {
-        let cleanedLabel = Self.cleanConfigValue(label)
-        let cleanedScope = Self.cleanConfigValue(usageScope)
+        let cleanedLabel = SettingsValue.cleaned(label)
+        let cleanedScope = SettingsValue.cleaned(usageScope)
         let cleanedOrganizationID = try Self.cleanSingleLineConfigValue(
             organizationID,
             fieldName: "organization-id")
@@ -271,6 +302,7 @@ extension CodexBarCLI {
             cleanedWorkspaceID != nil
         guard hasAccountOptions else { return nil }
 
+        // Provider-specific by design: z.ai team tokens alone accept organization, workspace, and usage-scope fields.
         guard provider == .zai else {
             throw CLIArgumentError("Token-account options are only supported for --provider zai.")
         }
@@ -298,7 +330,7 @@ extension CodexBarCLI {
         enabled: Bool) -> CodexBarConfig
     {
         var updated = config.normalized()
-        var providerConfig = updated.providerConfig(for: provider) ?? ProviderConfig(id: provider)
+        var providerConfig = updated.providerConfig(for: provider.instanceID) ?? ProviderConfig(id: provider.instanceID)
         providerConfig.enabled = enabled
         updated.setProviderConfig(providerConfig)
         return updated
@@ -306,37 +338,29 @@ extension CodexBarCLI {
 
     static func configProviderStatuses(_ config: CodexBarConfig) -> [ConfigProviderStatusResult] {
         let metadata = ProviderDescriptorRegistry.metadata
-        return config.normalized().providers.map { providerConfig in
-            let meta = metadata[providerConfig.id]
-            let defaultEnabled = meta?.defaultEnabled ?? false
+        var results = config.normalized().providers.map { providerConfig in
+            let provider = providerConfig.id.firstPartyProvider
+            let meta = provider.flatMap { metadata[$0] }
             return ConfigProviderStatusResult(
-                provider: providerConfig.id.rawValue,
-                displayName: meta?.displayName ?? providerConfig.id.rawValue,
-                enabled: providerConfig.enabled ?? defaultEnabled,
-                defaultEnabled: defaultEnabled)
+                config: providerConfig,
+                descriptor: provider.map { ProviderDescriptorRegistry.descriptor(for: $0) },
+                displayName: meta?.displayName ?? UserProviderPluginRegistry.plugin(for: providerConfig.id)?
+                    .manifest.name ?? providerConfig.id.rawValue)
         }
-    }
-
-    private static func cleanConfigSecret(_ raw: String?) -> String? {
-        guard var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            return nil
+        for entry in config.unavailableProviders {
+            results.insert(ConfigProviderStatusResult(
+                provider: entry.id,
+                displayName: "plugin (not loaded)",
+                enabled: entry.enabled,
+                defaultEnabled: false,
+                authentication: nil,
+                setup: .unknown), at: min(entry.index, results.count))
         }
-        if (value.hasPrefix("\"") && value.hasSuffix("\"")) ||
-            (value.hasPrefix("'") && value.hasSuffix("'"))
-        {
-            value = String(value.dropFirst().dropLast())
-        }
-        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
-    }
-
-    private static func cleanConfigValue(_ raw: String?) -> String? {
-        guard let value = self.cleanConfigSecret(raw) else { return nil }
-        return value
+        return results
     }
 
     private static func cleanSingleLineConfigValue(_ raw: String?, fieldName: String) throws -> String? {
-        guard let value = self.cleanConfigValue(raw) else { return nil }
+        guard let value = SettingsValue.cleaned(raw) else { return nil }
         guard !value.contains(where: \.isNewline) else {
             throw CLIArgumentError("--\(fieldName) must be a single line.")
         }
@@ -352,77 +376,23 @@ struct ConfigAPIKeyAccountOptions: Equatable {
 }
 
 struct ConfigOptions: CommanderParsable {
-    @Flag(names: [.short("v"), .long("verbose")], help: "Enable verbose logging")
-    var verbose: Bool = false
-
-    @Flag(name: .long("json-output"), help: "Emit machine-readable logs")
-    var jsonOutput: Bool = false
-
-    @Option(name: .long("log-level"), help: "Set log level (trace|verbose|debug|info|warning|error|critical)")
-    var logLevel: String?
-
-    @Option(name: .long("format"), help: "Output format: text | json")
-    var format: OutputFormat?
-
-    @Flag(name: .long("json"), help: "")
-    var jsonShortcut: Bool = false
-
-    @Flag(name: .long("json-only"), help: "Emit JSON only (suppress non-JSON output)")
-    var jsonOnly: Bool = false
-
-    @Flag(name: .long("pretty"), help: "Pretty-print JSON output")
-    var pretty: Bool = false
+    @OptionGroup
+    var common: CLICommonOptions
 }
 
 struct ConfigDumpOptions: CommanderParsable {
-    @Flag(names: [.short("v"), .long("verbose")], help: "Enable verbose logging")
-    var verbose: Bool = false
-
-    @Flag(name: .long("json-output"), help: "Emit machine-readable logs")
-    var jsonOutput: Bool = false
-
-    @Option(name: .long("log-level"), help: "Set log level (trace|verbose|debug|info|warning|error|critical)")
-    var logLevel: String?
-
-    @Option(name: .long("format"), help: "Output format: text | json")
-    var format: OutputFormat?
-
-    @Flag(name: .long("json"), help: "")
-    var jsonShortcut: Bool = false
-
-    @Flag(name: .long("json-only"), help: "Emit JSON only (suppress non-JSON output)")
-    var jsonOnly: Bool = false
-
-    @Flag(name: .long("pretty"), help: "Pretty-print JSON output")
-    var pretty: Bool = false
+    @OptionGroup
+    var common: CLICommonOptions
 
     @Flag(name: .long("show-secrets"), help: "Include raw un-redacted API keys and tokens in output")
     var showSecrets: Bool = false
 }
 
 struct ConfigSetAPIKeyOptions: CommanderParsable {
-    @Flag(names: [.short("v"), .long("verbose")], help: "Enable verbose logging")
-    var verbose: Bool = false
+    @OptionGroup
+    var common: CLICommonOptions
 
-    @Flag(name: .long("json-output"), help: "Emit machine-readable logs")
-    var jsonOutput: Bool = false
-
-    @Option(name: .long("log-level"), help: "Set log level (trace|verbose|debug|info|warning|error|critical)")
-    var logLevel: String?
-
-    @Option(name: .long("format"), help: "Output format: text | json")
-    var format: OutputFormat?
-
-    @Flag(name: .long("json"), help: "")
-    var jsonShortcut: Bool = false
-
-    @Flag(name: .long("json-only"), help: "Emit JSON only (suppress non-JSON output)")
-    var jsonOnly: Bool = false
-
-    @Flag(name: .long("pretty"), help: "Pretty-print JSON output")
-    var pretty: Bool = false
-
-    @Option(name: .long("provider"), help: ProviderHelp.optionHelp)
+    @Option(name: .long("provider"), help: ProviderHelp.concreteOptionHelp)
     var provider: String?
 
     @Option(name: .long("api-key"), help: "API key to store")
@@ -448,28 +418,10 @@ struct ConfigSetAPIKeyOptions: CommanderParsable {
 }
 
 struct ConfigProviderToggleOptions: CommanderParsable {
-    @Flag(names: [.short("v"), .long("verbose")], help: "Enable verbose logging")
-    var verbose: Bool = false
+    @OptionGroup
+    var common: CLICommonOptions
 
-    @Flag(name: .long("json-output"), help: "Emit machine-readable logs")
-    var jsonOutput: Bool = false
-
-    @Option(name: .long("log-level"), help: "Set log level (trace|verbose|debug|info|warning|error|critical)")
-    var logLevel: String?
-
-    @Option(name: .long("format"), help: "Output format: text | json")
-    var format: OutputFormat?
-
-    @Flag(name: .long("json"), help: "")
-    var jsonShortcut: Bool = false
-
-    @Flag(name: .long("json-only"), help: "Emit JSON only (suppress non-JSON output)")
-    var jsonOnly: Bool = false
-
-    @Flag(name: .long("pretty"), help: "Pretty-print JSON output")
-    var pretty: Bool = false
-
-    @Option(name: .long("provider"), help: ProviderHelp.optionHelp)
+    @Option(name: .long("provider"), help: ProviderHelp.concreteOptionHelp)
     var provider: String?
 }
 
@@ -484,6 +436,46 @@ struct ConfigProviderStatusResult: Encodable, Equatable {
     let displayName: String
     let enabled: Bool
     let defaultEnabled: Bool
+    let authentication: ConfigProviderAuthenticationResult?
+    let setup: ProviderSetup
+}
+
+extension ConfigProviderStatusResult {
+    init(config: ProviderConfig, descriptor: ProviderDescriptor?, displayName: String) {
+        self.init(
+            provider: config.id.rawValue,
+            displayName: displayName,
+            enabled: config.enabled ?? descriptor?.metadata.defaultEnabled ?? false,
+            defaultEnabled: descriptor?.metadata.defaultEnabled ?? false,
+            authentication: descriptor.map { ConfigProviderAuthenticationResult(descriptor: $0) },
+            setup: descriptor?.setup ?? .unknown)
+    }
+}
+
+struct ConfigProviderAuthenticationResult: Encodable, Equatable {
+    let sourceModes: [String]
+    let supportsConfigAPIKey: Bool
+    let supportsConfigCookieHeader: Bool
+    let environmentVariables: [String]
+    let loginCommand: String?
+    let tokenAccounts: TokenAccounts?
+
+    struct TokenAccounts: Encodable, Equatable {
+        let title: String
+        let setupHint: String
+    }
+
+    init(descriptor: ProviderDescriptor) {
+        self.sourceModes = descriptor.fetchPlan.sourceModes.map(\.rawValue).sorted()
+        self.supportsConfigAPIKey = descriptor.credentials?.supportsAPIKeyOverride ?? false
+        self.supportsConfigCookieHeader = descriptor.settingsSection.supportsConfigCookieHeader
+        self.environmentVariables = Array(Set(
+            descriptor.credentials?.environmentProjections.map(\.key) ?? [])).sorted()
+        self.loginCommand = descriptor.cli.loginCommand
+        self.tokenAccounts = descriptor.credentials?.tokenAccountSupport.map {
+            TokenAccounts(title: $0.title, setupHint: $0.subtitle)
+        }
+    }
 }
 
 private struct ConfigProviderToggleResult: Encodable {

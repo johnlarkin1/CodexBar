@@ -1,10 +1,329 @@
+import CodexBarCore
 import CoreTransferable
 import Foundation
+import Observation
 import Testing
 import UniformTypeIdentifiers
 @testable import CodexBar
 
 struct MenuBarLayoutEditorTests {
+    @Test
+    func `Cursor reset chips name the account window without borrowing Grok Bot resets`() {
+        CodexBarLocalizationOverride.$appLanguage.withValue("en") {
+            let now = Date(timeIntervalSince1970: 1_793_000_000)
+            let monthly = UsageSnapshot(
+                primary: RateWindow(usedPercent: 20, windowMinutes: 43200, resetsAt: now, resetDescription: nil),
+                secondary: RateWindow(usedPercent: 30, windowMinutes: 43200, resetsAt: now, resetDescription: nil),
+                extraRateWindows: [NamedRateWindow(
+                    id: "cursor-grok-bot",
+                    title: "Grok Bot",
+                    window: RateWindow(
+                        usedPercent: 14,
+                        windowMinutes: 10080,
+                        resetsAt: now.addingTimeInterval(86400 * 3),
+                        resetDescription: nil))],
+                updatedAt: now)
+            let weekly = UsageSnapshot(
+                primary: RateWindow(usedPercent: 40, windowMinutes: 10080, resetsAt: now, resetDescription: nil),
+                secondary: nil,
+                cursorHasUnifiedWeeklyPool: true,
+                updatedAt: now)
+            let countdown = MenuBarLayoutToken.windowResetCountdown(window: .weekly)
+            let absolute = MenuBarLayoutToken.windowResetAbsolute(window: .weekly)
+            #expect(countdown.editorLabel(provider: .cursor, snapshot: monthly) == "Cursor: Resets in")
+            #expect(absolute.editorAccessibilityLabel(provider: .cursor, snapshot: monthly) == "Cursor: Reset at")
+            #expect(countdown.editorLabel(provider: .cursor, snapshot: weekly) == "Weekly: Resets in")
+            #expect(absolute.editorAccessibilityLabel(provider: .cursor, snapshot: weekly) == "Weekly: Reset at")
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `a flagless seven day Cursor billing window keeps account reset labels`(hasIndependentBot: Bool) {
+        CodexBarLocalizationOverride.$appLanguage.withValue("en") {
+            let now = Date(timeIntervalSince1970: 1_793_000_000)
+            let independentBot = NamedRateWindow(
+                id: CursorSandUsageStatus.extraWindowID,
+                title: CursorSandUsageStatus.extraWindowTitle,
+                window: RateWindow(
+                    usedPercent: 80,
+                    windowMinutes: 10080,
+                    resetsAt: now.addingTimeInterval(3 * 86400),
+                    resetDescription: nil))
+            let snapshot = UsageSnapshot(
+                primary: RateWindow(usedPercent: 20, windowMinutes: 10080, resetsAt: now, resetDescription: nil),
+                secondary: nil,
+                extraRateWindows: hasIndependentBot ? [independentBot] : nil,
+                updatedAt: now)
+            let countdown = MenuBarLayoutToken.windowResetCountdown(window: .weekly)
+            let absolute = MenuBarLayoutToken.windowResetAbsolute(window: .weekly)
+            #expect(countdown.editorLabel(provider: .cursor, snapshot: snapshot) == "Cursor: Resets in")
+            #expect(absolute.editorAccessibilityLabel(provider: .cursor, snapshot: snapshot) == "Cursor: Reset at")
+            #expect(snapshot.primary?.usedPercent == 20)
+            #expect(snapshot.extraRateWindows?.first?.window.usedPercent == (hasIndependentBot ? 80 : nil))
+        }
+    }
+
+    @Test
+    func `separator accessibility speaks names instead of punctuation`() {
+        CodexBarLocalizationOverride.$appLanguage.withValue("en") {
+            #expect(MenuBarLayoutToken.separator(.pipe).editorAccessibilityLabel(provider: nil)
+                == "Separator Vertical bar")
+            #expect(MenuBarLayoutToken.separator(.slash).editorAccessibilityLabel(provider: nil)
+                == "Separator Slash")
+        }
+    }
+
+    @Test
+    func `saved history cost item uses the history window label`() throws {
+        try CodexBarLocalizationOverride.$appLanguage.withValue("en") {
+            let token = try JSONDecoder().decode(MenuBarLayoutToken.self, from: Data(#"{"cost30d":{}}"#.utf8))
+            let metric = try JSONDecoder().decode(MenuBarConditionalMetric.self, from: Data(#""cost30d""#.utf8))
+            #expect(token.editorLabel(provider: nil) == "Cost (History window)")
+            #expect(token.editorAccessibilityLabel(provider: nil) == "Cost (History window)")
+            #expect(metric.editorLabel(provider: nil) == "Cost (History window)")
+        }
+    }
+
+    @Test
+    @MainActor
+    func `all scope discloses only enabled saved overrides in provider order including equal layouts`() throws {
+        let settings = try Self.overrideSettings()
+        let global = MenuBarLayout(lines: [[.providerName, .percent(window: .session)]])
+        settings.setMenuBarLayout(global, for: nil)
+        settings.setMenuBarLayout(global, for: .cursor)
+        settings.setMenuBarLayout(MenuBarLayout(lines: [[.percent(window: .weekly)]]), for: .claude)
+        settings.setMenuBarLayout(global, for: .codex)
+
+        #expect(MenuBarLayoutEditorScope.all.providersWithOverrides(settings: settings) == [.claude, .cursor])
+        #expect(MenuBarLayoutEditorScope.provider(.claude).providersWithOverrides(settings: settings).isEmpty)
+        #expect(MenuBarLayoutEditorScope.all.previewLabel == L("menu_bar_layout_default_preview"))
+        #expect(MenuBarLayoutEditorScope.provider(.claude).previewLabel == L("menu_bar_layout_live_preview"))
+    }
+
+    @Test
+    @MainActor
+    func `editor reset removes only its enabled provider and updates observed disclosure`() throws {
+        let settings = try Self.overrideSettings()
+        let global = MenuBarLayout(lines: [[.providerName]])
+        let override = MenuBarLayout(lines: [[.percent(window: .weekly)]])
+        settings.setMenuBarLayout(global, for: nil)
+        settings.setMenuBarLayout(override, for: .claude)
+        settings.setMenuBarLayout(global, for: .cursor)
+        settings.setMenuBarLayout(override, for: .codex)
+        let changed = LockIsolated(false)
+        withObservationTracking {
+            _ = MenuBarLayoutEditorScope.all.providersWithOverrides(settings: settings)
+        } onChange: {
+            changed.setValue(true)
+        }
+
+        MenuBarLayoutEditorPersistence.useAllProvidersLayout(for: .claude, settings: settings)
+
+        #expect(changed.value)
+        #expect(settings.menuBarLayout(for: .claude) == global)
+        #expect(settings.menuBarLayoutOverrides == [.cursor: global, .codex: override])
+        #expect(MenuBarLayoutEditorScope.all.providersWithOverrides(settings: settings) == [.cursor])
+
+        MenuBarLayoutEditorPersistence.useAllProvidersLayout(for: .cursor, settings: settings)
+        #expect(MenuBarLayoutEditorScope.all.providersWithOverrides(settings: settings).isEmpty)
+        #expect(settings.menuBarLayoutOverrides == [.codex: override])
+    }
+
+    @Test
+    @MainActor
+    func `editor reset leaves disabled and no longer enabled providers untouched`() throws {
+        let settings = try Self.overrideSettings()
+        let override = MenuBarLayout(lines: [[.percent(window: .weekly)]])
+        settings.setMenuBarLayout(override, for: .claude)
+        settings.setMenuBarLayout(override, for: .codex)
+        let metadata = try #require(ProviderDefaults.metadata[.claude])
+        settings.setProviderEnabled(provider: .claude, metadata: metadata, enabled: false)
+
+        MenuBarLayoutEditorPersistence.useAllProvidersLayout(for: .claude, settings: settings)
+        MenuBarLayoutEditorPersistence.useAllProvidersLayout(for: .codex, settings: settings)
+        MenuBarLayoutEditorPersistence.useAllProvidersLayout(for: .cursor, settings: settings)
+
+        #expect(MenuBarLayoutEditorScope.all.providersWithOverrides(settings: settings).isEmpty)
+        #expect(settings.menuBarLayoutOverrides == [.claude: override, .codex: override])
+        #expect(!settings.hasStoredMenuBarLayout)
+        #expect(settings.providerEnablement[.claude] == false)
+        #expect(settings.providerEnablement[.codex] == false)
+    }
+
+    @MainActor
+    private static func overrideSettings() throws -> SettingsStore {
+        try #require(SettingsStore.isRunningTests)
+        let enabled: [UsageProvider] = [.claude, .cursor, .kimi]
+        let order = enabled + UsageProvider.allCases.filter { !enabled.contains($0) }
+        return testSettingsStore(
+            suiteName: "MenuBarLayoutEditorTests-overrides",
+            config: CodexBarConfig(providers: order.map {
+                ProviderConfig(id: $0.instanceID, enabled: enabled.contains($0))
+            }),
+            prepareDefaults: { defaults in
+                defaults.set(AppGroupSupport.migrationVersion, forKey: AppGroupSupport.migrationVersionKey)
+                defaults.set(true, forKey: "debugDisableKeychainAccess")
+            })
+    }
+
+    @Test
+    func `time palette lists the compact run out token with a clear label`() {
+        #expect(MenuBarLayoutPaletteTokens.time.contains(.runsOutCompact))
+        #expect(MenuBarLayoutToken.runsOutCompact.editorLabel(provider: .codex) == "Runs out (compact)")
+    }
+
+    @Test
+    func `cost window token is named after the history window`() {
+        for provider in [nil, UsageProvider.codex] {
+            #expect(MenuBarLayoutToken.costWindow.editorLabel(provider: provider) == "Cost (History window)")
+            #expect(MenuBarLayoutToken.costWindow.editorAccessibilityLabel(provider: provider)
+                == "Cost (History window)")
+        }
+        #expect(MenuBarLayoutToken.costToday.editorLabel(provider: nil) == "Cost today")
+    }
+
+    @Test
+    func `cost window conditional metric is named after the history window`() {
+        #expect(MenuBarConditionalMetric.costWindow.editorLabel(provider: nil) == "Cost (History window)")
+        let conditional = MenuBarLayoutConditional(
+            clauses: [MenuBarConditionalClause(
+                combinator: nil,
+                predicate: MenuBarConditionalPredicate(
+                    metric: .costWindow,
+                    comparison: .greaterThanOrEqual,
+                    threshold: 5))],
+            thenToken: .costWindow,
+            elseToken: .hidden)
+        #expect(conditional.editorSummary(provider: nil)
+            == "If Cost (History window) >= 5 USD then Cost (History window) else Hide")
+    }
+
+    @Test
+    func `Cursor exposes Grok Bot after its named window is available`() {
+        let grokBot = NamedRateWindow(
+            id: "cursor-grok-bot",
+            title: "Grok Bot",
+            window: RateWindow(usedPercent: 42, windowMinutes: nil, resetsAt: nil, resetDescription: nil))
+        let cursor = UsageSnapshot(primary: nil, secondary: nil, extraRateWindows: [grokBot], updatedAt: Date())
+
+        #expect(MenuBarLayoutPaletteTokens.usage(provider: .cursor, snapshot: cursor) == [
+            .percent(window: .session),
+            .percent(window: .weekly),
+            .percent(window: .scopedWeekly),
+            .percent(window: .spend),
+            .lanePercent(lane: .primary),
+            .lanePercent(lane: .secondary),
+            .extraPercent(id: "cursor-grok-bot"),
+            .percent(window: .automatic),
+            .usageBar,
+            .progressBar(window: .session),
+            .progressBar(window: .weekly),
+            .progressBar(window: .scopedWeekly),
+            .progressBar(window: .automatic),
+            .tokensPerMinute,
+            .tokensSparkline,
+            .pace(window: .session),
+            .pace(window: .weekly),
+            .pace(window: .automatic),
+            .pace(window: .spend),
+        ])
+        #expect(MenuBarLayoutPaletteTokens.conditionalBranch.contains(.progressBar(window: .scopedWeekly)))
+        #expect(!MenuBarLayoutPaletteTokens.usage(provider: .codex, snapshot: cursor)
+            .contains(.extraPercent(id: "cursor-grok-bot")))
+        #expect(!MenuBarLayoutPaletteTokens.usage(provider: .cursor, snapshot: nil)
+            .contains(.extraPercent(id: "cursor-grok-bot")))
+    }
+
+    @Test
+    func `spend tokens are in the layout and conditional palettes`() {
+        let spendUsage: [MenuBarLayoutToken] = [.percent(window: .spend), .pace(window: .spend)]
+        let spendTime: [MenuBarLayoutToken] = [
+            .windowResetCountdown(window: .spend), .windowResetAbsolute(window: .spend),
+        ]
+        let spendMoney: [MenuBarLayoutToken] = [.spendAmount, .spendBudget]
+        #expect(spendUsage.allSatisfy(MenuBarLayoutPaletteTokens.usage(provider: .codex, snapshot: nil).contains))
+        #expect(spendTime.allSatisfy(MenuBarLayoutPaletteTokens.time.contains))
+        let branch = MenuBarLayoutPaletteTokens.conditionalBranch
+        #expect((spendUsage + spendTime + spendMoney).allSatisfy(branch.contains))
+    }
+
+    @Test
+    func `every separator glyph is a conditional branch choice with a glyph label`() {
+        let branch = MenuBarLayoutPaletteTokens.conditionalBranch
+        #expect(branch.contains(.separatorDot))
+        for separator in MenuBarLayoutSeparator.allCases {
+            let token = MenuBarLayoutToken.separator(separator)
+            #expect(branch.contains(token))
+            #expect(token.editorLabel(provider: nil, snapshot: nil) == separator.glyph)
+            #expect(token.editorAccessibilityLabel(provider: nil).contains(separator.accessibilityName))
+        }
+    }
+
+    @Test
+    func `reset window choices are available in layout and conditional palettes`() {
+        let choices: [MenuBarLayoutToken] = [
+            .resetCountdown,
+            .resetAbsolute,
+            .windowResetCountdown(window: .session),
+            .windowResetAbsolute(window: .session),
+            .windowResetCountdown(window: .weekly),
+            .windowResetAbsolute(window: .weekly),
+        ]
+        for token in choices {
+            #expect(MenuBarLayoutPaletteTokens.time.contains(token))
+            #expect(MenuBarLayoutPaletteTokens.conditionalBranch.contains(token))
+        }
+        for window in [PercentWindow.scopedWeekly, .automatic] {
+            #expect(!MenuBarLayoutPaletteTokens.time.contains(.windowResetCountdown(window: window)))
+            #expect(!MenuBarLayoutPaletteTokens.time.contains(.windowResetAbsolute(window: window)))
+        }
+    }
+
+    @Test
+    func `reset window labels distinguish countdown and absolute choices accessibly`() {
+        for (window, title) in [(PercentWindow.session, L("Session")), (.weekly, L("Weekly"))] {
+            let countdown = MenuBarLayoutToken.windowResetCountdown(window: window)
+            let absolute = MenuBarLayoutToken.windowResetAbsolute(window: window)
+            let countdownLabel = L("%@: %@", title, L("menu_bar_layout_token_resets_in"))
+            let absoluteLabel = L("%@: %@", title, L("menu_bar_layout_token_reset_at"))
+
+            #expect(countdown.editorLabel(provider: .codex) == countdownLabel)
+            #expect(countdown.editorAccessibilityLabel(provider: .codex) == countdownLabel)
+            #expect(countdown.editorSystemImage == "timer")
+            #expect(absolute.editorLabel(provider: .codex) == absoluteLabel)
+            #expect(absolute.editorAccessibilityLabel(provider: .codex) == absoluteLabel)
+            #expect(absolute.editorSystemImage == "clock")
+        }
+        #expect(MenuBarLayoutToken.resetCountdown.editorLabel(provider: .codex)
+            == L("menu_bar_layout_token_resets_in"))
+        #expect(MenuBarLayoutToken.resetAbsolute.editorLabel(provider: .codex)
+            == L("menu_bar_layout_token_reset_at"))
+    }
+
+    @Test
+    func `reset secondary window labels follow provider cadence`() {
+        let countdown = MenuBarLayoutToken.windowResetCountdown(window: .weekly)
+        let absolute = MenuBarLayoutToken.windowResetAbsolute(window: .weekly)
+
+        #expect(countdown.editorLabel(provider: .notion)
+            == L("%@: %@", L("Monthly"), L("menu_bar_layout_token_resets_in")))
+        #expect(absolute.editorAccessibilityLabel(provider: .notion)
+            == L("%@: %@", L("Monthly"), L("menu_bar_layout_token_reset_at")))
+    }
+
+    @Test
+    func `Notion secondary editor labels use monthly cadence`() {
+        let percent = MenuBarLayoutToken.percent(window: .weekly)
+        let pace = MenuBarLayoutToken.pace(window: .weekly)
+        let monthlyPace = L("%@ %@", L("Monthly"), L("display_mode_pace").lowercased())
+
+        #expect(percent.editorLabel(provider: .notion) == L("%@ %@", L("Monthly"), "%"))
+        #expect(pace.editorLabel(provider: .notion) == monthlyPace)
+        #expect(pace.editorAccessibilityLabel(provider: .notion) == monthlyPace)
+        #expect(percent.editorLabel(provider: .codex) == L("menu_bar_layout_token_weekly"))
+        #expect(pace.editorLabel(provider: .codex) == L("menu_bar_layout_token_weekly_pace"))
+    }
+
     @Test
     func `palette tokens append and insert at a drop index`() {
         let initial = MenuBarLayout(lines: [[.icon, .resetCountdown]])
@@ -130,7 +449,7 @@ struct MenuBarLayoutEditorTests {
 
     @Test
     func `drag payload codable round trips`() throws {
-        let layout = MenuBarLayout(lines: [[.icon], [.providerName, .space, .percent(window: .automatic)]])
+        let layout = MenuBarLayout(lines: [[.icon, .balance], [.providerName, .space, .percent(window: .automatic)]])
         let payload = MenuBarLayoutDragItem.placed(
             .percent(window: .automatic),
             at: MenuBarLayoutPosition(line: 1, index: 2),
@@ -143,7 +462,7 @@ struct MenuBarLayoutEditorTests {
     @Test
     @available(macOS 15.2, *)
     func `palette drag transfer representation round trips`() async throws {
-        let payload = MenuBarLayoutDragItem.palette(.percent(window: .weekly))
+        let payload = MenuBarLayoutDragItem.palette(.percent(window: .scopedWeekly))
 
         #expect(MenuBarLayoutDragItem.exportedContentTypes() == [.codexBarMenuLayoutItem])
         #expect(MenuBarLayoutDragItem.importedContentTypes() == [.codexBarMenuLayoutItem])
@@ -153,5 +472,76 @@ struct MenuBarLayoutEditorTests {
             importing: data,
             contentType: .codexBarMenuLayoutItem)
         #expect(decoded == payload)
+    }
+
+    @Test
+    func `conditional drag payload round trips`() throws {
+        let payload = MenuBarLayoutDragItem.palette(.conditional(id: UUID()))
+
+        let data = try JSONEncoder().encode(payload)
+        #expect(try JSONDecoder().decode(MenuBarLayoutDragItem.self, from: data) == payload)
+    }
+
+    @Test
+    func `conditional token appends like palette tokens`() {
+        let initial = MenuBarLayout(lines: [[.icon, .resetCountdown]])
+        let conditionalID = UUID()
+
+        let appended = MenuBarLayoutEditorMutations.append(
+            .conditional(id: conditionalID),
+            to: initial)
+        #expect(appended.lines == [[.icon, .resetCountdown, .conditional(id: conditionalID)]])
+    }
+
+    @Test
+    func `balance token is provider aware`() throws {
+        let row = try ProviderDetailSection.Row(label: "Remaining", value: "$12.34")
+        let section = try ProviderDetailSection(title: "Credits", rows: [row])
+        let snapshot = UsageSnapshot(
+            primary: nil,
+            secondary: nil,
+            details: [section],
+            updatedAt: Date())
+
+        #expect(MenuBarLayoutBalanceResolver.balance(provider: .openrouter, snapshot: snapshot) == "$12.34")
+        #expect(MenuBarLayoutBalanceResolver.balance(provider: .codex, snapshot: snapshot) == nil)
+        #expect(MenuBarLayoutBalanceResolver.balance(
+            provider: .codex,
+            snapshot: snapshot,
+            codexCredits: CreditsSnapshot(
+                remaining: 1234,
+                events: [],
+                updatedAt: Date(),
+                balanceReadSucceeded: true,
+                creditsAvailable: true,
+                balanceIsWorkspace: true)) == "1,234")
+        #expect(MenuBarLayoutToken.balance.editorLabel(provider: .openrouter) == L("Balance"))
+    }
+
+    @Test
+    func `conditional palette chips wrap instead of overflowing the pane`() {
+        let spacing: CGFloat = 6
+
+        // Two 100pt chips fit in 220pt (100 + 6 + 100); the third has to wrap.
+        #expect(MenuBarLayoutChipFlowLayout.rows(
+            widths: [100, 100, 100],
+            maxWidth: 220,
+            spacing: spacing) == [[0, 1], [2]])
+
+        // Long localized names still get placed on their own row rather than dropped.
+        #expect(MenuBarLayoutChipFlowLayout.rows(
+            widths: [400],
+            maxWidth: 220,
+            spacing: spacing) == [[0]])
+        #expect(MenuBarLayoutChipFlowLayout.rows(
+            widths: [400, 120],
+            maxWidth: 220,
+            spacing: spacing) == [[0], [1]])
+
+        // Chips that fit stay on one row, so a short library keeps hugging the leading edge.
+        #expect(MenuBarLayoutChipFlowLayout.rows(
+            widths: [80, 90],
+            maxWidth: 220,
+            spacing: spacing) == [[0, 1]])
     }
 }

@@ -16,7 +16,7 @@ struct StatusMenuMergedOverviewRefreshTests {
         settings.setMergedOverviewProviderSelection(
             provider: .opencode,
             isSelected: false,
-            activeProviders: activeProviders)
+            activeProviders: activeProviders.map(\.instanceID))
         settings.mergedMenuLastSelectedWasOverview = true
 
         let controller = self.makeController(settings: settings)

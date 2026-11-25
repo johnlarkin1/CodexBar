@@ -14,8 +14,9 @@ Factory (displayed as "Droid") supports API-key and web-based auth. Source mode 
 
 ### API (`api`)
 1. Resolve a Factory API key from, in order:
-   - `~/.codexbar/config.json` `providers[].apiKey` for `factory` (also via Settings or
-     `codexbar config set-api-key --provider factory`)
+   - `providers[].apiKey` for `factory` in the [resolved configuration file](cli-configuration.md),
+     also set through Settings or by piping a key into
+     `codexbar config set-api-key --provider factory --stdin`
    - `FACTORY_API_KEY`
    - optional `~/.factory/.env` (`FACTORY_API_KEY=…` or `export FACTORY_API_KEY=…`)
 2. Call Factory APIs with `Authorization: Bearer <apiKey>` (same billing-limits / bearer path as session tokens).
@@ -29,8 +30,12 @@ Fetch attempts run in this exact order:
 5) **Local storage WorkOS tokens** (Safari + Chrome/Chromium/Arc leveldb).
 6) **Browser cookies (Safari only)** for Factory domains.
 7) **WorkOS cookies (Safari)** to mint tokens.
-8) **Browser cookies (Chrome, Firefox)** for Factory domains.
-9) **WorkOS cookies (Chrome, Firefox)** to mint tokens.
+8) **Browser cookies (remaining shared-catalog browsers, including Firefox channels)** for Factory domains.
+9) **WorkOS cookies (remaining shared-catalog browsers, including Firefox channels)** to mint tokens.
+
+Firefox Beta, Developer Edition, and Nightly retain separate profile classification. An unavailable or
+unmatched browser store is skipped; the first validated session stops traversal. Existing stored
+sessions remain ahead of browser imports. Background and settings refreshes remain noninteractive.
 
 If a step succeeds, we cache cookies/tokens back into the session store.
 
@@ -58,6 +63,9 @@ printf '%s' "$FACTORY_API_KEY" | codexbar config set-api-key --provider factory 
 codexbar usage --provider factory --source api
 codexbar usage --provider factory --source web
 ```
+
+`set-api-key` saves to the resolved config file and enables Droid by default. It preserves the configured
+source and saved session accounts; pass `--no-enable` to save without enabling.
 
 ## Cookie import
 - Cookie domains: `factory.ai`, `app.factory.ai`, `auth.factory.ai`.
@@ -125,6 +133,8 @@ Endpoints:
   - `workos:refresh-token` (required)
   - `workos:access-token` (optional)
   - Organization ID parsed from JWT when available.
+- Firefox localStorage is not supported. Firefox cookie import cannot recover a WorkOS refresh token stored only in
+  localStorage; use a Factory API key or a supported browser session in that case.
 
 ## Session storage
 - File: `~/Library/Application Support/CodexBar/factory-session.json`
@@ -136,7 +146,8 @@ Endpoints:
 - Plan/tier + org name from auth response.
 
 ## Troubleshooting
-- Missing API key: set `FACTORY_API_KEY`, Settings → Droid → API key, or `codexbar config set-api-key --provider factory`.
+- Missing API key: set `FACTORY_API_KEY`, add it in Settings → Droid → API key, or pipe a key into
+  `codexbar config set-api-key --provider factory --stdin`.
 - Unauthorized API key (401/403): regenerate at app.factory.ai/settings/api-keys.
 - Missing session: log in to app.factory.ai in a supported browser, or paste a Cookie header in Manual mode.
 

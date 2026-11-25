@@ -2,6 +2,11 @@ import Foundation
 
 #if DEBUG
 extension ClaudeOAuthCredentialsStore {
+    /// Mirrors the production ownership decision without installing a synthetic credential fixture.
+    static var directClaudeCodeKeychainAccessAllowedForTesting: Bool {
+        self.keychainAccessAllowed
+    }
+
     @TaskLocal static var taskBeforeClaudeKeychainPromptLockOverride: (@Sendable () -> Void)?
     @TaskLocal static var taskInteractiveClaudeKeychainReadOverride: (@Sendable () throws -> Data)?
 
@@ -23,6 +28,8 @@ extension ClaudeOAuthCredentialsStore {
     @TaskLocal static var taskClaudeKeychainFingerprintStoreOverride: ClaudeKeychainFingerprintStore?
     @TaskLocal static var taskPendingCacheClearStoreOverride: ClaudeOAuthPendingCacheClearStore?
     @TaskLocal static var taskImplicitPendingCacheClearStoreOverride: ClaudeOAuthPendingCacheClearStore?
+    @TaskLocal static var taskDirectKeychainReadConsentRevocationMarkerStoreOverride:
+        DirectKeychainReadConsentRevocationMarkerStore?
     @TaskLocal static var taskUseEnvironmentCredentialsURLForTesting = false
 
     typealias OAuthCacheOperation = KeychainCacheStore.Operation
@@ -31,7 +38,7 @@ extension ClaudeOAuthCredentialsStore {
     final class PendingCacheClearMemoryStore: ClaudeOAuthPendingCacheClearStore, @unchecked Sendable {
         private let lock = NSLock()
         private var unscopedPending: Bool
-        private var pendingProfileIdentifiers: Set<String> = []
+        private var pendingProfileGenerations: [String: String] = [:]
         private var legacyCleanupProfileIdentifiers: Set<String> = []
         private var legacyRecheckProfileIdentifiers: Set<String> = []
 
@@ -43,87 +50,42 @@ extension ClaudeOAuthCredentialsStore {
             self.lock.lock()
             defer { self.lock.unlock() }
             return self.unscopedPending ||
-                !self.pendingProfileIdentifiers.isEmpty ||
+                !self.pendingProfileGenerations.isEmpty ||
                 !self.legacyCleanupProfileIdentifiers.isEmpty ||
                 !self.legacyRecheckProfileIdentifiers.isEmpty
-        }
-
-        func markPending() {
-            self.lock.lock()
-            self.unscopedPending = true
-            self.lock.unlock()
-        }
-
-        func withCacheTransaction(_ operation: (inout Bool) -> Void) {
-            self.lock.lock()
-            defer { self.lock.unlock() }
-            operation(&self.unscopedPending)
         }
 
         func isPending(profileIdentifier: String) -> Bool {
             self.lock.lock()
             defer { self.lock.unlock() }
             return self.unscopedPending ||
-                self.pendingProfileIdentifiers.contains(profileIdentifier) ||
+                self.pendingProfileGenerations[profileIdentifier] != nil ||
                 self.legacyCleanupProfileIdentifiers.contains(profileIdentifier) ||
                 self.legacyRecheckProfileIdentifiers.contains(profileIdentifier)
         }
 
         func markPending(profileIdentifier: String) {
             self.lock.lock()
-            self.pendingProfileIdentifiers.insert(profileIdentifier)
+            self.pendingProfileGenerations[profileIdentifier] = UUID().uuidString
             self.lock.unlock()
         }
 
-        func withCacheTransaction(profileIdentifier: String, _ operation: (inout Bool) -> Void) {
-            self.withCacheTransaction(
-                profileIdentifier: profileIdentifier,
-                includingLegacyCleanup: { profilePending, legacyCleanupPending in
-                    var pending = profilePending || legacyCleanupPending
-                    operation(&pending)
-                    if pending {
-                        if !profilePending, !legacyCleanupPending {
-                            profilePending = true
-                        }
-                    } else {
-                        profilePending = false
-                        legacyCleanupPending = false
-                    }
-                })
-        }
-
+        @discardableResult
         func withCacheTransaction(
             profileIdentifier: String,
-            includingLegacyCleanup operation: (inout Bool, inout Bool) -> Void)
-        {
-            self.withCacheTransaction(
-                profileIdentifier: profileIdentifier,
-                includingLegacyState: { profilePending, legacyCleanupPending, legacyRecheckPending in
-                    operation(&profilePending, &legacyCleanupPending)
-                    if legacyCleanupPending {
-                        legacyRecheckPending = false
-                    }
-                })
-        }
-
-        func withCacheTransaction(
-            profileIdentifier: String,
-            includingLegacyState operation: (inout Bool, inout Bool, inout Bool) -> Void)
+            includingGeneration operation: (inout Bool, inout Bool, inout Bool, inout String?) -> Void) -> Bool
         {
             self.lock.lock()
             defer { self.lock.unlock() }
             var profilePending = self.unscopedPending ||
-                self.pendingProfileIdentifiers.contains(profileIdentifier)
+                self.pendingProfileGenerations[profileIdentifier] != nil
             var legacyCleanupPending = self.unscopedPending ||
                 self.legacyCleanupProfileIdentifiers.contains(profileIdentifier)
             var legacyRecheckPending = self.legacyRecheckProfileIdentifiers.contains(profileIdentifier)
-            operation(&profilePending, &legacyCleanupPending, &legacyRecheckPending)
+            var generation = self.unscopedPending ? nil : self.pendingProfileGenerations[profileIdentifier]
+            operation(&profilePending, &legacyCleanupPending, &legacyRecheckPending, &generation)
             self.unscopedPending = false
-            if profilePending {
-                self.pendingProfileIdentifiers.insert(profileIdentifier)
-            } else {
-                self.pendingProfileIdentifiers.remove(profileIdentifier)
-            }
+            self.pendingProfileGenerations[profileIdentifier] = profilePending ? generation ?? UUID().uuidString : nil
             if legacyCleanupPending {
                 self.legacyCleanupProfileIdentifiers.insert(profileIdentifier)
             } else {
@@ -134,6 +96,7 @@ extension ClaudeOAuthCredentialsStore {
             } else {
                 self.legacyRecheckProfileIdentifiers.remove(profileIdentifier)
             }
+            return true
         }
     }
 
@@ -149,6 +112,29 @@ extension ClaudeOAuthCredentialsStore {
         var record: ClaudeOAuthCredentialRecord?
         var timestamp: Date?
         var profileIdentifier: String?
+        var rejectedWrite: CacheWriteRecovery?
+    }
+
+    final class DirectKeychainReadConsentRevocationMarkerStore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: String?
+
+        var marker: String? {
+            self.lock.withLock { self.value }
+        }
+
+        func advance() {
+            self.lock.withLock { self.value = UUID().uuidString }
+        }
+    }
+
+    static func withDirectKeychainReadConsentRevocationMarkerStoreForTesting<T>(
+        _ store: DirectKeychainReadConsentRevocationMarkerStore,
+        operation: () throws -> T) rethrows -> T
+    {
+        try self.$taskDirectKeychainReadConsentRevocationMarkerStoreOverride.withValue(store) {
+            try operation()
+        }
     }
 
     static func withClaudeKeychainOverridesForTesting<T>(
@@ -243,6 +229,7 @@ extension ClaudeOAuthCredentialsStore {
 
     final class CredentialsFileFingerprintStore: @unchecked Sendable {
         private var fingerprints: [String: CredentialsFileFingerprint] = [:]
+        private var quarantines: [String: CredentialsFileFingerprint] = [:]
         private var legacyFingerprint: CredentialsFileFingerprint?
 
         init(fingerprint: CredentialsFileFingerprint? = nil) {
@@ -280,8 +267,17 @@ extension ClaudeOAuthCredentialsStore {
             self.fingerprints[profileIdentifier] = fingerprint
         }
 
+        func loadQuarantine(profileIdentifier: String) -> CredentialsFileFingerprint? {
+            self.quarantines[profileIdentifier]
+        }
+
+        func saveQuarantine(_ fingerprint: CredentialsFileFingerprint?, profileIdentifier: String) {
+            self.quarantines[profileIdentifier] = fingerprint
+        }
+
         func reset() {
             self.fingerprints.removeAll()
+            self.quarantines.removeAll()
             self.legacyFingerprint = nil
         }
     }
@@ -310,32 +306,6 @@ extension ClaudeOAuthCredentialsStore {
         let securityCLIReadAccountOverride: String?
         let pendingCacheClearStore: ClaudeOAuthPendingCacheClearStore?
         let oauthCacheOperationRecorder: OAuthCacheOperationRecorder?
-
-        init(
-            keychainOverrideStore: ClaudeKeychainOverrideStore?,
-            keychainData: Data?,
-            keychainFingerprint: ClaudeKeychainFingerprint?,
-            memoryCacheStore: MemoryCacheStore?,
-            fingerprintStore: ClaudeKeychainFingerprintStore?,
-            keychainAccessOverride: Bool?,
-            credentialsFileFingerprintStore: CredentialsFileFingerprintStore?,
-            securityCLIReadOverride: SecurityCLIReadOverride?,
-            securityCLIReadAccountOverride: String?,
-            pendingCacheClearStore: ClaudeOAuthPendingCacheClearStore?,
-            oauthCacheOperationRecorder: OAuthCacheOperationRecorder?)
-        {
-            self.keychainOverrideStore = keychainOverrideStore
-            self.keychainData = keychainData
-            self.keychainFingerprint = keychainFingerprint
-            self.memoryCacheStore = memoryCacheStore
-            self.fingerprintStore = fingerprintStore
-            self.keychainAccessOverride = keychainAccessOverride
-            self.credentialsFileFingerprintStore = credentialsFileFingerprintStore
-            self.securityCLIReadOverride = securityCLIReadOverride
-            self.securityCLIReadAccountOverride = securityCLIReadAccountOverride
-            self.pendingCacheClearStore = pendingCacheClearStore
-            self.oauthCacheOperationRecorder = oauthCacheOperationRecorder
-        }
     }
 
     static func withKeychainAccessOverrideForTesting<T>(

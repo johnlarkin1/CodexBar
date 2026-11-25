@@ -8,7 +8,9 @@ read_when:
 
 # ElevenLabs Provider
 
-The ElevenLabs provider reads subscription usage from the ElevenLabs API using an API key.
+The ElevenLabs provider reads subscription usage from the ElevenLabs API using an API key. Its bundled
+`elevenlabs.ts` plugin runs on QuickJS on macOS and Linux, with JavaScriptCore available as the macOS rollback engine.
+Native descriptor/settings glue retains credential selection and endpoint validation; there is no Swift fetch/parser twin.
 
 ## Features
 
@@ -27,7 +29,16 @@ Store the API key without opening Settings:
 printf '%s' "$ELEVENLABS_API_KEY" | codexbar config set-api-key --provider elevenlabs --stdin
 ```
 
-This trims the piped key, writes it to `~/.codexbar/config.json` with restrictive permissions, and enables ElevenLabs by default. Use `--no-enable` to save the key without enabling the provider.
+This trims the piped key, writes it to the [resolved CodexBar config](configuration.md) with restrictive permissions,
+and enables ElevenLabs by default. Use `--no-enable` to save the key without enabling the provider.
+The key needs `user_read` permission to fetch subscription usage.
+
+The command saves a standalone `apiKey`. It does not replace saved API-key accounts or their selection.
+A selected saved account takes priority, followed by the standalone key, `ELEVENLABS_API_KEY`, and `XI_API_KEY`.
+
+`codexbar config providers --json` includes this route in ElevenLabs' static `setup` guidance on macOS and Linux.
+It lists the accepted input names and existing stdin command without reading credentials or checking whether
+the account is ready.
 
 ### Settings
 
@@ -58,6 +69,24 @@ For tests or self-hosted/proxy setups, override the API base URL with `ELEVENLAB
 
 Set the key with `codexbar config set-api-key --provider elevenlabs --stdin`, add it in **Settings -> Providers -> ElevenLabs**, set `ELEVENLABS_API_KEY`, or configure an ElevenLabs token account.
 
+### "ElevenLabs rejected the selected API key"
+
+ElevenLabs returned an authentication or access error identifying `invalid_api_key`. Confirm that the key is valid and has not been revoked. If you configured multiple ElevenLabs API-key accounts, the active account takes precedence over the standalone API key field.
+
+### "ElevenLabs API key is missing the user_read permission"
+
+ElevenLabs returned HTTP 401 or 403 identifying `missing_permissions` or `insufficient_permissions`. Enable the `user_read` permission for the selected key so CodexBar can fetch subscription usage.
+
+### "ElevenLabs could not authenticate the selected API key"
+
+ElevenLabs returned HTTP 401 without a recognized error status. Check the key and its endpoint permissions.
+
+### "ElevenLabs denied access for the selected API key"
+
+ElevenLabs returned HTTP 403 without a recognized key or permission error. Check the key's endpoint permissions and IP allowlist in the ElevenLabs API-key settings.
+
+CodexBar reads recognized `detail.code` values first, as described in [ElevenLabs' error documentation](https://elevenlabs.io/docs/eleven-api/resources/errors). It also reads the legacy `detail.status` when the current code is absent or generic; live responses can still use that field for the specific rejection reason. Provider error messages are not copied into these diagnostics.
+
 ### "ElevenLabs API error"
 
-Confirm the API key is valid and that the current network can reach `api.elevenlabs.io`.
+Confirm that the current network can reach `api.elevenlabs.io` and check the reported HTTP status.

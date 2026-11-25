@@ -3,12 +3,12 @@ import Foundation
 import Testing
 @testable import CodexBar
 
-@Suite(.serialized)
+@Suite(.serialized, CodexCredentialFixtures())
 @MainActor
 struct ManagedCodexAccountServiceTests {
     @Test
     func `upsert preserves uuid for matching canonical email`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let fileURL = root.appendingPathComponent("managed.json", isDirectory: false)
@@ -36,7 +36,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `new authentication appends managed account without implicit selection side effect`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let firstID = try #require(UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
@@ -69,7 +69,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `same email provider backed workspaces coexist across sequential add account flows`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = InMemoryManagedCodexAccountStore(
@@ -115,7 +115,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `same workspace provider id with different emails does not overwrite existing account`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let existingHome = root.appendingPathComponent("accounts/existing", isDirectory: true)
         try FileManager.default.createDirectory(at: existingHome, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -166,7 +166,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `selected workspace is persisted and used as account identity`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = InMemoryManagedCodexAccountStore(
@@ -204,13 +204,15 @@ struct ManagedCodexAccountServiceTests {
 
         #expect(account.providerAccountID == "workspace-team")
         #expect(account.workspaceLabel == "Team")
-        #expect(credentials.accountId == "workspace-team")
+        // Workspace selection is CodexBar-owned metadata; the Codex CLI auth file remains untouched.
+        #expect(credentials.accountId == "workspace-personal")
+        #expect(store.snapshot.account(id: account.id)?.workspaceAccountID == "workspace-team")
         #expect(store.snapshot.accounts.count == 1)
     }
 
     @Test
     func `reauth keeps previous home when store write fails`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let existingHome = root.appendingPathComponent("accounts/existing", isDirectory: true)
         try FileManager.default.createDirectory(at: existingHome, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -249,7 +251,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `reauth reconciles by provider account id before existing account id`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let alphaHome = root.appendingPathComponent("accounts/alpha", isDirectory: true)
         let betaHome = root.appendingPathComponent("accounts/beta", isDirectory: true)
         try FileManager.default.createDirectory(at: alphaHome, withIntermediateDirectories: true)
@@ -307,7 +309,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `reauth to different account does not overwrite existing account id match`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let aliceHome = root.appendingPathComponent("accounts/alice", isDirectory: true)
         try FileManager.default.createDirectory(at: aliceHome, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -336,7 +338,8 @@ struct ManagedCodexAccountServiceTests {
         let account = try await service.authenticateManagedAccount(existingAccountID: aliceID)
 
         let storedAlice = try #require(store.snapshot.account(id: aliceID))
-        let storedBob = try #require(store.snapshot.account(email: "bob@example.com"))
+        let storedBob = try #require(
+            store.snapshot.account(email: "bob@example.com", providerAccountID: "account-bob"))
         #expect(account.id != aliceID)
         #expect(account.id == storedBob.id)
         #expect(store.snapshot.accounts.count == 2)
@@ -352,8 +355,8 @@ struct ManagedCodexAccountServiceTests {
     }
 
     @Test
-    func `reauth on same email different workspace does not overwrite selected workspace`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    func `reauth on same email different workspace does not overwrite explicit workspace only account`() async throws {
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let personalHome = root.appendingPathComponent("accounts/personal", isDirectory: true)
         try FileManager.default.createDirectory(at: personalHome, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -362,7 +365,6 @@ struct ManagedCodexAccountServiceTests {
         let personalAccount = ManagedCodexAccount(
             id: personalID,
             email: "alice@example.com",
-            providerAccountID: "workspace-personal",
             workspaceLabel: "Personal",
             workspaceAccountID: "workspace-personal",
             managedHomePath: personalHome.path,
@@ -393,7 +395,8 @@ struct ManagedCodexAccountServiceTests {
         #expect(account.id == storedTeam.id)
         #expect(account.id != personalID)
         #expect(store.snapshot.accounts.count == 2)
-        #expect(storedPersonal.providerAccountID == "workspace-personal")
+        #expect(storedPersonal.providerAccountID == nil)
+        #expect(storedPersonal.workspaceAccountID == "workspace-personal")
         #expect(storedPersonal.workspaceLabel == "Personal")
         #expect(storedPersonal.managedHomePath == personalHome.path)
         #expect(storedTeam.providerAccountID == "workspace-team")
@@ -404,8 +407,55 @@ struct ManagedCodexAccountServiceTests {
     }
 
     @Test
+    func `reauth canonicalizes mixed case workspace identity onto the existing account`() async throws {
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let existingHome = root.appendingPathComponent("accounts/personal", isDirectory: true)
+        try FileManager.default.createDirectory(at: existingHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let accountID = try #require(UUID(uuidString: "41414141-5252-6363-7474-858585858585"))
+        let existingAccount = ManagedCodexAccount(
+            id: accountID,
+            email: "alice@example.com",
+            workspaceLabel: "Personal",
+            workspaceAccountID: "workspace-personal",
+            managedHomePath: existingHome.path,
+            createdAt: 1,
+            updatedAt: 1,
+            lastAuthenticatedAt: 1)
+        let store = InMemoryManagedCodexAccountStore(accounts: ManagedCodexAccountSet(
+            version: FileManagedCodexAccountStore.currentVersion,
+            accounts: [existingAccount]))
+        let service = ManagedCodexAccountService(
+            store: store,
+            homeFactory: TestManagedCodexHomeFactory(root: root),
+            loginRunner: StubManagedCodexLoginRunner.success,
+            identityReader: StubManagedCodexIdentityReader.accounts([
+                .init(identity: .providerAccount(id: "WORKSPACE-PERSONAL"), email: "alice@example.com", plan: "Pro"),
+            ]),
+            workspaceResolver: StubManagedCodexWorkspaceResolver(identities: [
+                "workspace-personal": CodexOpenAIWorkspaceIdentity(
+                    workspaceAccountID: "workspace-personal",
+                    workspaceLabel: "Personal"),
+            ]))
+
+        let account = try await service.authenticateManagedAccount(existingAccountID: accountID)
+        let stored = try #require(store.snapshot.account(id: accountID))
+
+        #expect(account.id == accountID)
+        #expect(stored.id == accountID)
+        #expect(store.snapshot.accounts.count == 1)
+        #expect(stored.providerAccountID == "workspace-personal")
+        #expect(stored.workspaceAccountID == "workspace-personal")
+        #expect(stored.managedHomePath == account.managedHomePath)
+        #expect(stored.managedHomePath != existingHome.path)
+        #expect(FileManager.default.fileExists(atPath: existingHome.path) == false)
+        #expect(FileManager.default.fileExists(atPath: stored.managedHomePath))
+    }
+
+    @Test
     func `legacy row collapses onto provider backed row when provider id resolves elsewhere`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let legacyHome = root.appendingPathComponent("accounts/legacy", isDirectory: true)
         let providerHome = root.appendingPathComponent("accounts/provider", isDirectory: true)
         try FileManager.default.createDirectory(at: legacyHome, withIntermediateDirectories: true)
@@ -454,7 +504,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `fresh provider login removes stale legacy row without explicit existing account id`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let legacyHome = root.appendingPathComponent("accounts/legacy", isDirectory: true)
         let providerHome = root.appendingPathComponent("accounts/provider", isDirectory: true)
         try FileManager.default.createDirectory(at: legacyHome, withIntermediateDirectories: true)
@@ -502,7 +552,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `authentication persists workspace metadata and tolerates missing workspace label`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = InMemoryManagedCodexAccountStore(
@@ -537,7 +587,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `reauth preserves stored provider metadata when refresh cannot resolve account id`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let existingHome = root.appendingPathComponent("accounts/existing", isDirectory: true)
         try FileManager.default.createDirectory(at: existingHome, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -584,7 +634,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `auth failure cleanup uses managed root safety check`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let outsideHome = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString,
             isDirectory: true)
@@ -599,7 +649,7 @@ struct ManagedCodexAccountServiceTests {
             store: store,
             homeFactory: UnsafeManagedCodexHomeFactory(root: root, homeURL: outsideHome),
             loginRunner: StubManagedCodexLoginRunner(
-                result: CodexLoginRunner.Result(outcome: .failed(status: 1), output: "nope")),
+                result: CLILoginRunner.Result(outcome: .failed(status: 1), output: "nope")),
             identityReader: StubManagedCodexIdentityReader.emails([]),
             workspaceResolver: StubManagedCodexWorkspaceResolver())
 
@@ -613,10 +663,10 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `auth failure preserves codex login result output`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let loginResult = CodexLoginRunner.Result(
+        let loginResult = CLILoginRunner.Result(
             outcome: .failed(status: 42),
             output: "OAuth callback used the wrong browser profile")
         let service = ManagedCodexAccountService(
@@ -640,10 +690,12 @@ struct ManagedCodexAccountServiceTests {
             #expect(error.userFacingMessage.contains("OAuth callback used the wrong browser profile"))
         }
     }
+}
 
+extension ManagedCodexAccountServiceTests {
     @Test
     func `remove deletes managed home under managed root`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let home = root.appendingPathComponent("accounts/account-a", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -658,22 +710,28 @@ struct ManagedCodexAccountServiceTests {
             lastAuthenticatedAt: 1)
         let store = InMemoryManagedCodexAccountStore(
             accounts: ManagedCodexAccountSet(version: 1, accounts: [account]))
+        var removedStores: [UUID] = []
         let service = ManagedCodexAccountService(
             store: store,
             homeFactory: TestManagedCodexHomeFactory(root: root),
             loginRunner: StubManagedCodexLoginRunner.success,
             identityReader: StubManagedCodexIdentityReader.emails([]),
-            workspaceResolver: StubManagedCodexWorkspaceResolver())
+            workspaceResolver: StubManagedCodexWorkspaceResolver(),
+            removeWebsiteData: { account, isStillRemoved in
+                #expect(isStillRemoved())
+                removedStores.append(account.id)
+            })
 
         try await service.removeManagedAccount(id: account.id)
 
         #expect(store.snapshot.accounts.isEmpty)
         #expect(FileManager.default.fileExists(atPath: home.path) == false)
+        #expect(removedStores == [account.id])
     }
 
     @Test
     func `remove keeps remaining managed account records`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let firstHome = root.appendingPathComponent("accounts/account-a", isDirectory: true)
         let secondHome = root.appendingPathComponent("accounts/account-b", isDirectory: true)
         try FileManager.default.createDirectory(at: firstHome, withIntermediateDirectories: true)
@@ -716,7 +774,7 @@ struct ManagedCodexAccountServiceTests {
 
     @Test
     func `remove keeps persisted account when store write fails`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let home = root.appendingPathComponent("accounts/account-a", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -731,12 +789,17 @@ struct ManagedCodexAccountServiceTests {
             lastAuthenticatedAt: 1)
         let store = FailingManagedCodexAccountStore(
             accounts: ManagedCodexAccountSet(version: 1, accounts: [account]))
+        var removedStores: [UUID] = []
         let service = ManagedCodexAccountService(
             store: store,
             homeFactory: TestManagedCodexHomeFactory(root: root),
             loginRunner: StubManagedCodexLoginRunner.success,
             identityReader: StubManagedCodexIdentityReader.emails([]),
-            workspaceResolver: StubManagedCodexWorkspaceResolver())
+            workspaceResolver: StubManagedCodexWorkspaceResolver(),
+            removeWebsiteData: { account, isStillRemoved in
+                #expect(isStillRemoved())
+                removedStores.append(account.id)
+            })
 
         await #expect(throws: TestManagedCodexAccountStoreError.writeFailed) {
             try await service.removeManagedAccount(id: account.id)
@@ -745,11 +808,12 @@ struct ManagedCodexAccountServiceTests {
         #expect(store.snapshot.accounts.count == 1)
         #expect(store.snapshot.accounts.first?.managedHomePath == home.path)
         #expect(FileManager.default.fileExists(atPath: home.path))
+        #expect(removedStores == [])
     }
 
     @Test
     func `remove drops account but leaves unsafe home untouched`() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let outsideRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString,
             isDirectory: true)
@@ -780,6 +844,288 @@ struct ManagedCodexAccountServiceTests {
 
         #expect(store.snapshot.accounts.isEmpty)
         #expect(FileManager.default.fileExists(atPath: outsideRoot.path))
+    }
+
+    @Test
+    func `reauthentication preserves saved accounts with a different email`() async throws {
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let firstHome = root.appendingPathComponent("accounts/first", isDirectory: true)
+        let secondHome = root.appendingPathComponent("accounts/second", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstHome, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstID = try #require(UUID(uuidString: "AAAAAAAA-3333-4444-5555-666666666666"))
+        let secondID = try #require(UUID(uuidString: "BBBBBBBB-3333-4444-5555-666666666666"))
+        let first = ManagedCodexAccount(
+            id: firstID,
+            email: "first@example.com",
+            providerAccountID: "account-first",
+            workspaceAccountID: "account-first",
+            managedHomePath: firstHome.path,
+            createdAt: 1,
+            updatedAt: 1,
+            lastAuthenticatedAt: 1)
+        let second = ManagedCodexAccount(
+            id: secondID,
+            email: "second@example.com",
+            providerAccountID: "account-second",
+            workspaceAccountID: "account-second",
+            managedHomePath: secondHome.path,
+            createdAt: 2,
+            updatedAt: 2,
+            lastAuthenticatedAt: 2)
+        let store = InMemoryManagedCodexAccountStore(
+            accounts: ManagedCodexAccountSet(
+                version: FileManagedCodexAccountStore.currentVersion,
+                accounts: [first, second]))
+        let service = ManagedCodexAccountService(
+            store: store,
+            homeFactory: TestManagedCodexHomeFactory(root: root),
+            loginRunner: StubManagedCodexLoginRunner.success,
+            identityReader: StubManagedCodexIdentityReader.accounts([
+                .init(identity: .providerAccount(id: "account-first"), email: "first@example.com", plan: "Pro"),
+            ]),
+            workspaceResolver: StubManagedCodexWorkspaceResolver())
+
+        let reauthenticated = try await service.authenticateManagedAccount(existingAccountID: first.id)
+
+        #expect(reauthenticated.id == firstID)
+        #expect(store.snapshot.accounts.count == 2)
+        let preserved = try #require(store.snapshot.account(id: secondID))
+        #expect(preserved.email == "second@example.com")
+        #expect(preserved.providerAccountID == "account-second")
+        #expect(preserved.managedHomePath == secondHome.path)
+        #expect(FileManager.default.fileExists(atPath: secondHome.path))
+        #expect(store.snapshot.account(id: firstID)?.managedHomePath == reauthenticated.managedHomePath)
+    }
+}
+
+extension ManagedCodexAccountServiceTests {
+    @Test
+    func `fresh provider login preserves a legacy row with different saved workspace credentials`() async throws {
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let legacyHome = root.appendingPathComponent("accounts/legacy", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let legacyAccount = ManagedCodexAccount(
+            id: UUID(),
+            email: "shared@example.com",
+            managedHomePath: legacyHome.path,
+            createdAt: 1,
+            updatedAt: 1,
+            lastAuthenticatedAt: 1)
+        let store = FileManagedCodexAccountStore(fileURL: root.appendingPathComponent("managed.json"))
+        try store.storeAccounts(ManagedCodexAccountSet(
+            version: FileManagedCodexAccountStore.currentVersion,
+            accounts: [legacyAccount]))
+        try CodexOAuthCredentialsStore.save(
+            CodexOAuthCredentials(
+                accessToken: "synthetic-legacy-access",
+                refreshToken: "synthetic-legacy-refresh",
+                idToken: nil,
+                accountId: "workspace-legacy",
+                lastRefresh: nil),
+            env: ["CODEX_HOME": legacyHome.path])
+        let originalAuth = try Data(contentsOf: legacyHome.appendingPathComponent("auth.json"))
+        let service = ManagedCodexAccountService(
+            store: store,
+            homeFactory: TestManagedCodexHomeFactory(root: root),
+            loginRunner: StubManagedCodexLoginRunner.success,
+            identityReader: StubManagedCodexIdentityReader.accounts([
+                .init(identity: .providerAccount(id: "workspace-new"), email: "shared@example.com", plan: "Pro"),
+                .init(identity: .providerAccount(id: "workspace-new"), email: "shared@example.com", plan: "Pro"),
+            ]),
+            workspaceResolver: StubManagedCodexWorkspaceResolver())
+
+        let added = try await service.authenticateManagedAccount()
+        let reauthenticated = try await service.authenticateManagedAccount(existingAccountID: added.id)
+        let snapshot = try store.loadAccounts()
+
+        #expect(snapshot.accounts.count == 2)
+        #expect(snapshot.account(id: legacyAccount.id)?.managedHomePath == legacyHome.path)
+        #expect(added.id != legacyAccount.id)
+        #expect(reauthenticated.id == added.id)
+        #expect((try? Data(contentsOf: legacyHome.appendingPathComponent("auth.json"))) == originalAuth)
+    }
+
+    @Test
+    func `email only login cannot replace legacy credentials with a known workspace`() async throws {
+        let root = CodexCredentialFixtures.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let legacyHome = root.appendingPathComponent("accounts/legacy", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let legacyAccount = ManagedCodexAccount(
+            id: UUID(),
+            email: "shared@example.com",
+            managedHomePath: legacyHome.path,
+            createdAt: 1,
+            updatedAt: 1,
+            lastAuthenticatedAt: 1)
+        let store = FileManagedCodexAccountStore(fileURL: root.appendingPathComponent("managed.json"))
+        try store.storeAccounts(ManagedCodexAccountSet(
+            version: FileManagedCodexAccountStore.currentVersion,
+            accounts: [legacyAccount]))
+        let payload = Data(#"{"email":"shared@example.com"}"#.utf8).base64EncodedString()
+        try CodexOAuthCredentialsStore.save(
+            CodexOAuthCredentials(
+                accessToken: "synthetic-legacy-access",
+                refreshToken: "synthetic-legacy-refresh",
+                idToken: "e30.\(payload).",
+                accountId: "workspace-legacy",
+                lastRefresh: nil),
+            env: ["CODEX_HOME": legacyHome.path])
+        let originalAuth = try Data(contentsOf: legacyHome.appendingPathComponent("auth.json"))
+        let service = ManagedCodexAccountService(
+            store: store,
+            homeFactory: TestManagedCodexHomeFactory(root: root),
+            loginRunner: StubManagedCodexLoginRunner.success,
+            identityReader: StubManagedCodexIdentityReader.emails(["shared@example.com"]),
+            workspaceResolver: StubManagedCodexWorkspaceResolver())
+
+        await #expect(throws: ManagedCodexAccountServiceError.savedAccountConflict) {
+            try await service.authenticateManagedAccount()
+        }
+        let snapshot = try store.loadAccounts()
+
+        #expect(snapshot.accounts.count == 1)
+        #expect(snapshot.account(id: legacyAccount.id)?.managedHomePath == legacyHome.path)
+        #expect((try? Data(contentsOf: legacyHome.appendingPathComponent("auth.json"))) == originalAuth)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("accounts/account-1").path))
+    }
+}
+
+extension ManagedCodexAccountServiceTests {
+    enum LegacyCredentialState: CaseIterable, Sendable {
+        case missingHome, missingAuth, unreadable, malformed
+    }
+
+    @Test(arguments: LegacyCredentialState.allCases)
+    func `legacy replacement distinguishes missing credentials from unreadable or malformed files`(
+        _ credentialState: LegacyCredentialState) async throws
+    {
+        let root = CodexCredentialFixtures.root
+        let legacyHome = root.appendingPathComponent("accounts/legacy", isDirectory: true)
+        let authURL = legacyHome.appendingPathComponent("auth.json")
+        let originalAuth = Data("not valid JSON".utf8)
+        if credentialState != .missingHome {
+            try FileManager.default.createDirectory(at: legacyHome, withIntermediateDirectories: true)
+        }
+        if credentialState == .unreadable || credentialState == .malformed {
+            try originalAuth.write(to: authURL)
+        }
+        if credentialState == .unreadable {
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: authURL.path)
+        }
+        defer {
+            if credentialState == .unreadable {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path)
+            }
+        }
+
+        #expect(CodexCredentialFileAccess.permits(authURL))
+        if credentialState != .malformed {
+            do {
+                _ = try CodexCredentialFileAccess.read(at: authURL)
+                Issue.record("Expected the fixture credential read to fail")
+            } catch let error as CocoaError {
+                #expect(error.code == (credentialState == .unreadable ? .fileReadNoPermission : .fileReadNoSuchFile))
+            }
+        }
+
+        let legacyAccount = ManagedCodexAccount(
+            id: UUID(),
+            email: "shared@example.com",
+            managedHomePath: legacyHome.path,
+            createdAt: 1,
+            updatedAt: 1,
+            lastAuthenticatedAt: 1)
+        let storeURL = root.appendingPathComponent("managed.json")
+        let store = FileManagedCodexAccountStore(fileURL: storeURL)
+        let original = ManagedCodexAccountSet(
+            version: FileManagedCodexAccountStore.currentVersion, accounts: [legacyAccount])
+        try store.storeAccounts(original)
+        let originalRegistry = try Data(contentsOf: storeURL)
+        let service = ManagedCodexAccountService(
+            store: store,
+            homeFactory: TestManagedCodexHomeFactory(root: root),
+            loginRunner: StubManagedCodexLoginRunner.success,
+            identityReader: StubManagedCodexIdentityReader.emails([legacyAccount.email]),
+            workspaceResolver: StubManagedCodexWorkspaceResolver())
+
+        switch credentialState {
+        case .missingHome, .missingAuth:
+            let account = try await service.authenticateManagedAccount(existingAccountID: legacyAccount.id)
+            #expect(account.id == legacyAccount.id)
+            #expect(try store.loadAccounts().accounts.map(\.id) == [account.id])
+            #expect(try store.loadAccounts().account(id: account.id)?.managedHomePath == account.managedHomePath)
+            #expect(!FileManager.default.fileExists(atPath: legacyHome.path))
+            #expect(FileManager.default.fileExists(atPath: account.managedHomePath))
+        case .unreadable, .malformed:
+            await #expect(throws: ManagedCodexAccountServiceError.savedAccountConflict) {
+                try await service.authenticateManagedAccount(existingAccountID: legacyAccount.id)
+            }
+            #expect(try Data(contentsOf: storeURL) == originalRegistry)
+            #expect(FileManager.default.fileExists(atPath: authURL.path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("accounts/account-1").path))
+            if credentialState == .unreadable {
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path)
+            }
+            #expect(try Data(contentsOf: authURL) == originalAuth)
+        }
+    }
+}
+
+extension ManagedCodexAccountServiceTests {
+    @Test(arguments: [true, false])
+    func `matching workspace replaces legacy credentials only when the saved owner matches`(
+        _ sameOwner: Bool) async throws
+    {
+        let root = CodexCredentialFixtures.root
+        let legacyHome = root.appendingPathComponent("accounts/legacy", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyHome, withIntermediateDirectories: true)
+        let legacyAccount = ManagedCodexAccount(
+            id: UUID(),
+            email: "shared@example.com",
+            managedHomePath: legacyHome.path,
+            createdAt: 1,
+            updatedAt: 1,
+            lastAuthenticatedAt: 1)
+        let savedEmail = sameOwner ? legacyAccount.email : "another@example.com"
+        let payload = try JSONSerialization.data(withJSONObject: ["email": savedEmail]).base64EncodedString()
+        try CodexOAuthCredentialsStore.save(
+            CodexOAuthCredentials(
+                accessToken: "synthetic-access",
+                refreshToken: "synthetic-refresh",
+                idToken: "e30.\(payload).",
+                accountId: "workspace-shared",
+                lastRefresh: nil),
+            env: ["CODEX_HOME": legacyHome.path])
+        let authURL = legacyHome.appendingPathComponent("auth.json")
+        let originalAuth = try Data(contentsOf: authURL)
+        let store = FileManagedCodexAccountStore(fileURL: root.appendingPathComponent("managed.json"))
+        try store.storeAccounts(.init(version: FileManagedCodexAccountStore.currentVersion, accounts: [legacyAccount]))
+        let service = ManagedCodexAccountService(
+            store: store,
+            homeFactory: TestManagedCodexHomeFactory(root: root),
+            loginRunner: StubManagedCodexLoginRunner.success,
+            identityReader: StubManagedCodexIdentityReader.accounts([
+                .init(identity: .providerAccount(id: "workspace-shared"), email: legacyAccount.email, plan: "Pro"),
+            ]),
+            workspaceResolver: StubManagedCodexWorkspaceResolver())
+
+        let added = try await service.authenticateManagedAccount()
+        let snapshot = try store.loadAccounts()
+        #expect(snapshot.accounts.count == (sameOwner ? 1 : 2))
+        #expect((added.id == legacyAccount.id) == sameOwner)
+        if sameOwner {
+            #expect(!FileManager.default.fileExists(atPath: legacyHome.path))
+        } else {
+            #expect(snapshot.account(id: legacyAccount.id)?.managedHomePath == legacyHome.path)
+            #expect(try Data(contentsOf: authURL) == originalAuth)
+        }
     }
 }
 
@@ -863,25 +1209,25 @@ private struct UnsafeManagedCodexHomeFactory: ManagedCodexHomeProducing {
 }
 
 private struct StubManagedCodexLoginRunner: ManagedCodexLoginRunning {
-    let result: CodexLoginRunner.Result
+    let result: CLILoginRunner.Result
 
-    func run(homePath: String, timeout: TimeInterval) async -> CodexLoginRunner.Result {
+    func run(homePath: String, timeout: TimeInterval) async -> CLILoginRunner.Result {
         self.result
     }
 
     static let success = StubManagedCodexLoginRunner(
-        result: CodexLoginRunner.Result(outcome: .success, output: "ok"))
+        result: CLILoginRunner.Result(outcome: .success, output: "ok"))
 }
 
 private struct WritingManagedCodexLoginRunner: ManagedCodexLoginRunning {
     let credentials: CodexOAuthCredentials
 
-    func run(homePath: String, timeout _: TimeInterval) async -> CodexLoginRunner.Result {
+    func run(homePath: String, timeout _: TimeInterval) async -> CLILoginRunner.Result {
         do {
             try CodexOAuthCredentialsStore.save(self.credentials, env: ["CODEX_HOME": homePath])
-            return CodexLoginRunner.Result(outcome: .success, output: "ok")
+            return CLILoginRunner.Result(outcome: .success, output: "ok")
         } catch {
-            return CodexLoginRunner.Result(outcome: .failed(status: 1), output: String(describing: error))
+            return CLILoginRunner.Result(outcome: .failed(status: 1), output: String(describing: error))
         }
     }
 }

@@ -10,14 +10,14 @@ import Darwin
 
 struct CLICardMetric: Sendable, Equatable {
     let label: String
-    let remainingPercent: Double
+    let remainingPercent: Double?
     let resetText: String?
     let resetAt: Date?
     let detailText: String?
 
     init(
         label: String,
-        remainingPercent: Double,
+        remainingPercent: Double?,
         resetText: String?,
         resetAt: Date? = nil,
         detailText: String? = nil)
@@ -37,10 +37,12 @@ struct CLICardModel: Sendable, Equatable {
     let planBadge: String?
     let accountLine: String?
     let isActive: Bool
+    let usesLastKnownUsage: Bool
     let accountProblem: String?
     let infoLines: [String]
     let metrics: [CLICardMetric]
     let extraLines: [String]
+    let historySummary: String?
     let statusLine: String?
 
     init(
@@ -50,10 +52,12 @@ struct CLICardModel: Sendable, Equatable {
         planBadge: String?,
         accountLine: String?,
         isActive: Bool = false,
+        usesLastKnownUsage: Bool = false,
         accountProblem: String? = nil,
         infoLines: [String],
         metrics: [CLICardMetric],
         extraLines: [String],
+        historySummary: String? = nil,
         statusLine: String?)
     {
         self.provider = provider
@@ -62,10 +66,12 @@ struct CLICardModel: Sendable, Equatable {
         self.planBadge = planBadge
         self.accountLine = accountLine
         self.isActive = isActive
+        self.usesLastKnownUsage = usesLastKnownUsage
         self.accountProblem = accountProblem
         self.infoLines = infoLines
         self.metrics = metrics
         self.extraLines = extraLines
+        self.historySummary = historySummary
         self.statusLine = statusLine
     }
 }
@@ -157,7 +163,7 @@ enum CLICardsRenderer {
             now: input.now)
         let statusLine: String?
         if let status = input.status {
-            let line = "Status: \(status.indicator.label)\(status.descriptionSuffix)"
+            let line = "Status: \(status.indicator.cliLabel)\(status.descriptionSuffix)"
             statusLine = CLIRenderer.colorizeStatusLine(line, indicator: status.indicator, useColor: input.useColor)
         } else {
             statusLine = nil
@@ -171,6 +177,7 @@ enum CLICardsRenderer {
             infoLines: infoLines,
             metrics: metrics,
             extraLines: extraLines,
+            historySummary: CLIRenderer.liveHistoryLine(snapshot: snapshot, useColor: false),
             statusLine: statusLine)
     }
 
@@ -178,19 +185,27 @@ enum CLICardsRenderer {
         account: ProviderAccountUsageSnapshot,
         renderOptions: CLIClaudeSwapCardsRenderOptions) -> CLICardModel
     {
+        // The projection stamps every account with its source (claude-swap or tcr).
+        let sourceLabel = account.sourceLabel ?? ClaudeSwapAccountProjection.sourceLabel
         let sanitizedLabel = CLIClaudeSwapText.sanitizeLabel(account.displayLabel)
         let label = sanitizedLabel.isEmpty
             ? CLIClaudeSwapText.sanitizeLabel("Account \(account.id.opaqueID)")
             : sanitizedLabel
         let problem = account.error.map(CLIClaudeSwapText.sanitizeDiagnostic)
         if let snapshot = account.snapshot {
+            var notes: [String] = []
+            if account.usesLastKnownUsage {
+                let updated = UsageFormatter.updatedString(from: snapshot.updatedAt, now: renderOptions.now)
+                notes.append("Last known usage captured \(snapshot.updatedAt.ISO8601Format()). \(updated)")
+            }
+            // Provider-specific by design: claude-swap subprocess records render as Claude account cards.
             let base = Self.makeCard(CLICardBuildInput(
                 provider: .claude,
                 snapshot: snapshot,
                 credits: nil,
-                source: ClaudeSwapAccountProjection.sourceLabel,
+                source: sourceLabel,
                 status: renderOptions.status,
-                notes: [],
+                notes: notes,
                 useColor: renderOptions.useColor,
                 resetStyle: renderOptions.resetStyle,
                 weeklyWorkDays: renderOptions.weeklyWorkDays,
@@ -202,15 +217,17 @@ enum CLICardsRenderer {
                 planBadge: nil,
                 accountLine: label,
                 isActive: account.isActive,
+                usesLastKnownUsage: account.usesLastKnownUsage,
                 accountProblem: problem,
                 infoLines: base.infoLines,
                 metrics: base.metrics,
                 extraLines: base.extraLines,
+                historySummary: base.historySummary,
                 statusLine: base.statusLine)
         }
 
         let statusLine: String? = renderOptions.status.map { status in
-            let line = "Status: \(status.indicator.label)\(status.descriptionSuffix)"
+            let line = "Status: \(status.indicator.cliLabel)\(status.descriptionSuffix)"
             return CLIRenderer.colorizeStatusLine(
                 line,
                 indicator: status.indicator,
@@ -219,7 +236,7 @@ enum CLICardsRenderer {
         return CLICardModel(
             provider: .claude,
             title: ProviderDescriptorRegistry.descriptor(for: .claude).metadata.displayName,
-            sourceLabel: ClaudeSwapAccountProjection.sourceLabel,
+            sourceLabel: sourceLabel,
             planBadge: nil,
             accountLine: label,
             isActive: account.isActive,
@@ -327,11 +344,14 @@ enum CLICardsRenderer {
                 innerWidth: innerWidth,
                 useColor: useColor,
                 enhanced: enhanced))
-            lines.append(Self.metricBarLine(
+            if let bar = Self.metricBarLine(
                 metric: metric,
                 innerWidth: innerWidth,
                 useColor: useColor,
-                enhanced: enhanced))
+                enhanced: enhanced)
+            {
+                lines.append(bar)
+            }
             if let resetText = metric.resetText {
                 lines.append(Self.contentLine(
                     resetText,
@@ -352,6 +372,15 @@ enum CLICardsRenderer {
 
         for extraLine in card.extraLines {
             lines.append(Self.detailLine(extraLine, innerWidth: innerWidth, useColor: useColor, enhanced: enhanced))
+        }
+        if let history = card.historySummary {
+            for historyLine in Self.wrapPlainText(history, width: innerWidth) {
+                lines.append(Self.contentLine(
+                    historyLine,
+                    innerWidth: innerWidth,
+                    useColor: useColor,
+                    enhanced: enhanced))
+            }
         }
 
         if let statusLine = card.statusLine {
@@ -441,17 +470,16 @@ enum CLICardsRenderer {
         useColor: Bool,
         enhanced: Bool) -> String
     {
-        let percentText = UsageFormatter.usageLine(
-            remaining: metric.remainingPercent,
-            used: 100 - metric.remainingPercent,
-            showUsed: false)
-        let coloredPercent: String = if useColor, enhanced {
-            CLIRenderer.colorizeEnhancedRemainingPercent(percentText, remainingPercent: metric.remainingPercent)
+        let coloredPercent: String
+        if let remaining = metric.remainingPercent {
+            let percentText = UsageFormatter.usageLine(remaining: remaining, used: 100 - remaining, showUsed: false)
+            coloredPercent = if useColor, enhanced {
+                CLIRenderer.colorizeEnhancedRemainingPercent(percentText, remainingPercent: remaining)
+            } else {
+                CLIRenderer.colorizeCardPercent(percentText, remainingPercent: remaining, useColor: useColor)
+            }
         } else {
-            CLIRenderer.colorizeCardPercent(
-                percentText,
-                remainingPercent: metric.remainingPercent,
-                useColor: useColor)
+            coloredPercent = "Unavailable"
         }
         let label: String = if useColor, enhanced {
             CLIRenderer.colorizeEnhancedReadable(metric.label)
@@ -469,14 +497,15 @@ enum CLICardsRenderer {
         metric: CLICardMetric,
         innerWidth: Int,
         useColor: Bool,
-        enhanced: Bool) -> String
+        enhanced: Bool) -> String?
     {
+        guard let remaining = metric.remainingPercent else { return nil }
         let barWidth = max(4, innerWidth - 4)
         let bar: String = if useColor, enhanced {
-            CLIRenderer.gradientRemainingTrackBar(remainingPercent: metric.remainingPercent, width: barWidth)
+            CLIRenderer.gradientRemainingTrackBar(remainingPercent: remaining, width: barWidth)
         } else {
             CLIRenderer.cardBlockBar(
-                remainingPercent: metric.remainingPercent,
+                remainingPercent: remaining,
                 width: barWidth,
                 useColor: useColor)
         }
@@ -576,7 +605,9 @@ enum CLICardsRenderer {
     private static func truncatePlain(_ text: String, width: Int) -> String {
         guard width > 0 else { return "" }
         guard text.count > width else { return text }
-        if width <= 1 { return String(text.prefix(width)) }
+        if width <= 1 {
+            return String(text.prefix(width))
+        }
         return String(text.prefix(width - 1)) + "…"
     }
 
@@ -647,11 +678,21 @@ enum CLICardsRenderer {
 
     private static func normalizedSourceLabel(_ source: String) -> String {
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "auto" }
-        if trimmed.contains("oauth") { return "oauth" }
-        if trimmed.contains("web") || trimmed.contains("openai-web") { return "web" }
-        if trimmed.contains("api") { return "api" }
-        if trimmed.contains("cli") { return "cli" }
+        if trimmed.isEmpty {
+            return "auto"
+        }
+        if trimmed.contains("oauth") {
+            return "oauth"
+        }
+        if trimmed.contains("web") || trimmed.contains("openai-web") {
+            return "web"
+        }
+        if trimmed.contains("api") {
+            return "api"
+        }
+        if trimmed.contains("cli") {
+            return "cli"
+        }
         return trimmed
     }
 }

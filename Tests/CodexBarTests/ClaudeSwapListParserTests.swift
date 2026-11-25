@@ -3,6 +3,33 @@ import Testing
 @testable import CodexBarCore
 
 struct ClaudeSwapListParserTests {
+    @Test
+    func `read only adapter preserves usage without activation`() throws {
+        let list = try self.parse("""
+        {
+          "schemaVersion": 1, "activeAccountNumber": 1, "supportsAccountSwitching": false,
+          "accounts": [
+            {"number": 1, "active": true, "usageStatus": "foreign_credential"},
+            {"number": 2, "active": false, "usageStatus": "ok", "usage": {"fiveHour": {"pct": 25}}}
+          ]
+        }
+        """)
+        let accounts = ClaudeSwapAccountProjection.accountSnapshots(from: list)
+        #expect(accounts.count == 2)
+        #expect(accounts.allSatisfy { !$0.canActivate })
+        #expect(accounts.first?.isActive == true)
+        #expect(accounts.last?.snapshot?.primary?.usedPercent == 25)
+    }
+
+    @Test(arguments: ["null", "0", "1", "\"false\"", "[]", "{}"])
+    func `rejects nonboolean switching capability`(value: String) {
+        #expect(throws: ClaudeSwapListParserError.malformedShape("supportsAccountSwitching is not a boolean")) {
+            try self.parse("""
+            {"schemaVersion": 1, "activeAccountNumber": null, "supportsAccountSwitching": \(value), "accounts": []}
+            """)
+        }
+    }
+
     private func parse(_ json: String) throws -> ClaudeSwapAccountList {
         try ClaudeSwapListParser.parse(Data(json.utf8))
     }
@@ -46,10 +73,13 @@ struct ClaudeSwapListParserTests {
         let list = try self.parse(json)
         #expect(list.activeAccountNumber == 2)
         #expect(list.accounts.count == 2)
+        #expect(list.supportsAccountSwitching)
 
         let first = try #require(list.accounts.first)
         #expect(first.number == 1)
         #expect(first.email == "work@example.com")
+        #expect(first.organizationName.isEmpty)
+        #expect(first.alias == nil)
         #expect(first.isActive == false)
         #expect(first.usageStatus == .ok)
         #expect(first.fiveHour?.usedPercent == 25.0)
@@ -64,10 +94,21 @@ struct ClaudeSwapListParserTests {
 
         let second = try #require(list.accounts.last)
         #expect(second.isActive == true)
+        #expect(second.organizationName.isEmpty)
+        #expect(second.organizationUuid.isEmpty)
+        #expect(second.alias == nil)
         #expect(second.fiveHour?.usedPercent == 80)
         #expect(second.fiveHour?.resetsAt == nil)
         #expect(second.sevenDay == nil)
         #expect(second.scoped.isEmpty)
+    }
+
+    @Test(arguments: [true, false])
+    func `parses explicit switching capabilities`(supported: Bool) throws {
+        let list = try self.parse("""
+        {"schemaVersion": 1, "activeAccountNumber": null, "supportsAccountSwitching": \(supported), "accounts": []}
+        """)
+        #expect(list.supportsAccountSwitching == supported)
     }
 
     @Test
@@ -102,6 +143,48 @@ struct ClaudeSwapListParserTests {
         #expect(row.scoped.map(\.name) == ["Fable", "All models"])
         #expect(row.scoped.map(\.usedPercent) == [100, 17])
         #expect(row.scoped.first?.resetsAt == Date(timeIntervalSince1970: 1_784_620_800))
+    }
+
+    @Test
+    func `decodes display only organization name and optional alias`() throws {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "activeAccountNumber": 1,
+          "accounts": [
+            {
+              "number": 1,
+              "email": "shared@example.com",
+              "organizationName": "Sendbird",
+              "alias": "Work",
+              "organizationUuid": "workspace-fixture",
+              "isOrganization": true,
+              "active": true,
+              "usageStatus": "ok",
+              "usage": null
+            },
+            {
+              "number": 2,
+              "email": "shared@example.com",
+              "organizationName": "  ",
+              "alias": "",
+              "active": false,
+              "usageStatus": "ok",
+              "usage": null
+            }
+          ]
+        }
+        """
+
+        let accounts = try self.parse(json).accounts
+        let first = try #require(accounts.first)
+        #expect(first.organizationName == "Sendbird")
+        #expect(first.organizationUuid == "workspace-fixture")
+        #expect(first.alias == "Work")
+        let second = try #require(accounts.last)
+        #expect(second.organizationName.isEmpty)
+        #expect(second.organizationUuid.isEmpty)
+        #expect(second.alias == nil)
     }
 
     @Test

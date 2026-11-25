@@ -103,14 +103,12 @@ public struct RemoteSessionFetcher: Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         localHost: String = ProcessInfo.processInfo.hostName) async -> [String]
     {
-        let probeEnvironment = Self.tailscaleCLIEnvironment(from: environment)
         let candidates = Self.tailscaleBinaryCandidates(path: environment["PATH"])
-            .filter { FileManager.default.isExecutableFile(atPath: $0) }
         return await Self.firstDiscoveredHosts(candidates: candidates, localHost: localHost) { binary in
             guard let result = try? await SubprocessRunner.run(
                 binary: binary,
                 arguments: ["status", "--json"],
-                environment: probeEnvironment,
+                environment: environment,
                 timeout: 5,
                 label: "Tailscale session host discovery")
             else { return nil }
@@ -118,22 +116,21 @@ public struct RemoteSessionFetcher: Sendable {
         }
     }
 
-    /// Runs `tailscale status --json` on each candidate in order, falling through to the next when a
-    /// candidate fails (`run` returns nil), returns invalid status JSON, or reports an inactive backend.
-    /// Returns the first candidate's parsed hosts (possibly empty), or `[]` if none succeed. This keeps
-    /// the app-binary fallback working even when an earlier — but non-functional — `tailscale` variant
-    /// is installed (e.g. an open-source/Homebrew CLI that isn't the active client).
+    /// Probe only standalone CLIs: app launchers can start a disconnected VPN even for status.
     package static func firstDiscoveredHosts(
         candidates: [String],
         localHost: String?,
+        isStandaloneCLI: (String) -> Bool = Self.isStandaloneTailscaleCLI,
         run: (String) async -> Data?) async -> [String]
     {
-        for binary in candidates {
+        for binary in candidates where isStandaloneCLI(binary) {
             guard let data = await run(binary),
                   let hosts = TailscaleStatusParser.parseHosts(from: data, excludingLocalHost: localHost)
             else { continue }
             return hosts
         }
+        CodexBarLog.logger("sessions").debug(
+            "No active standalone Tailscale CLI found; app bundles and launcher scripts are skipped.")
         return []
     }
 
@@ -186,16 +183,19 @@ public struct RemoteSessionFetcher: Sendable {
         else {
             return RemoteSessionHostResult(host: host, sessions: [], error: "ssh not found")
         }
-        let command = "codexbar sessions --json || " +
-            "\(Self.shellQuote(Self.bundledCLIFallback)) sessions --json"
+        let command = Self.remoteSessionsCommand()
         do {
             let result = try await SubprocessRunner.run(
                 binary: ssh,
                 arguments: [
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=3",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=3",
                     host,
-                    "sh", "-lc", Self.shellQuote(command),
+                    "sh",
+                    "-lc",
+                    Self.shellQuote(command),
                 ],
                 environment: environment,
                 timeout: 5,
@@ -212,49 +212,54 @@ public struct RemoteSessionFetcher: Sendable {
         }
     }
 
-    /// Ordered candidate paths for the `tailscale` CLI, most-preferred first.
-    ///
-    /// The macOS app ships its CLI as a thin `/bin/sh` wrapper (usually
-    /// `/usr/local/bin/tailscale`) around the app's dual-mode binary. We prefer the
-    /// wrapper, but a GUI-launched CodexBar inherits a minimal `PATH` (`/usr/bin:/bin`)
-    /// that omits the standard CLI locations, so we also probe them explicitly before
-    /// falling back to the app binary itself.
-    package static func tailscaleBinaryCandidates(path: String?) -> [String] {
-        let pathDirs = path?.split(separator: ":").map(String.init) ?? []
-        var seen = Set<String>()
-        var candidates = (pathDirs + ["/usr/local/bin", "/opt/homebrew/bin"])
-            .filter { seen.insert($0).inserted }
-            .map { $0 + "/tailscale" }
-        // Last resort: the dual-mode app binary. Must be run via
-        // `tailscaleCLIEnvironment(from:)` so it stays in CLI mode.
-        candidates.append("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
-        return candidates
+    /// Tries the v2 session JSON protocol first, then the legacy v1 form, for both PATH and the
+    /// bundled app CLI. Each fallback is reached only when the preceding command exits non-zero.
+    package static func remoteSessionsCommand() -> String {
+        let bundledCLI = Self.shellQuote(Self.bundledCLIFallback)
+        return [
+            "codexbar sessions --json-v2",
+            "codexbar sessions --json",
+            "\(bundledCLI) sessions --json-v2",
+            "\(bundledCLI) sessions --json",
+        ].joined(separator: " || ")
     }
 
-    /// Environment that keeps the dual-mode Tailscale app binary in CLI mode.
-    ///
-    /// With no shell/terminal marker present the binary boots the full menu-bar GUI
-    /// (SkyLight/WindowServer, status icon) instead of running the CLI: it never emits
-    /// JSON, the probe times out, and the Tailscale icon flickers on every refresh. A
-    /// set `TERM` or `SHLVL` forces CLI mode (argv[0] casing and `XPC_SERVICE_NAME` do
-    /// not). `SHLVL` is what the app's own `/bin/sh` CLI wrapper injects, so we mirror it here.
-    ///
-    /// Applied to every probe, not just the app-binary fallback: it is redundant but harmless for the
-    /// CLI wrapper (itself a `/bin/sh` script that already exports `SHLVL`), and injecting it
-    /// unconditionally keeps CLI mode guaranteed regardless of which binary `tailscaleBinary` resolves.
-    /// An existing `TERM`/`SHLVL` (real terminal context) is left untouched.
-    package static func tailscaleCLIEnvironment(from environment: [String: String]) -> [String: String] {
-        guard environment["TERM"] == nil, environment["SHLVL"] == nil else { return environment }
-        var environment = environment
-        environment["SHLVL"] = "1"
-        return environment
+    /// PATH first, then standalone CLI installation directories omitted by GUI launch environments.
+    package static func tailscaleBinaryCandidates(path: String?) -> [String] {
+        let pathDirs = PathBuilder.searchDirectories(path?.split(separator: ":").map(String.init) ?? [])
+        var seen = Set<String>()
+        return (pathDirs + ["/usr/local/bin", "/opt/homebrew/bin"])
+            .filter { seen.insert($0).inserted }
+            .map { $0 + "/tailscale" }
+    }
+
+    package static func isStandaloneTailscaleCLI(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard !url.path.lowercased().contains(".app/"),
+              FileManager.default.isExecutableFile(atPath: url.path),
+              let values = try? url.resourceValues(forKeys: [.isRegularFileKey]), values.isRegularFile == true,
+              let file = try? FileHandle(forReadingFrom: url)
+        else { return false }
+        defer { try? file.close() }
+        guard let bytes = try? file.read(upToCount: 4), bytes.count == 4 else { return false }
+        let magic = bytes.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        // Mach-O (including universal binaries) or ELF, never a wrapper that could launch the app.
+        return [
+            0xFEED_FACE,
+            0xCEFA_EDFE,
+            0xFEED_FACF,
+            0xCFFA_EDFE,
+            0xCAFE_BABE,
+            0xBEBA_FECA,
+            0xCAFE_BABF,
+            0xBFBA_FECA,
+            0x7F45_4C46,
+        ].contains(magic)
     }
 
     private func findExecutable(_ name: String, environment: [String: String]) -> String? {
         let path = environment["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        return path.split(separator: ":")
-            .map { String($0) + "/" + name }
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
+        return BinaryLocator.find(name, in: path.split(separator: ":").map(String.init), fileManager: .default)
     }
 
     public static func sanitizedHosts(_ hosts: [String]) -> [String] {
@@ -265,10 +270,15 @@ public struct RemoteSessionFetcher: Sendable {
                 CharacterSet.controlCharacters.contains(scalar) ||
                     CharacterSet.whitespacesAndNewlines.contains(scalar)
             }
+            let key: String = if let separator = host.lastIndex(of: "@") {
+                String(host[...separator]) + host[host.index(after: separator)...].lowercased()
+            } else {
+                host.lowercased()
+            }
             guard !host.isEmpty,
                   !host.hasPrefix("-"),
                   !hasUnsafeScalar,
-                  seen.insert(host.lowercased()).inserted
+                  seen.insert(key).inserted
             else { return nil }
             return host
         }

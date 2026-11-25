@@ -2,10 +2,29 @@ import Foundation
 
 public enum CopilotProviderDescriptor {
     public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    private static let credentials = ProviderCredentialAdapter.apiKey(
+        environmentKey: "COPILOT_API_TOKEN",
+        resolve: { SettingsValue.cleaned($0["COPILOT_API_TOKEN"]) },
+        tokenAccountSupport: TokenAccountSupport(
+            title: "GitHub accounts",
+            subtitle: "Sign in with multiple GitHub accounts via OAuth.",
+            placeholder: "Paste GitHub token…",
+            injection: .environment(key: "COPILOT_API_TOKEN"),
+            requiresManualCookieSource: false,
+            cookieName: nil,
+            clearsAPIKeyOnMutation: true,
+            primaryAddActionTitle: "Add Account"))
 
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .copilot,
+            settingsSection: .init(CopilotProviderSettingsKey.self, cookieSettings: { settings in
+                CookieProviderSettings(
+                    cookieSource: settings.budgetCookieSource,
+                    manualCookieHeader: settings.manualBudgetCookieHeader)
+            }),
+            credentials: self.credentials,
+            config: ProviderConfigCapabilities(supportsEnterpriseHost: true),
             metadata: ProviderMetadata(
                 id: .copilot,
                 displayName: "Copilot",
@@ -20,13 +39,21 @@ public enum CopilotProviderDescriptor {
                 defaultEnabled: false,
                 isPrimaryProvider: false,
                 usesAccountFallback: false,
-                browserCookieOrder: ProviderBrowserCookieDefaults.copilotCookieImportOrder,
+                sharePlanLabels: [
+                    "free": "Free",
+                    "individual": "Individual",
+                    "pro": "Individual",
+                    "business": "Business",
+                    "enterprise": "Enterprise",
+                ],
+                debugLogUnavailableMessage: "Copilot debug log not yet implemented",
+                browserCookieOrder: ProviderBrowserCookieDefaults.defaultImportOrder,
                 dashboardURL: "https://github.com/settings/copilot",
                 statusPageURL: "https://www.githubstatus.com/"),
             branding: ProviderBranding(
-                iconStyle: .copilot,
+                iconStyle: .init(provider: .copilot),
                 iconResourceName: "ProviderIcon-copilot",
-                color: ProviderColor(red: 168 / 255, green: 85 / 255, blue: 247 / 255),
+                color: ProviderColor(hex: 0xA855F7),
                 confettiPalette: [
                     ProviderColor(hex: 0x8534F3),
                     ProviderColor(hex: 0xF08A3A),
@@ -38,12 +65,73 @@ public enum CopilotProviderDescriptor {
             pace: ProviderPaceCapability(
                 resetWindowPace: .resetDatePresent,
                 inferredMonthlyDuration: .windowDurationMissing),
+            presentation: ProviderUsagePresentation(
+                iconWindowResolver: { context in
+                    guard let id = context.secondaryOverrideWindowID,
+                          let extra = context.snapshot.extraRateWindows?.first(where: { $0.id == id })?.window
+                    else {
+                        return ProviderUsageWindowPair(
+                            primary: context.snapshot.primary,
+                            secondary: context.snapshot.secondary)
+                    }
+                    return ProviderUsageWindowPair(primary: context.snapshot.primary, secondary: extra)
+                },
+                automaticSelectionPrioritizesExhaustedWindow: false,
+                menuBarWindowResolver: { context in
+                    guard context.metric == .automatic else { return .unhandled }
+                    return .automaticCandidates([
+                        context.snapshot.primary, context.snapshot.secondary,
+                    ].compactMap(\.self))
+                },
+                switcherUsedPercentFallback: { snapshot in
+                    snapshot.detailRow(id: CopilotCreditDetailRows.seatRowID)?.progress?.usedPercent
+                },
+                menuCard: ProviderMenuCardPresentation(primaryDescriptionPlacement: .detailLeft)),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .api],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [CopilotAPIFetchStrategy()] })),
             cli: ProviderCLIConfig(
                 name: "copilot",
-                versionDetector: nil))
+                loginCommand: "codexbar config login --provider copilot",
+                versionDetector: nil),
+            setup: ProviderSetup(
+                routes: [
+                    .init(
+                        id: "device-login",
+                        method: .deviceCode,
+                        platforms: [.macOS, .linux],
+                        command: "codexbar config login --provider copilot",
+                        hint: "Authorize GitHub's device code to save a Copilot token account."),
+                    .init(
+                        id: "github-token",
+                        method: .token,
+                        platforms: [.macOS, .linux],
+                        requiredInputs: [.init(
+                            id: "github-token",
+                            configFields: ["apiKey", "tokenAccounts.accounts[].token"],
+                            environmentVariables: ["COPILOT_API_TOKEN"])],
+                        hint: "Supply a GitHub token accepted by the Copilot usage API."),
+                ],
+                optionalCapabilities: [.init(
+                    id: "budget-extras",
+                    hint: "Optional, best-effort budgets for public github.com only. " +
+                        "Enable Budget extras in the macOS app; the browser session must match the token account. " +
+                        "Quota usage does not need cookies.",
+                    routes: [
+                        .init(
+                            id: "manual-cookie",
+                            method: .cookieHeader,
+                            platforms: [.macOS],
+                            requiredInputs: [.init(id: "github-cookie", configFields: ["cookieHeader"])],
+                            hint: "In the macOS app, select manual cookie source and supply the matching " +
+                                "GitHub Cookie header."),
+                        .init(
+                            id: "browser-session",
+                            method: .browserSession,
+                            platforms: [.macOS],
+                            hint: "Sign in to GitHub in a supported browser and select automatic cookie import " +
+                                "in the macOS app."),
+                    ])]))
     }
 }
 
@@ -61,7 +149,8 @@ struct CopilotAPIFetchStrategy: ProviderFetchStrategy {
         }
         let fetcher = CopilotUsageFetcher(
             token: token,
-            enterpriseHost: context.settings?.copilot?.enterpriseHost)
+            enterpriseHost: context.settings?.copilot?.enterpriseHost,
+            seatEntitlement: context.settings?.copilot?.seatCreditEntitlement)
         let usage = try await fetcher.fetch()
         let snap = await self.addBudgetWindowsIfNeeded(to: usage, token: token, context: context)
         return self.makeResult(
@@ -74,8 +163,8 @@ struct CopilotAPIFetchStrategy: ProviderFetchStrategy {
     }
 
     private static func resolveToken(context: ProviderFetchContext) -> String? {
-        ProviderTokenResolver.copilotToken(environment: context.env)
-            ?? ProviderTokenResolver.copilotResolution(environment: [
+        ProviderTokenResolver.token(for: .copilot, environment: context.env)
+            ?? ProviderTokenResolver.resolution(for: .copilot, environment: [
                 "COPILOT_API_TOKEN": context.settings?.copilot?.apiToken ?? "",
             ])?.token
     }
@@ -86,6 +175,7 @@ struct CopilotAPIFetchStrategy: ProviderFetchStrategy {
         context: ProviderFetchContext) async -> UsageSnapshot
     {
         guard let settings = context.settings?.copilot,
+              CopilotUsageFetcher.apiHost(enterpriseHost: settings.enterpriseHost) == "api.github.com",
               settings.budgetExtrasEnabled,
               settings.budgetCookieSource != .off
         else { return usage }

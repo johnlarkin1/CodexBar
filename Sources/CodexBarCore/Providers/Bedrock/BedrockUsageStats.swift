@@ -106,8 +106,22 @@ extension BedrockUsageSnapshot {
     }
 }
 
+final class BedrockCostExplorerCache: Sendable {
+    struct Key: Equatable, Sendable {
+        let accessKeyID: String
+        let region: String
+        let endpoint: String?
+        let start: String
+        let end: String
+    }
+
+    static let shared = BedrockCostExplorerCache()
+    let monthly = ExpiringValueCache<(key: Key, amount: Double, updatedAt: Date)>(ttl: 6 * 60 * 60)
+    let daily = ExpiringValueCache<(key: Key, report: CostUsageDailyReport, updatedAt: Date)>(ttl: 6 * 60 * 60)
+}
+
 enum BedrockUsageFetcher {
-    private static let log = CodexBarLog.logger(LogCategories.bedrockUsage)
+    private static let log = CodexBarLog.logger(LogCategories.provider(.bedrock, scope: "usage"))
     private static let requestTimeoutSeconds: TimeInterval = 15
 
     private struct CostExplorerQuery {
@@ -123,12 +137,16 @@ enum BedrockUsageFetcher {
         budget: Double?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         now: Date = Date(),
-        cloudWatchTransport: any ProviderHTTPTransport = ProviderHTTPClient.shared) async throws
+        cloudWatchTransport: any ProviderHTTPTransport = ProviderHTTPClient.shared,
+        cache: BedrockCostExplorerCache? = nil) async throws
         -> BedrockUsageSnapshot
     {
         let spend = try await Self.fetchMonthlyCost(
             credentials: credentials,
-            environment: environment)
+            region: region,
+            environment: environment,
+            now: now,
+            cache: cache)
 
         var activity: BedrockClaudeActivity?
         let cloudWatchOverride = environment[BedrockSettingsReader.cloudWatchAPIURLKey]
@@ -148,52 +166,82 @@ enum BedrockUsageFetcher {
         }
 
         return BedrockUsageSnapshot(
-            monthlySpend: spend,
+            monthlySpend: spend.amount,
             monthlyBudget: budget,
             inputTokens: activity?.inputTokens,
             outputTokens: activity?.outputTokens,
             requestCount: activity?.requestCount,
             region: region,
-            updatedAt: now)
+            updatedAt: spend.updatedAt)
     }
 
     static func fetchDailyReport(
         credentials: BedrockAWSSigner.Credentials,
+        region: String,
         since: Date,
         until: Date,
-        environment: [String: String] = ProcessInfo.processInfo.environment) async throws
-        -> CostUsageDailyReport
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        forceRefresh: Bool = false,
+        cache: BedrockCostExplorerCache? = nil) async throws
+        -> (report: CostUsageDailyReport, updatedAt: Date)
     {
-        let formatter = Self.dateFormatter()
-        let startDate = formatter.string(from: since)
-        let inclusiveEnd = Self.utcCalendar().date(byAdding: .day, value: 1, to: until) ?? until
-        let endDate = formatter.string(from: inclusiveEnd)
-
+        try Task.checkCancellation()
+        let (startDate, endDate) = Self.dailyRange(since: since, until: until)
+        let key = BedrockCostExplorerCache.Key(
+            accessKeyID: credentials.accessKeyID,
+            region: region,
+            endpoint: environment[BedrockSettingsReader.apiURLKey],
+            start: startDate,
+            end: endDate)
+        if !forceRefresh, let entry = cache?.daily.load(now: until),
+           entry.key == key, entry.updatedAt <= until
+        {
+            return (entry.report, entry.updatedAt)
+        }
         let pages = try await Self.callCostExplorerPages(
             startDate: startDate,
             endDate: endDate,
             granularity: "DAILY",
             credentials: credentials,
             environment: environment)
-
-        let entries = try Self.parseDailyResponses(pages)
-        return CostUsageDailyReport(data: entries, summary: nil)
+        let report = try CostUsageDailyReport(data: Self.parseDailyResponses(pages), summary: nil)
+        // Retain one parsed report, never raw billing responses or unbounded account history.
+        if let cache, let bytes = try? JSONEncoder().encode(report), bytes.count <= 1_048_576 {
+            cache.daily.store((key, report, until), now: until)
+        }
+        return (report, until)
     }
 
     private static func fetchMonthlyCost(
         credentials: BedrockAWSSigner.Credentials,
-        environment: [String: String]) async throws -> Double
+        region: String,
+        environment: [String: String],
+        now: Date,
+        cache: BedrockCostExplorerCache?) async throws -> (amount: Double, updatedAt: Date)
     {
-        let (startDate, endDate) = Self.currentMonthRange()
-
+        try Task.checkCancellation()
+        let (startDate, endDate) = Self.currentMonthRange(now: now)
+        let key = BedrockCostExplorerCache.Key(
+            accessKeyID: credentials.accessKeyID,
+            region: region,
+            endpoint: environment[BedrockSettingsReader.apiURLKey],
+            start: startDate,
+            end: endDate)
+        if ProviderInteractionContext.current != .userInitiated,
+           let entry = cache?.monthly.load(now: now), entry.key == key, entry.updatedAt <= now
+        {
+            return (entry.amount, entry.updatedAt)
+        }
         let pages = try await Self.callCostExplorerPages(
             startDate: startDate,
             endDate: endDate,
             granularity: "MONTHLY",
             credentials: credentials,
             environment: environment)
-
-        return try Self.parseTotalCost(pages)
+        let amount = try Self.parseTotalCost(pages)
+        guard amount.isFinite else { throw BedrockUsageError.parseFailed("Invalid Cost Explorer response") }
+        cache?.monthly.store((key, amount, now), now: now)
+        return (amount, now)
     }
 
     private static func callCostExplorerPages(
@@ -233,7 +281,7 @@ enum BedrockUsageFetcher {
     {
         let ceRegion = "us-east-1"
         let baseURL: URL = if environment[BedrockSettingsReader.apiURLKey] != nil {
-            if let override = BedrockSettingsReader.cleaned(environment[BedrockSettingsReader.apiURLKey]),
+            if let override = SettingsValue.cleaned(environment[BedrockSettingsReader.apiURLKey]),
                let url = ProviderEndpointOverrideValidator().validatedURLAllowingLoopbackHTTP(override)
             {
                 url
@@ -279,8 +327,7 @@ enum BedrockUsageFetcher {
         let response = try await ProviderHTTPClient.shared.response(for: request)
         guard response.statusCode == 200 else {
             if Self.isDataUnavailableResponse(statusCode: response.statusCode, data: response.data) {
-                Self.log.info("AWS Cost Explorer data unavailable, assuming zero usage.")
-                return Data(#"{"ResultsByTime":[]}"#.utf8)
+                throw ProviderFetchClassifiedError(kind: .providerUnavailable, message: "Spend unavailable")
             }
             let summary = Self.sanitizedResponseBody(response.data)
             Self.log.error("AWS Cost Explorer returned \(response.statusCode): \(summary)")
@@ -294,21 +341,15 @@ enum BedrockUsageFetcher {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw BedrockUsageError.parseFailed("Invalid Cost Explorer response")
         }
-        return BedrockSettingsReader.cleaned(json["NextPageToken"] as? String)
+        return SettingsValue.cleaned(json["NextPageToken"] as? String)
     }
 
     private static func parseTotalCost(_ pages: [Data]) throws -> Double {
         var total = 0.0
         for page in pages {
-            total += try Self.parseTotalCost(page)
-        }
-        return total
-    }
-
-    private static func parseTotalCost(_ data: Data) throws -> Double {
-        var total = 0.0
-        for (_, cost, _) in try Self.parseGroupedResults(data) {
-            total += cost
+            for (_, cost, _) in try Self.parseGroupedResults(page) {
+                total += cost
+            }
         }
         return total
     }
@@ -347,7 +388,7 @@ enum BedrockUsageFetcher {
                        let unblended = metrics["UnblendedCost"] as? [String: Any],
                        let amountStr = unblended["Amount"] as? String,
                        let amount = Double(amountStr),
-                       amount > 0
+                       amount >= 0
                     {
                         dayCost += amount
                         breakdowns.append(CostUsageDailyReport.ModelBreakdown(
@@ -357,7 +398,7 @@ enum BedrockUsageFetcher {
                 }
             }
 
-            guard dayCost > 0 else { continue }
+            guard !breakdowns.isEmpty else { continue }
 
             entries.append(CostUsageDailyReport.Entry(
                 date: dateStr,
@@ -366,7 +407,7 @@ enum BedrockUsageFetcher {
                 totalTokens: nil,
                 costUSD: dayCost,
                 modelsUsed: breakdowns.map(\.modelName),
-                modelBreakdowns: breakdowns.isEmpty ? nil : breakdowns))
+                modelBreakdowns: breakdowns))
         }
 
         return entries
@@ -411,21 +452,21 @@ enum BedrockUsageFetcher {
         return formatter
     }
 
-    private static func utcCalendar() -> Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        return calendar
+    static func dailyRange(since: Date, until: Date) -> (start: String, end: String) {
+        let calendar = CostUsageBucketTimeZone.calendar(identifier: "UTC")
+        let monthStart = CostReportingPeriod.monthToDate.bounds(now: until, calendar: calendar).lowerBound
+        // Cost Explorer exposes the current month plus thirteen historical months.
+        let earliest = calendar.date(byAdding: .month, value: -13, to: monthStart) ?? monthStart
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: until) ?? until
+        let formatter = Self.dateFormatter()
+        return (formatter.string(from: max(since, earliest)), formatter.string(from: tomorrow))
     }
 
     static func currentMonthRange(now: Date = Date()) -> (start: String, end: String) {
-        let calendar = Self.utcCalendar()
-        let components = calendar.dateComponents([.year, .month], from: now)
-        let startOfMonth = calendar.date(from: components)!
-
-        let formatter = Self.dateFormatter()
-        let startOfToday = calendar.startOfDay(for: now)
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday)!
-        return (formatter.string(from: startOfMonth), formatter.string(from: tomorrow))
+        self.dailyRange(
+            since: CostReportingPeriod.monthToDate.bounds(
+                now: now, calendar: CostUsageBucketTimeZone.calendar(identifier: "UTC")).lowerBound,
+            until: now)
     }
 
     private static func isDataUnavailableResponse(statusCode: Int, data: Data) -> Bool {

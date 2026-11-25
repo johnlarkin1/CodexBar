@@ -1,51 +1,59 @@
 import Foundation
 
 public enum DeepInfraProviderDescriptor {
-    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
-
-    static func makeDescriptor() -> ProviderDescriptor {
-        ProviderDescriptor(
-            id: .deepinfra,
-            metadata: ProviderMetadata(
-                id: .deepinfra,
-                displayName: "DeepInfra",
-                sessionLabel: "Balance",
-                weeklyLabel: "Balance",
-                opusLabel: nil,
-                supportsOpus: false,
-                supportsCredits: false,
-                creditsHint: "",
-                toggleTitle: "Show DeepInfra usage",
-                cliName: "deepinfra",
-                defaultEnabled: false,
-                isPrimaryProvider: false,
-                usesAccountFallback: false,
-                browserCookieOrder: nil,
-                dashboardURL: "https://deepinfra.com/dash",
-                statusPageURL: nil,
-                statusLinkURL: "https://status.deepinfra.com"),
-            branding: ProviderBranding(
-                iconStyle: .deepinfra,
-                iconResourceName: "ProviderIcon-deepinfra",
-                color: ProviderColor(red: 42 / 255, green: 50 / 255, blue: 117 / 255),
-                confettiPalette: [
-                    ProviderColor(hex: 0x2A3275),
-                    ProviderColor(hex: 0x747FDE),
-                    ProviderColor(hex: 0xFFFFFF),
-                ]),
-            tokenCost: ProviderTokenCostConfig(
-                supportsTokenCost: false,
-                noDataMessage: { "DeepInfra per-request cost history is not available in CodexBar." }),
-            fetchPlan: .apiToken(
-                strategyID: "deepinfra.api",
-                resolveToken: { ProviderTokenResolver.deepInfraToken(environment: $0) },
-                missingCredentialsError: { DeepInfraUsageError.missingCredentials },
-                loadUsage: { apiKey, _ in
-                    try await DeepInfraUsageFetcher.fetchUsage(apiKey: apiKey).toUsageSnapshot()
-                }),
-            cli: ProviderCLIConfig(
-                name: "deepinfra",
-                aliases: ["deep-infra", "di"],
-                versionDetector: nil))
-    }
+    public static let descriptor = Self.spec.makeDescriptor()
+    public static let spec = PluginProviderSpec(
+        id: .deepinfra,
+        displayName: "DeepInfra",
+        sessionLabel: "Balance",
+        weeklyLabel: "Balance",
+        debugLogUnavailableMessage: "DeepInfra debug log not yet implemented",
+        balanceOnly: true,
+        usesDetailBackedWindow: true,
+        dashboardURL: "https://deepinfra.com/dash",
+        statusLinkURL: "https://status.deepinfra.com",
+        color: .init(hex: 0x2A3275),
+        confetti: [0x2A3275, 0x747FDE, 0xFFFFFF],
+        noDataMessage: "DeepInfra per-request cost history is not available in CodexBar.",
+        environmentKey: "DEEPINFRA_API_KEY",
+        environmentAliases: ["DEEPINFRA_TOKEN"],
+        missingCredentialMessage: { _ in "Missing DeepInfra API key." },
+        tokenAccountSupport: TokenAccountSupport(
+            title: "API tokens",
+            subtitle: "Store multiple DeepInfra API keys.",
+            placeholder: "Paste API key…",
+            injection: .environment(key: "DEEPINFRA_API_KEY"),
+            requiresManualCookieSource: false,
+            cookieName: nil),
+        presentation: ProviderUsagePresentation(
+            menuBarWindowResolver: { context in
+                guard context.metric == .automatic,
+                      let cost = context.snapshot.providerCost,
+                      cost.used.isFinite, cost.limit.isFinite, cost.limit > 0
+                else { return .unhandled }
+                return .resolved(RateWindow(
+                    usedPercent: min(100, max(0, cost.used / cost.limit * 100)),
+                    windowMinutes: nil,
+                    resetsAt: cost.resetsAt,
+                    resetDescription: nil))
+            },
+            menuCard: ProviderMenuCardPresentation(
+                showsPrimaryBalanceDescription: true,
+                hidesPrimaryResetWithoutDate: true,
+                movePrimaryDetailToStatus: { _ in true }),
+            menu: ProviderMenuDescriptorPresentation(primaryDescriptionIsDetail: { _ in true })),
+        aliases: ["deep-infra", "di"],
+        setup: ProviderSetup(routes: [.init(
+            id: "api-key",
+            method: .apiKey,
+            platforms: [.macOS, .linux],
+            requiredInputs: [.init(
+                id: "api-key",
+                configFields: ["apiKey", "tokenAccounts.accounts[].token"],
+                environmentVariables: ["DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN"])],
+            command: "codexbar config set-api-key --provider deepinfra --stdin",
+            hint: "The command reads a piped API key and saves it as a standalone key. " +
+                "A selected API token account overrides the standalone key.")]),
+        // Two required 30-second GETs, each with one retry and up to ten seconds of backoff.
+        timeout: 145)
 }

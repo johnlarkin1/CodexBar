@@ -256,18 +256,18 @@ public struct StepFunUsageSnapshot: Sendable {
             accountOrganization: nil,
             loginMethod: loginMethod)
 
-        // Token Plan (Credit pool) carries no live 5h/weekly windows. Show the credit
-        // balance as the primary window and drop the meaningless 0%-left rate windows
-        // entirely. Coding Plan keeps its rolling windows and falls through below.
-        if self.isCreditPlan, let creditRate = self.creditLeftRate {
-            let creditUsedPercent = max(0, min(100, (1.0 - creditRate) * 100))
-            let resetDate = self.creditResetTime ?? Date.distantFuture
-            let resetDescription = UsageFormatter.resetDescription(from: resetDate)
-            let creditWindow = RateWindow(
-                usedPercent: creditUsedPercent,
-                windowMinutes: nil,
-                resetsAt: resetDate,
-                resetDescription: resetDescription)
+        // Credit plans have no rolling windows, even before a credit balance is available.
+        if self.isCreditPlan {
+            let creditWindow = self.creditLeftRate.map { creditRate in
+                // Only a real monthly reset can feed plan-utilization history and pace.
+                RateWindow(
+                    usedPercent: max(0, min(100, (1.0 - creditRate) * 100)),
+                    windowMinutes: self.creditResetTime.map { _ in
+                        ProviderPaceCapability.monthlyWindowSentinelMinutes
+                    },
+                    resetsAt: self.creditResetTime,
+                    resetDescription: self.creditResetTime.map { UsageFormatter.resetDescription(from: $0) })
+            }
 
             return UsageSnapshot(
                 primary: creditWindow,
@@ -342,7 +342,7 @@ public enum StepFunUsageError: LocalizedError, Sendable {
 // MARK: - Fetcher
 
 public struct StepFunUsageFetcher: Sendable {
-    private static let log = CodexBarLog.logger(LogCategories.stepfunUsage)
+    private static let log = CodexBarLog.logger(LogCategories.provider(.stepfun, scope: "usage"))
     private static let platformURL = URL(string: "https://platform.stepfun.com")!
     private static let apiURL =
         URL(string: "https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit")!
@@ -728,7 +728,7 @@ public struct StepFunUsageFetcher: Sendable {
 
         let creditLeftRate = decoded.planCreditRateLimit?.totalCreditLeftRate
         let creditResetTime = decoded.planCreditRateLimit?.subscriptionCreditResetTime
-            .map { Date(timeIntervalSince1970: TimeInterval($0.value)) }
+            .flatMap { $0.value > 0 ? Date(timeIntervalSince1970: TimeInterval($0.value)) : nil }
 
         return StepFunUsageSnapshot(
             fiveHourUsageLeftRate: fiveHourRate,

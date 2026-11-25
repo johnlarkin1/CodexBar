@@ -1,69 +1,53 @@
 import Foundation
 
 public enum XAIProviderDescriptor {
-    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
-
-    static func makeDescriptor() -> ProviderDescriptor {
-        ProviderDescriptor(
-            id: .xai,
-            metadata: ProviderMetadata(
-                id: .xai,
-                displayName: "xAI",
-                sessionLabel: "Spend",
-                weeklyLabel: "Spend",
-                opusLabel: nil,
-                supportsOpus: false,
-                supportsCredits: false,
-                creditsHint: "",
-                toggleTitle: "Show xAI usage",
-                cliName: "xai",
-                defaultEnabled: false,
-                dashboardURL: "https://console.x.ai",
-                statusPageURL: nil,
-                statusLinkURL: "https://status.x.ai"),
-            branding: ProviderBranding(
-                iconStyle: .xai,
-                iconResourceName: "ProviderIcon-xai",
-                color: ProviderColor(red: 142 / 255, green: 142 / 255, blue: 147 / 255),
-                confettiPalette: [
-                    ProviderColor(hex: 0x1A1A1A),
-                    ProviderColor(hex: 0x8E8E93),
-                    ProviderColor(hex: 0xF5F5F7),
-                ]),
-            tokenCost: ProviderTokenCostConfig(
-                supportsTokenCost: false,
-                noDataMessage: { "xAI spend history comes from the Management API billing endpoints." }),
-            fetchPlan: ProviderFetchPlan(
-                sourceModes: [.auto, .api],
-                pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [XAIAPIFetchStrategy()] })),
-            cli: ProviderCLIConfig(
-                name: "xai",
-                versionDetector: nil))
-    }
-}
-
-struct XAIAPIFetchStrategy: ProviderFetchStrategy {
-    let id = "xai.api"
-    let kind: ProviderFetchKind = .apiToken
-
-    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
-        XAISettingsReader.apiKey(environment: context.env) != nil
-    }
-
-    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
-        guard let key = XAISettingsReader.apiKey(environment: context.env) else {
-            throw XAIBillingError.notConfigured
-        }
-        guard let teamID = XAISettingsReader.teamID(environment: context.env) else {
-            throw XAIBillingError.missingTeamID
-        }
-        let usage = try await XAIBillingFetcher.fetchUsage(managementKey: key, teamID: teamID)
-        return self.makeResult(
-            usage: usage.toUsageSnapshot(),
-            sourceLabel: "api")
-    }
-
-    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
-        false
-    }
+    public static let descriptor = Self.spec.makeDescriptor()
+    public static let spec = PluginProviderSpec(
+        id: .xai,
+        displayName: "xAI",
+        sessionLabel: "Spend",
+        weeklyLabel: "Spend",
+        debugLogUnavailableMessage: "xAI debug log not yet implemented",
+        dashboardURL: "https://console.x.ai",
+        statusLinkURL: "https://status.x.ai",
+        color: ProviderColor(hex: 0x8E8E93),
+        confetti: [0x1A1A1A, 0x8E8E93, 0xF5F5F7],
+        noDataMessage: "xAI daily spend requires a Management API key and team ID. "
+            + "Prepaid balance is not treated as spend.",
+        supportsTokenCost: true,
+        isCostUsageUnavailable: { XAICostUsageMapping.isAnalyticsUnavailable($0) },
+        environmentKey: XAISettingsReader.apiKeyEnvironmentKey,
+        config: ProviderConfigCapabilities(workspaceIDValidationOrder: 6),
+        presentation: ProviderUsagePresentation(
+            identityPresenter: { provider, snapshot in
+                guard let plan = snapshot.loginMethod(for: provider), !plan.isEmpty else {
+                    return ProviderIdentityPresentation(badge: nil, plan: nil)
+                }
+                let display = UsageFormatter.cleanPlanName(plan)
+                return ProviderIdentityPresentation(badge: display, plan: display)
+            },
+            costPresenter: { snapshot in
+                let showsFallback = snapshot.providerCost?.period != "Prepaid credits"
+                let style: ProviderCostMenuCardStyle = showsFallback ? .generic : .prepaidCredits
+                return ProviderCostPresentation(showsGenericFallback: showsFallback, menuCardStyle: style)
+            },
+            optionalDetails: ProviderOptionalDetailsPresentation(costSummaryTitles: ["Billing summary"])),
+        validateContext: { context in
+            _ = try XAISettingsReader.validatedTeamID(environment: context.env)
+        },
+        apiKeyField: .init(
+            id: "xai-management-api-key",
+            title: "Management API key",
+            subtitle: "Stored in ~/.codexbar/config.json. Create one at console.x.ai under "
+                + "Settings > Management Keys; inference API keys are not accepted.",
+            placeholder: "xai-..."),
+        workspaceField: .init(
+            environmentKey: XAISettingsReader.teamIDEnvironmentKey,
+            field: .init(
+                id: "xai-team-id",
+                title: "Team ID",
+                subtitle: "Required. Shown in the xAI Console URL and team settings.",
+                placeholder: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")),
+        showsAPIDetail: true,
+        availability: .configuredKey)
 }

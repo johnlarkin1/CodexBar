@@ -111,6 +111,7 @@ public enum OllamaUsageError: LocalizedError, Sendable {
     case parseFailed(String)
     case networkError(String)
     case noSessionCookie
+    case manualCookieHeaderEmpty
     case safariCookieAccessDenied
     case browserCookieDecryptionDenied(String)
     case browserCookieDecryptionDisabled(String)
@@ -131,10 +132,14 @@ public enum OllamaUsageError: LocalizedError, Sendable {
             "Ollama request failed: \(message)"
         case .noSessionCookie:
             "No Ollama session cookie found. Please sign in at \(Self.signInURL) in your browser."
+        case .manualCookieHeaderEmpty:
+            "Ollama cookie source is Manual, but no cookie header is configured. " +
+                "Paste a Cookie header from https://ollama.com/settings, or set Cookie source to Auto."
         case .safariCookieAccessDenied:
             "Safari cookies need Full Disk Access for CodexBar (System Settings > Privacy & Security)."
         case let .browserCookieDecryptionDenied(browserName):
-            "\(browserName) cookie decryption was declined in Keychain; retry with a manual refresh."
+            "\(browserName) cookie decryption was declined in Keychain. " +
+                "Open the provider card and click Refresh (⌘R) to request Keychain access again."
         case let .browserCookieDecryptionDisabled(browserName):
             "\(browserName) cookie decryption is disabled in CodexBar; enable Keychain access and refresh."
         }
@@ -280,50 +285,6 @@ public enum OllamaCookieImporter {
         return recognized
     }
 
-    static func selectSessionInfo(
-        from candidates: [SessionInfo],
-        logger: ((String) -> Void)? = nil) throws -> SessionInfo
-    {
-        guard let first = try self.selectSessionInfos(from: candidates, logger: logger).first else {
-            throw OllamaUsageError.noSessionCookie
-        }
-        return first
-    }
-
-    static func selectSessionInfosWithFallback(
-        preferredCandidates: [SessionInfo],
-        allowFallbackBrowsers: Bool,
-        loadFallbackCandidates: () -> [SessionInfo],
-        logger: ((String) -> Void)? = nil) throws -> [SessionInfo]
-    {
-        guard allowFallbackBrowsers else {
-            return try self.selectSessionInfos(from: preferredCandidates, logger: logger)
-        }
-        do {
-            return try self.selectSessionInfos(from: preferredCandidates, logger: logger)
-        } catch OllamaUsageError.noSessionCookie {
-            let fallbackCandidates = loadFallbackCandidates()
-            return try self.selectSessionInfos(from: fallbackCandidates, logger: logger)
-        }
-    }
-
-    static func selectSessionInfoWithFallback(
-        preferredCandidates: [SessionInfo],
-        allowFallbackBrowsers: Bool,
-        loadFallbackCandidates: () -> [SessionInfo],
-        logger: ((String) -> Void)? = nil) throws -> SessionInfo
-    {
-        guard let first = try self.selectSessionInfosWithFallback(
-            preferredCandidates: preferredCandidates,
-            allowFallbackBrowsers: allowFallbackBrowsers,
-            loadFallbackCandidates: loadFallbackCandidates,
-            logger: logger).first
-        else {
-            throw OllamaUsageError.noSessionCookie
-        }
-        return first
-    }
-
     static func accessError(from error: Error) -> OllamaUsageError? {
         guard case let BrowserCookieError.accessDenied(browser, _) = error else { return nil }
         if browser == .safari {
@@ -453,25 +414,10 @@ public struct OllamaUsageFetcher: Sendable {
     }
 
     public let browserDetection: BrowserDetection
-    private let makeURLSession: @Sendable (URLSessionTaskDelegate?) -> URLSession
-    private let finishURLSession: @Sendable (URLSession) -> Void
+    var sessionFactory = ProviderHTTPSessionFactory()
 
     public init(browserDetection: BrowserDetection) {
         self.browserDetection = browserDetection
-        self.makeURLSession = { delegate in
-            URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-        }
-        self.finishURLSession = { $0.finishTasksAndInvalidate() }
-    }
-
-    init(
-        browserDetection: BrowserDetection,
-        makeURLSession: @escaping @Sendable (URLSessionTaskDelegate?) -> URLSession,
-        finishURLSession: @escaping @Sendable (URLSession) -> Void = { $0.finishTasksAndInvalidate() })
-    {
-        self.browserDetection = browserDetection
-        self.makeURLSession = makeURLSession
-        self.finishURLSession = finishURLSession
     }
 
     public func fetch(
@@ -532,7 +478,7 @@ public struct OllamaUsageFetcher: Sendable {
                 },
                 attempt: { candidate in
                     logger?("[ollama] Using cookies from \(candidate.sourceLabel)")
-                    let names = self.cookieNames(from: candidate.cookieHeader)
+                    let names = ollamaCookiePairs(from: candidate.cookieHeader).map(\.name)
                     if !names.isEmpty {
                         logger?("[ollama] Cookie names: \(names.joined(separator: ", "))")
                     }
@@ -631,17 +577,24 @@ public struct OllamaUsageFetcher: Sendable {
         lines.append("")
 
         do {
-            let cookieHeader = try await self.resolveCookieHeader(
+            guard let candidate = try await self.resolveCookieCandidates(
                 override: cookieHeaderOverride,
                 manualCookieMode: manualCookieMode,
-                logger: { msg in lines.append("[cookie] \(msg)") })
+                logger: { msg in lines.append("[cookie] \(msg)") }).first
+            else {
+                throw OllamaUsageError.noSessionCookie
+            }
+            let cookieHeader = candidate.cookieHeader
+            lines.append("[cookie] [ollama] Using cookies from \(candidate.sourceLabel)")
             let diagnostics = RedirectDiagnostics(cookieHeader: cookieHeader, logger: nil)
             let cookieNames = CookieHeaderNormalizer.pairs(from: cookieHeader).map(\.name)
             lines.append("Cookie names: \(cookieNames.joined(separator: ", "))")
 
-            let (snapshot, responseInfo) = try await self.fetchWithDiagnostics(
+            let now = Date()
+            let (html, responseInfo) = try await self.fetchHTMLWithDiagnostics(
                 cookieHeader: cookieHeader,
                 diagnostics: diagnostics)
+            let snapshot = try OllamaUsageParser.parse(html: html, now: now)
 
             lines.append("")
             lines.append("Fetch Success")
@@ -657,8 +610,10 @@ public struct OllamaUsageFetcher: Sendable {
 
             lines.append("")
             lines.append("Plan: \(snapshot.planName ?? "unknown")")
+            lines.append("Monthly: \(snapshot.monthlyUsedPercent?.description ?? "nil")%")
             lines.append("Session: \(snapshot.sessionUsedPercent?.description ?? "nil")%")
             lines.append("Weekly: \(snapshot.weeklyUsedPercent?.description ?? "nil")%")
+            lines.append("Monthly resetsAt: \(snapshot.monthlyResetsAt?.description ?? "nil")")
             lines.append("Session resetsAt: \(snapshot.sessionResetsAt?.description ?? "nil")")
             lines.append("Weekly resetsAt: \(snapshot.weeklyResetsAt?.description ?? "nil")")
 
@@ -681,38 +636,17 @@ public struct OllamaUsageFetcher: Sendable {
         }
     }
 
-    private func resolveCookieHeader(
-        override: String?,
-        manualCookieMode: Bool,
-        logger: ((String) -> Void)?) async throws -> String
-    {
-        if let manualHeader = try Self.resolveManualCookieHeader(
-            override: override,
-            manualCookieMode: manualCookieMode,
-            logger: logger)
-        {
-            return manualHeader
-        }
-        #if os(macOS)
-        let session = try OllamaCookieImporter.importSession(
-            browserDetection: self.browserDetection,
-            preferredBrowsers: OllamaCookieImporter.defaultPreferredBrowsers,
-            allowFallbackBrowsers: OllamaCookieImporter.defaultAllowFallbackBrowsers,
-            logger: logger)
-        logger?("[ollama] Using cookies from \(session.sourceLabel)")
-        return session.cookieHeader
-        #else
-        throw OllamaUsageError.noSessionCookie
-        #endif
-    }
-
     static func resolveManualCookieHeader(
         override: String?,
         manualCookieMode: Bool,
         logger: ((String) -> Void)? = nil) throws -> String?
     {
         if let rawOverride = override?.trimmingCharacters(in: .whitespacesAndNewlines), !rawOverride.isEmpty {
-            let normalized = if rawOverride.rangeOfCharacter(from: .newlines) == nil,
+            let lowercased = rawOverride.lowercased()
+            let isCookieCapture = rawOverride.rangeOfCharacter(from: .newlines) != nil
+                || lowercased.hasPrefix("cookie:")
+                || lowercased.hasPrefix("curl ")
+            let normalized = if !isCookieCapture,
                                 hasRecognizedOllamaSessionCookie(in: rawOverride)
             {
                 rawOverride
@@ -727,21 +661,9 @@ public struct OllamaUsageFetcher: Sendable {
             return normalized
         }
         if manualCookieMode {
-            throw OllamaUsageError.noSessionCookie
+            throw OllamaUsageError.manualCookieHeaderEmpty
         }
         return nil
-    }
-
-    private func fetchWithDiagnostics(
-        cookieHeader: String,
-        diagnostics: RedirectDiagnostics,
-        now: Date = Date()) async throws -> (OllamaUsageSnapshot, ResponseInfo)
-    {
-        let (html, responseInfo) = try await self.fetchHTMLWithDiagnostics(
-            cookieHeader: cookieHeader,
-            diagnostics: diagnostics)
-        let snapshot = try OllamaUsageParser.parse(html: html, now: now)
-        return (snapshot, responseInfo)
     }
 
     private func fetchHTMLWithDiagnostics(
@@ -762,9 +684,7 @@ public struct OllamaUsageFetcher: Sendable {
         request.setValue("https://ollama.com", forHTTPHeaderField: "origin")
         request.setValue(Self.settingsURL.absoluteString, forHTTPHeaderField: "referer")
 
-        let session = self.makeURLSession(diagnostics)
-        defer { self.finishURLSession(session) }
-        let httpResponse = try await session.response(for: request)
+        let httpResponse = try await self.sessionFactory.response(for: request, delegate: diagnostics)
         let responseInfo = ResponseInfo(
             statusCode: httpResponse.statusCode,
             url: httpResponse.response.url?.absoluteString ?? "unknown")
@@ -850,19 +770,12 @@ public struct OllamaUsageFetcher: Sendable {
 
     private func logHTMLHints(html: String, logger: (String) -> Void) {
         logger("[ollama] HTML length: \(html.utf8.count) bytes")
+        logger("[ollama] Contains Included usage: \(html.contains("Included usage"))")
+        logger("[ollama] Contains Monthly usage: \(html.contains("Monthly usage"))")
         logger("[ollama] Contains Cloud Usage: \(html.contains("Cloud Usage"))")
         logger("[ollama] Contains Session usage: \(html.contains("Session usage"))")
         logger("[ollama] Contains Hourly usage: \(html.contains("Hourly usage"))")
         logger("[ollama] Contains Weekly usage: \(html.contains("Weekly usage"))")
-    }
-
-    private func cookieNames(from header: String) -> [String] {
-        header.split(separator: ";", omittingEmptySubsequences: false).compactMap { part in
-            let trimmed = part.trimmingCharacters(in: .whitespaces)
-            guard let idx = trimmed.firstIndex(of: "=") else { return nil }
-            let name = trimmed[..<idx]
-            return name.isEmpty ? nil : String(name)
-        }
     }
 
     static func shouldAttachCookie(to url: URL?) -> Bool {
@@ -904,24 +817,10 @@ public struct OllamaAPISettingsReader: Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment) -> String?
     {
         for key in self.apiKeyEnvironmentKeys {
-            guard let value = self.cleaned(environment[key]), !value.isEmpty else { continue }
+            guard let value = SettingsValue.cleaned(environment[key]) else { continue }
             return value
         }
         return nil
-    }
-
-    private static func cleaned(_ raw: String?) -> String? {
-        guard var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty
-        else {
-            return nil
-        }
-        if (value.hasPrefix("\"") && value.hasSuffix("\"")) ||
-            (value.hasPrefix("'") && value.hasSuffix("'"))
-        {
-            value = String(value.dropFirst().dropLast())
-        }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -967,12 +866,26 @@ public enum OllamaAPIUsageFetcher {
         }
 
         let resolvedValidationURL = try self.resolveValidationURL(tagsURL: tagsURL, override: validationURL)
-        try await self.validateAPIKey(trimmed, validationURL: resolvedValidationURL, transport: transport)
+        _ = try await self.request(
+            apiKey: trimmed, url: resolvedValidationURL, validation: true, transport: transport)
+        let response = try await self.request(apiKey: trimmed, url: tagsURL, validation: false, transport: transport)
+        return try Self.parseTags(data: response.data, now: now)
+    }
 
-        var request = URLRequest(url: tagsURL)
-        request.httpMethod = "GET"
+    private static func request(
+        apiKey: String,
+        url: URL,
+        validation: Bool,
+        transport: any ProviderHTTPTransport) async throws -> ProviderHTTPResponse
+    {
+        var request = URLRequest(url: url)
+        request.httpMethod = validation ? "POST" : "GET"
         request.timeoutInterval = Self.timeoutSeconds
-        request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
+        if validation {
+            request.httpBody = Data(#"{"query":""}"#.utf8)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("CodexBar/1.0", forHTTPHeaderField: "User-Agent")
 
@@ -983,46 +896,16 @@ public enum OllamaAPIUsageFetcher {
             if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
                 throw CancellationError()
             }
-            throw OllamaUsageError.networkError(error.localizedDescription)
+            throw ProviderTransportError.preservingIdentity(
+                of: error,
+                describedBy: OllamaUsageError.networkError(error.localizedDescription))
         }
 
         switch response.statusCode {
         case 200:
-            return try Self.parseTags(data: response.data, now: now)
-        case 401, 403:
-            throw OllamaUsageError.apiUnauthorized
-        default:
-            throw OllamaUsageError.networkError("HTTP \(response.statusCode)")
-        }
-    }
-
-    private static func validateAPIKey(
-        _ apiKey: String,
-        validationURL: URL,
-        transport: any ProviderHTTPTransport) async throws
-    {
-        var request = URLRequest(url: validationURL)
-        request.httpMethod = "POST"
-        request.timeoutInterval = Self.timeoutSeconds
-        request.httpBody = Data(#"{"query":""}"#.utf8)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("CodexBar/1.0", forHTTPHeaderField: "User-Agent")
-
-        let response: ProviderHTTPResponse
-        do {
-            response = try await transport.response(for: request)
-        } catch {
-            if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
-                throw CancellationError()
-            }
-            throw OllamaUsageError.networkError(error.localizedDescription)
-        }
-
-        switch response.statusCode {
-        case 200, 400:
-            return
+            return response
+        case 400 where validation:
+            return response
         case 401, 403:
             throw OllamaUsageError.apiUnauthorized
         default:

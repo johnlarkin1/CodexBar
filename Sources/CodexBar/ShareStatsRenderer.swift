@@ -5,7 +5,12 @@ import SwiftUI
 enum ShareStatsRenderer {
     static func pngData(for payload: ShareStatsPayload) -> Data? {
         let size = ShareStatsCardView.size
-        let view = NSHostingView(rootView: ShareStatsCardView(payload: payload))
+        let appearance = NSApp?.effectiveAppearance ?? NSAppearance(named: .aqua)
+        let isDark = appearance?.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let view = NSHostingView(rootView: ShareStatsCardView(payload: payload)
+            .environment(\.colorScheme, isDark ? .dark : .light)
+            .codexBarLocalized())
+        view.appearance = appearance
         view.frame = CGRect(origin: .zero, size: size)
         view.layoutSubtreeIfNeeded()
 
@@ -26,19 +31,16 @@ enum ShareStatsRenderer {
         view.displayIgnoringOpacity(view.bounds, in: context)
         return representation.representation(using: .png, properties: [:])
     }
-
-    static func image(for payload: ShareStatsPayload) -> NSImage? {
-        guard let data = self.pngData(for: payload) else { return nil }
-        return NSImage(data: data)
-    }
 }
 
 @MainActor
 enum ShareStatsExporter {
-    static func copyImage(_ payload: ShareStatsPayload) -> Bool {
+    static func copyImage(
+        _ payload: ShareStatsPayload,
+        pasteboard: NSPasteboard = .general) -> Bool
+    {
         guard let data = ShareStatsRenderer.pngData(for: payload),
               let image = NSImage(data: data) else { return false }
-        let pasteboard = NSPasteboard.general
         let item = NSPasteboardItem()
         item.setData(data, forType: .png)
         if let tiff = image.tiffRepresentation {
