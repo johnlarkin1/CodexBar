@@ -1,5 +1,19 @@
 import Foundation
 
+enum ClaudeOAuthApplicationDefaults {
+    static func resolve(
+        domain: String,
+        currentBundleIdentifier: String? = Bundle.main.bundleIdentifier,
+        suiteFactory: (String) -> UserDefaults? = { UserDefaults(suiteName: $0) }) -> UserDefaults
+    {
+        // The app already owns its standard domain; child processes still need the shared suite.
+        if domain == currentBundleIdentifier {
+            return .standard
+        }
+        return suiteFactory(domain) ?? .standard
+    }
+}
+
 public enum ClaudeOAuthKeychainPromptMode: String, Sendable, Codable, CaseIterable {
     case never
     case onlyOnUserAction
@@ -89,6 +103,10 @@ public enum ClaudeOAuthKeychainPromptPreference {
     }
 
     static var applicationUserDefaults: UserDefaults {
+        self.userDefaults(or: ClaudeOAuthApplicationDefaults.resolve(domain: self.applicationDefaultsDomain))
+    }
+
+    static func userDefaults(or fallback: @autoclosure () -> UserDefaults) -> UserDefaults {
         #if DEBUG
         if let taskApplicationUserDefaultsOverride {
             return taskApplicationUserDefaultsOverride.value
@@ -97,7 +115,7 @@ public enum ClaudeOAuthKeychainPromptPreference {
             return taskImplicitApplicationUserDefaultsOverride.value
         }
         #endif
-        return UserDefaults(suiteName: self.applicationDefaultsDomain) ?? .standard
+        return fallback()
     }
 
     static func resolveApplicationDefaultsDomain(
@@ -157,6 +175,7 @@ public enum ClaudeOAuthKeychainPromptPreference {
 
     public static func withTaskOverrideForTesting<T>(
         _ mode: ClaudeOAuthKeychainPromptMode?,
+        isolation _: isolated (any Actor)? = #isolation,
         operation: () async throws -> T) async rethrows -> T
     {
         try await self.$taskOverride.withValue(mode) {
@@ -166,6 +185,10 @@ public enum ClaudeOAuthKeychainPromptPreference {
 
     public static var currentTaskOverrideForTesting: ClaudeOAuthKeychainPromptMode? {
         self.taskOverride
+    }
+
+    static var applicationUserDefaultsOverrideForTesting: UserDefaults? {
+        self.taskApplicationUserDefaultsOverride?.value ?? self.taskImplicitApplicationUserDefaultsOverride?.value
     }
 
     static func withApplicationUserDefaultsOverrideForTesting<T>(

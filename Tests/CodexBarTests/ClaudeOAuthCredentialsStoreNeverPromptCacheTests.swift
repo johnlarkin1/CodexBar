@@ -107,7 +107,7 @@ struct ClaudeOAuthCredentialsStoreNeverPromptCacheTests {
                 return try ClaudeOAuthCredentials.parse(data: entry.data).accessToken
             case .missing:
                 return nil
-            case .invalid, .temporarilyUnavailable:
+            case .interactionRequired, .invalid, .temporarilyUnavailable:
                 Issue.record("Expected a valid or missing test cache entry")
                 return nil
             }
@@ -510,7 +510,7 @@ struct ClaudeOAuthCredentialsStoreNeverPromptCacheTests {
             domain: domain,
             key: key,
             lockURL: lockURL)
-        store.markPending()
+        store.markPending(profileIdentifier: "fixture-profile")
 
         let childRead = try self.runDefaults(["read", domain, key])
         #expect(childRead.status == 0)
@@ -524,15 +524,15 @@ struct ClaudeOAuthCredentialsStoreNeverPromptCacheTests {
         #expect(childWrite.status == 0)
         #expect(store.isPending)
 
-        store.withCacheTransaction { pending in
+        store.withCacheTransaction(profileIdentifier: "fixture-profile") { pending in
             pending = false
         }
         let childReadAfterResolution = try self.runDefaults(["read", domain, key])
         #expect(childReadAfterResolution.status != 0)
     }
 
-    @Test
-    func `newer tombstone survives an older cache transaction`() throws {
+    @Test(arguments: [false, true])
+    func `newer tombstone survives an older cache transaction`(initiallyPending: Bool) throws {
         let domain = "ClaudeOAuthPendingCacheRaceTests.\(UUID().uuidString)"
         let key = "pending"
         let tempDirectory = FileManager.default.temporaryDirectory
@@ -549,16 +549,17 @@ struct ClaudeOAuthCredentialsStoreNeverPromptCacheTests {
             domain: domain,
             key: key,
             lockURL: lockURL)
-        store.markPending()
+        if initiallyPending { store.markPending(profileIdentifier: "fixture-profile") }
 
         let newerGeneration = UUID().uuidString
         var childWriteStatus: Int32?
-        store.withCacheTransaction { pending in
+        let committed = store.withCacheTransaction(profileIdentifier: "fixture-profile") { pending in
             childWriteStatus = try? self.runDefaults(["write", domain, key, newerGeneration]).status
             pending = false
         }
         userDefaults.synchronize()
 
+        #expect(!committed)
         #expect(childWriteStatus == 0)
         #expect(userDefaults.string(forKey: key) == newerGeneration)
         #expect(store.isPending)
@@ -584,7 +585,7 @@ struct ClaudeOAuthCredentialsStoreNeverPromptCacheTests {
             key: key,
             lockURL: tempDirectory.appendingPathComponent("cache.lock"))
         #expect(store.isPending)
-        store.withCacheTransaction { pending in
+        store.withCacheTransaction(profileIdentifier: "fixture-profile") { pending in
             pending = false
         }
         #expect(!store.isPending)
@@ -611,18 +612,18 @@ struct ClaudeOAuthCredentialsStoreNeverPromptCacheTests {
             key: key,
             lockURL: nonDirectoryURL.appendingPathComponent("cache.lock"))
         var operationCalled = false
-        store.withCacheTransaction { _ in
+        store.withCacheTransaction(profileIdentifier: "fixture-profile") { _ in
             operationCalled = true
         }
         userDefaults.synchronize()
 
         #expect(!operationCalled)
-        #expect(userDefaults.string(forKey: key) != nil)
+        #expect(store.isPending(profileIdentifier: "fixture-profile"))
         #expect(store.isPending)
     }
 
     @Test
-    func `never mode bypasses oauth cache while preserving experimental security CLI reader`() throws {
+    func `owned cache disabled still rejects ambient experimental repair`() throws {
         try self.withTestState { state in
             try self.withCredentialsFile(data: nil) { _ in
                 self.seedCache(state, accessToken: "cached-token")
@@ -631,26 +632,39 @@ struct ClaudeOAuthCredentialsStoreNeverPromptCacheTests {
                     expiresAt: Date(timeIntervalSinceNow: 3600),
                     refreshToken: "security-cli-refresh-token")
 
-                let credentials = try ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(
-                    .securityCLIExperimental)
-                {
-                    try ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.never) {
-                        try ClaudeOAuthCredentialsStore.withSecurityCLIReadOverrideForTesting(.data(securityData)) {
-                            try ClaudeOAuthCredentialsStore.withClaudeKeychainOverridesForTesting(
-                                data: securityData,
-                                fingerprint: nil)
-                            {
-                                try ProviderInteractionContext.$current.withValue(.background) {
-                                    try ClaudeOAuthCredentialsStore.load(
-                                        environment: [:],
-                                        allowKeychainPrompt: false)
+                final class ReadCounter: @unchecked Sendable {
+                    var hits = 0
+                }
+                let securityReadCalls = ReadCounter()
+
+                let error = #expect(throws: ClaudeOAuthCredentialsError.self) {
+                    try ClaudeOAuthKeychainReadStrategyPreference.withTaskOverrideForTesting(
+                        .securityCLIExperimental)
+                    {
+                        try ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.never) {
+                            try ClaudeOAuthCredentialsStore.withSecurityCLIReadOverrideForTesting(.dynamic { _ in
+                                securityReadCalls.hits += 1
+                                return securityData
+                            }) {
+                                try ClaudeOAuthCredentialsStore.withClaudeKeychainOverridesForTesting(
+                                    data: securityData,
+                                    fingerprint: nil)
+                                {
+                                    try ProviderInteractionContext.$current.withValue(.background) {
+                                        try ClaudeOAuthCredentialsStore.load(
+                                            environment: [:],
+                                            allowKeychainPrompt: false)
+                                    }
                                 }
                             }
                         }
                     }
                 }
-
-                #expect(credentials.accessToken == "security-cli-token")
+                guard case .notFound = error else {
+                    Issue.record("Expected .notFound, got \(String(describing: error))")
+                    return
+                }
+                #expect(securityReadCalls.hits == 0)
                 #expect(state.recorder.operations.isEmpty)
                 #expect(state.pendingStore.isPending)
                 let cachedToken = try self.cachedToken(state)

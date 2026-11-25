@@ -17,11 +17,485 @@ struct CLICostTests {
     }
 
     @Test
-    func `renders cost text snapshot`() {
+    func `provider native only excludes pi and OMP session mirrors`() throws {
+        let parser = CommandParser(signature: CodexBarCLI._costSignatureForTesting())
+
+        let defaultValues = try parser.parse(arguments: [])
+        #expect(CodexBarCLI.decodeCostIncludePiSessions(from: defaultValues))
+
+        let nativeOnlyValues = try parser.parse(arguments: ["--provider-native-only"])
+        #expect(!CodexBarCLI.decodeCostIncludePiSessions(from: nativeOnlyValues))
+    }
+
+    @Test
+    func `Claude breakdown is explicit opt in`() throws {
+        let parser = CommandParser(signature: CodexBarCLI._costSignatureForTesting())
+
+        let defaultValues = try parser.parse(arguments: [])
+        #expect(!defaultValues.flags.contains("breakdown"))
+
+        let breakdownValues = try parser.parse(arguments: ["--breakdown"])
+        #expect(breakdownValues.flags.contains("breakdown"))
+    }
+
+    @Test
+    func `OpenCode Go text breakdown preserves unknown costs and model tokens`() {
+        let snapshot = CostUsageTokenSnapshot(
+            sessionTokens: 125,
+            sessionCostUSD: nil,
+            last30DaysTokens: 125,
+            last30DaysCostUSD: nil,
+            historyDays: 1,
+            daily: [.init(
+                date: "1970-01-01",
+                inputTokens: 100,
+                outputTokens: 25,
+                totalTokens: 125,
+                costUSD: nil,
+                modelsUsed: ["fixture-model"],
+                modelBreakdowns: [.init(modelName: "fixture-model", costUSD: nil, totalTokens: 125)])],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(
+            provider: .opencodego, snapshot: snapshot, useColor: false, includeBreakdown: true)
+        #expect(output.hasPrefix("OpenCode Go Cost (API-rate estimate)\n"))
+        #expect(output.contains("Estimated from local logs · may differ from your bill"))
+        #expect(output.contains("Daily breakdown"))
+        #expect(output.contains("fixture-model"))
+        #expect(output.contains("125 tokens"))
+        #expect(!output.contains("$0.00"))
+    }
+
+    @Test
+    func `parses session group by and keeps project parsing`() throws {
+        let parser = CommandParser(signature: CodexBarCLI._costSignatureForTesting())
+
+        let sessionValues = try parser.parse(arguments: ["--group-by", "session"])
+        #expect(CodexBarCLI._decodeCostGroupByForTesting(from: sessionValues) == .session)
+
+        let projectValues = try parser.parse(arguments: ["--group-by", "project"])
+        #expect(CodexBarCLI._decodeCostGroupByForTesting(from: projectValues) == .project)
+
+        let defaultValues = try parser.parse(arguments: [])
+        #expect(CodexBarCLI._decodeCostGroupByForTesting(from: defaultValues) == .none)
+    }
+
+    @Test
+    func `session and project grouping keep all local session providers in text mode`() {
+        for groupBy in [CodexBarCLI.CostGroupBy.session, .project] {
+            let textProviders = CodexBarCLI.costProviders(
+                [.claude, .codex, .pi, .vertexai],
+                groupBy: groupBy,
+                format: .text)
+            #expect(textProviders.map(\.rawValue) == ["claude", "codex", "pi"])
+
+            let jsonProviders = CodexBarCLI.costProviders(
+                [.claude, .codex, .pi, .vertexai],
+                groupBy: groupBy,
+                format: .json)
+            #expect(jsonProviders.map(\.rawValue) == ["claude", "codex", "pi", "vertexai"])
+        }
+    }
+
+    @Test
+    func `session text grouping disables pi merge for local session providers`() {
+        #expect(CodexBarCLI.costIncludePiSessions(
+            provider: .codex,
+            groupBy: .session,
+            format: .text,
+            includePiSessions: true) == false)
+        #expect(CodexBarCLI.costIncludePiSessions(
+            provider: .codex,
+            groupBy: .session,
+            format: .json,
+            includePiSessions: true))
+        #expect(CodexBarCLI.costIncludePiSessions(
+            provider: .codex,
+            groupBy: .project,
+            format: .text,
+            includePiSessions: true))
+        #expect(!CodexBarCLI.costIncludePiSessions(
+            provider: .codex,
+            selectedProviders: [.codex, .pi],
+            groupBy: .none,
+            format: .text,
+            includePiSessions: true))
+        #expect(!CodexBarCLI.costIncludePiSessions(
+            provider: .codex,
+            selectedProviders: [.codex, .pi],
+            groupBy: .none,
+            format: .json,
+            includePiSessions: true))
+        #expect(!CodexBarCLI.costIncludePiSessions(
+            provider: .claude,
+            groupBy: .session,
+            format: .text,
+            includePiSessions: true))
+        #expect(CodexBarCLI.costIncludePiSessions(
+            provider: .claude,
+            groupBy: .project,
+            format: .text,
+            includePiSessions: true))
+        #expect(!CodexBarCLI.costIncludePiSessions(
+            provider: .claude,
+            selectedProviders: [.claude, .pi],
+            groupBy: .none,
+            format: .json,
+            includePiSessions: true))
+        #expect(CodexBarCLI.costIncludePiSessions(
+            provider: .claude,
+            selectedProviders: [.claude],
+            groupBy: .none,
+            format: .json,
+            includePiSessions: true))
+    }
+
+    @Test
+    func `session grouping warns when default pi usage is omitted`() {
+        #expect(CodexBarCLI.sessionGroupingPiOmissionWarning(
+            provider: .codex,
+            groupBy: .session,
+            format: .text,
+            includePiSessions: true)?.contains("Pi/OMP usage is omitted") == true)
+        #expect(CodexBarCLI.sessionGroupingPiOmissionWarning(
+            provider: .codex,
+            groupBy: .session,
+            format: .text,
+            includePiSessions: false) == nil)
+        #expect(CodexBarCLI.sessionGroupingPiOmissionWarning(
+            provider: .codex,
+            groupBy: .session,
+            format: .json,
+            includePiSessions: true) == nil)
+        #expect(CodexBarCLI.sessionGroupingPiOmissionWarning(
+            provider: .claude,
+            groupBy: .session,
+            format: .text,
+            includePiSessions: true) == "Session grouping shows native Claude conversations only; "
+            + "Pi/OMP usage is omitted from this view. Use the default cost view for merged totals.")
+        #expect(CodexBarCLI.sessionGroupingPiOmissionWarning(
+            provider: .vertexai,
+            groupBy: .session,
+            format: .text,
+            includePiSessions: true) == nil)
+    }
+}
+
+extension CLICostTests {
+    @Test
+    func `session grouping falls back for unsupported providers`() {
         let snap = CostUsageTokenSnapshot(
             sessionTokens: 1200,
             sessionCostUSD: 1.25,
             last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            daily: [],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(
+            provider: .vertexai, snapshot: snap, groupBy: .session, useColor: false)
+
+        #expect(output.contains("Vertex AI Cost (API-rate estimate)"))
+        #expect(!output.contains("Conversations ("))
+    }
+
+    @Test
+    func `renders codex session grouped cost text`() {
+        let sessionDate = Date(timeIntervalSince1970: 1_750_000_000)
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            daily: [],
+            sessions: [
+                CostUsageSessionBreakdown(
+                    sessionID: "abcd12345678abcd12345678abcd12345678",
+                    lastActivity: sessionDate,
+                    inputTokens: 1_600_000,
+                    cachedInputTokens: 200_000,
+                    outputTokens: 200_000,
+                    totalTokens: 1_800_000,
+                    requestCount: 37,
+                    costUSD: 4.21,
+                    modelBreakdowns: [
+                        CostUsageDailyReport.ModelBreakdown(
+                            modelName: "gpt-5.4",
+                            costUSD: 4.21,
+                            totalTokens: 1_800_000),
+                    ]),
+            ],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .codex, snapshot: snap, groupBy: .session, useColor: false)
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: "$ ", with: "$")
+
+        #expect(output.contains("Codex API-equivalent estimate (not billed)"))
+        #expect(output.contains("Conversations (Last 30 days):"))
+        #expect(output.contains("Session abcd...12345678: $4.21 · 1.8M tokens · 37 requests"))
+        #expect(output.contains("gpt-5.4 · \(sessionTimestamp(sessionDate))"))
+        #expect(output.contains("Not a subscription bill or plan value · local usage × public API prices"))
+    }
+
+    @Test
+    func `session rows preserve snapshot ordering`() throws {
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            daily: [],
+            sessions: [
+                CostUsageSessionBreakdown(
+                    sessionID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    lastActivity: Date(timeIntervalSince1970: 1_750_000_000),
+                    inputTokens: nil,
+                    cachedInputTokens: nil,
+                    outputTokens: nil,
+                    totalTokens: 100,
+                    requestCount: nil,
+                    costUSD: 1.0,
+                    modelBreakdowns: []),
+                CostUsageSessionBreakdown(
+                    sessionID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    lastActivity: Date(timeIntervalSince1970: 1_751_000_000),
+                    inputTokens: nil,
+                    cachedInputTokens: nil,
+                    outputTokens: nil,
+                    totalTokens: 200,
+                    requestCount: nil,
+                    costUSD: 2.0,
+                    modelBreakdowns: []),
+            ],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .codex, snapshot: snap, groupBy: .session, useColor: false)
+
+        let first = try #require(output.range(of: "Session aaaa...aaaaaaaa"))
+        let second = try #require(output.range(of: "Session bbbb...bbbbbbbb"))
+        #expect(first.lowerBound < second.lowerBound)
+    }
+
+    @Test
+    func `session with unknown cost renders dash not zero`() {
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: nil,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: nil,
+            historyDays: 30,
+            daily: [],
+            sessions: [
+                CostUsageSessionBreakdown(
+                    sessionID: "abcd12345678abcd12345678abcd12345678",
+                    lastActivity: Date(timeIntervalSince1970: 1_750_000_000),
+                    inputTokens: 800_000,
+                    cachedInputTokens: nil,
+                    outputTokens: 20000,
+                    totalTokens: 820_000,
+                    requestCount: 19,
+                    costUSD: nil,
+                    modelBreakdowns: []),
+            ],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .codex, snapshot: snap, groupBy: .session, useColor: false)
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: "$ ", with: "$")
+
+        #expect(output.contains("Session abcd...12345678: — · 820K tokens · 19 requests"))
+        #expect(!output.contains("$0"))
+        #expect(output.contains("Unknown model · "))
+    }
+
+    @Test
+    func `session with partial data renders compactly`() {
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            daily: [],
+            sessions: [
+                CostUsageSessionBreakdown(
+                    sessionID: "efgh87654321efgh87654321efgh87654321",
+                    lastActivity: Date(timeIntervalSince1970: 1_750_000_000),
+                    inputTokens: nil,
+                    cachedInputTokens: nil,
+                    outputTokens: nil,
+                    totalTokens: nil,
+                    requestCount: nil,
+                    costUSD: 2.17,
+                    modelBreakdowns: []),
+            ],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .codex, snapshot: snap, groupBy: .session, useColor: false)
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: "$ ", with: "$")
+
+        #expect(output.contains("Session efgh...87654321: $2.17"))
+        #expect(!output.contains("tokens"))
+        #expect(!output.contains("requests"))
+        #expect(output.contains("Unknown model · "))
+    }
+
+    @Test
+    func `session model label stays compact for multiple models`() {
+        let sessions = [
+            CostUsageSessionBreakdown(
+                sessionID: "abcd12345678abcd12345678abcd12345678",
+                lastActivity: Date(timeIntervalSince1970: 1_750_000_000),
+                inputTokens: nil,
+                cachedInputTokens: nil,
+                outputTokens: nil,
+                totalTokens: 100,
+                requestCount: nil,
+                costUSD: 1.0,
+                modelBreakdowns: [
+                    CostUsageDailyReport.ModelBreakdown(modelName: "gpt-5.4", costUSD: 0.5, totalTokens: 50),
+                    CostUsageDailyReport.ModelBreakdown(modelName: "gpt-5.2-codex", costUSD: 0.5, totalTokens: 50),
+                ]),
+            CostUsageSessionBreakdown(
+                sessionID: "efgh87654321efgh87654321efgh87654321",
+                lastActivity: Date(timeIntervalSince1970: 1_750_000_000),
+                inputTokens: nil,
+                cachedInputTokens: nil,
+                outputTokens: nil,
+                totalTokens: 150,
+                requestCount: nil,
+                costUSD: 1.5,
+                modelBreakdowns: [
+                    CostUsageDailyReport.ModelBreakdown(modelName: "gpt-5.4", costUSD: 0.5, totalTokens: 50),
+                    CostUsageDailyReport.ModelBreakdown(modelName: "gpt-5.2-codex", costUSD: 0.5, totalTokens: 50),
+                    CostUsageDailyReport.ModelBreakdown(
+                        modelName: "fictitious-model-alpha",
+                        costUSD: 0.5,
+                        totalTokens: 50),
+                ]),
+        ]
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            daily: [],
+            sessions: sessions,
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .codex, snapshot: snap, groupBy: .session, useColor: false)
+
+        #expect(output.contains("gpt-5.4 +1 model · "))
+        #expect(output.contains("gpt-5.4 +2 models · "))
+        #expect(!output.contains("fictitious-model-alpha · "))
+    }
+
+    @Test
+    func `session grouping with no sessions renders empty state`() {
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            daily: [],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .codex, snapshot: snap, groupBy: .session, useColor: false)
+
+        #expect(output.contains("Conversations (Last 30 days):\n—\n"))
+        #expect(output.contains("Not a subscription bill or plan value · local usage × public API prices"))
+    }
+
+    @Test
+    func `session grouping labels incomplete history during catch up`() {
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            historyCoverageIsEstablished: false,
+            daily: [],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .codex, snapshot: snap, groupBy: .session, useColor: false)
+
+        #expect(output.contains("Conversation history is incomplete while the local scan catches up."))
+        #expect(!output.contains("Conversations (Last 30 days):\n—\n"))
+    }
+
+    @Test
+    func `session grouping labels partial history during catch up`() {
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            historyCoverageIsEstablished: false,
+            daily: [],
+            sessions: [
+                CostUsageSessionBreakdown(
+                    sessionID: "abcd12345678abcd12345678abcd12345678",
+                    lastActivity: Date(timeIntervalSince1970: 1_750_000_000),
+                    inputTokens: nil,
+                    cachedInputTokens: nil,
+                    outputTokens: nil,
+                    totalTokens: 100,
+                    requestCount: 2,
+                    costUSD: 0.04,
+                    modelBreakdowns: []),
+            ],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .codex, snapshot: snap, groupBy: .session, useColor: false)
+
+        #expect(output.contains("Conversation history is incomplete while the local scan catches up."))
+        #expect(output.contains("Session abcd...12345678"))
+    }
+
+    @Test
+    func `session grouping does not change cost JSON payload`() throws {
+        let snapshot = CostUsageTokenSnapshot(
+            sessionTokens: 10,
+            sessionCostUSD: 0.01,
+            last30DaysTokens: 40,
+            last30DaysCostUSD: 0.04,
+            daily: [],
+            sessions: [
+                CostUsageSessionBreakdown(
+                    sessionID: "abcd12345678abcd12345678abcd12345678",
+                    lastActivity: Date(timeIntervalSince1970: 1_750_000_000),
+                    inputTokens: 30,
+                    cachedInputTokens: nil,
+                    outputTokens: 10,
+                    totalTokens: 40,
+                    requestCount: 2,
+                    costUSD: 0.04,
+                    modelBreakdowns: []),
+            ],
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let payload = CodexBarCLI.makeCostPayload(provider: .codex, snapshot: snapshot, error: nil)
+        let data = try JSONEncoder().encode(payload)
+        guard let json = String(data: data, encoding: .utf8) else {
+            Issue.record("Failed to decode cost payload JSON")
+            return
+        }
+
+        #expect(!json.contains("\"sessions\""))
+    }
+
+    @Test(arguments: [
+        (1200, 9000, "1.2K", "9K"),
+        (999_999, 999_999_999, "1M", "1B"),
+    ])
+    func `renders cost text snapshot`(
+        sessionTokens: Int,
+        historyTokens: Int,
+        sessionText: String,
+        historyText: String)
+    {
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: sessionTokens,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: historyTokens,
             last30DaysCostUSD: 9.99,
             historyDays: 90,
             daily: [],
@@ -32,8 +506,8 @@ struct CLICostTests {
             .replacingOccurrences(of: "$ ", with: "$")
 
         #expect(output.contains("Claude Cost (API-rate estimate)"))
-        #expect(output.contains("Today: $1.25 · 1.2K tokens"))
-        #expect(output.contains("Last 90 days: $9.99 · 9K tokens"))
+        #expect(output.contains("Today: $1.25 · \(sessionText) tokens"))
+        #expect(output.contains("Last 90 days: $9.99 · \(historyText) tokens"))
         #expect(output.contains("cache read/write tokens"))
         #expect(output.contains("Claude Code /status"))
     }
@@ -155,6 +629,26 @@ struct CLICostTests {
         #expect(json.contains("\"totalCost\""))
         #expect(json.contains("\"totalTokens\":15"))
         #expect(json.contains("1700000000"))
+    }
+
+    @Test
+    func `cost JSON exposes history coverage as a boolean`() throws {
+        for coverage in [false, true] {
+            let snapshot = CostUsageTokenSnapshot(
+                sessionTokens: 10,
+                sessionCostUSD: 0.01,
+                last30DaysTokens: 40,
+                last30DaysCostUSD: 0.04,
+                historyCoverageIsEstablished: coverage,
+                daily: [],
+                updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+            let payload = CodexBarCLI.makeCostPayload(provider: .codex, snapshot: snapshot, error: nil)
+            let data = try JSONEncoder().encode(payload)
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            #expect(object.keys.contains("historyCoverageIsEstablished"))
+            #expect(object["historyCoverageIsEstablished"] as? Bool == coverage)
+        }
     }
 
     @Test
@@ -341,6 +835,128 @@ struct CLICostTests {
             settings: nil,
             resolutionError: resolutionError) == nil)
     }
+
+    @Test
+    func `openCodex JSON payload stays on a separate source and omits invented projects`() {
+        let now = Date(timeIntervalSince1970: 1_784_179_200)
+        let snapshot = CostUsageTokenSnapshot(
+            sessionTokens: nil,
+            sessionCostUSD: nil,
+            last30DaysTokens: 12,
+            last30DaysCostUSD: 1.5,
+            currencyCode: "USD",
+            historyDays: 7,
+            costProvenance: .listPriceEstimate,
+            daily: [
+                CostUsageDailyReport.Entry(
+                    date: "2026-07-16",
+                    inputTokens: 10,
+                    outputTokens: 2,
+                    reasoningTokens: 3,
+                    totalTokens: 12,
+                    costUSD: 1.5,
+                    modelsUsed: ["gpt-5.4"],
+                    modelBreakdowns: nil,
+                    estimatedRequestCount: 1),
+            ],
+            updatedAt: now)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let payload = CodexBarCLI.makeOpenCodexCostPayload(snapshot: snapshot, calendar: calendar)
+        #expect(payload.provider == "opencodex")
+        #expect(payload.source == "opencodex")
+        #expect(payload.projects.isEmpty)
+        #expect(payload.daily.first?.reasoningTokens == 3)
+        #expect(payload.provenance == CostProvenance.listPriceEstimate.rawValue)
+        #expect(payload.coverage?.estimated == 1)
+    }
+
+    @Test
+    func `renders claude session grouped cost text`() {
+        let sessionDate = Date(timeIntervalSince1970: 1_750_000_000)
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: 30,
+            daily: [],
+            sessions: [
+                CostUsageSessionBreakdown(
+                    sessionID: "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0",
+                    lastActivity: sessionDate,
+                    inputTokens: 1_500_000,
+                    cachedInputTokens: 1_200_000,
+                    outputTokens: 30000,
+                    totalTokens: 1_530_000,
+                    requestCount: 12,
+                    costUSD: 2.5,
+                    modelBreakdowns: [
+                        CostUsageDailyReport.ModelBreakdown(
+                            modelName: "claude-sonnet-4-5",
+                            costUSD: 2.5,
+                            totalTokens: 1_530_000),
+                    ],
+                    projectPath: "/Users/test/projects/alpha",
+                    projectName: "alpha"),
+            ],
+            updatedAt: Date(timeIntervalSince1970: 0))
+        let output = CodexBarCLI.renderCostText(provider: .claude, snapshot: snap, groupBy: .session, useColor: false)
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: "$ ", with: "$")
+
+        #expect(output == """
+        Claude Cost (API-rate estimate)
+        Conversations (Last 30 days):
+        Session 0f1e...c3d2e1f0: $2.50 · 1.5M tokens · 12 requests
+        \(UsageFormatter.modelDisplayName("claude-sonnet-4-5")) · \(sessionTimestamp(sessionDate))
+        \(UsageFormatter.costEstimateHint(provider: .claude))
+        """)
+    }
+
+    @Test
+    func `claude cost payload includes projects`() throws {
+        let project = CostUsageProjectBreakdown(
+            name: "alpha",
+            path: "/Users/test/projects/alpha",
+            totalTokens: 110,
+            totalCostUSD: 0.5,
+            daily: [],
+            modelBreakdowns: nil,
+            sources: [CostUsageProjectSourceBreakdown(
+                name: "alpha",
+                path: "/Users/test/projects/alpha",
+                totalTokens: 110,
+                totalCostUSD: 0.5,
+                daily: [],
+                modelBreakdowns: nil)])
+        let snap = CostUsageTokenSnapshot(
+            sessionTokens: 110,
+            sessionCostUSD: 0.5,
+            last30DaysTokens: 110,
+            last30DaysCostUSD: 0.5,
+            historyDays: 30,
+            daily: [],
+            projects: [project],
+            updatedAt: Date(timeIntervalSince1970: 0))
+
+        let claude = CodexBarCLI.makeCostPayload(provider: .claude, snapshot: snap, error: nil)
+        let payloadProject = try #require(claude.projects.first)
+        #expect(claude.projects.count == 1)
+        #expect(payloadProject.name == "alpha")
+        #expect(payloadProject.path == "/Users/test/projects/alpha")
+        #expect(payloadProject.totalTokens == 110)
+        #expect(payloadProject.sources.map(\.path) == ["/Users/test/projects/alpha"])
+        #expect(CodexBarCLI.makeCostPayload(provider: .vertexai, snapshot: snap, error: nil).projects.isEmpty)
+    }
+}
+
+private func sessionTimestamp(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = .current
+    formatter.dateFormat = "MMM d, HH:mm"
+    return formatter.string(from: date)
 }
 
 private struct CursorCostSettingsTestError: LocalizedError {

@@ -1,5 +1,5 @@
 ---
-summary: "Xiaomi MiMo provider notes: cookie auth, balance endpoint, and setup."
+summary: "Xiaomi MiMo provider notes: Token Plan API keys, console cookies, quota, and balances."
 read_when:
   - Adding or modifying the Xiaomi MiMo provider
   - Debugging MiMo cookie import or balance fetching
@@ -8,14 +8,20 @@ read_when:
 
 # Xiaomi MiMo Provider
 
-The Xiaomi MiMo provider tracks your current balance from the Xiaomi MiMo console.
+The Xiaomi MiMo provider tracks console balances and Token Plan quota. Token Plan API keys work on macOS and Linux without browser access.
 
 ## Features
 
+- **Token Plan API keys**: Read quota from the official China or Singapore endpoint without browser access.
+
 - **Balance display**: Shows total balance plus paid and granted components when MiMo returns them.
 - **Token plan usage**: Shows current token-plan credits while retaining balance as a second metric.
+- **Menu bar layouts**: Balance shows the headline amount without the paid/granted breakdown. Auto % shows balance without a token plan and keeps the percentage when a plan is present.
 - **Cookie-based auth**: Uses browser cookies or a pasted `Cookie:` header.
 - **Near-real-time updates**: Balance usually reflects within a few minutes.
+
+CLI text and cards retain token-plan credit counts beside the real period-end reset. Without a reported date,
+counts remain details rather than appearing as a reset clock. This does not change plan pacing or local fallback.
 
 ## Setup
 
@@ -23,9 +29,30 @@ The Xiaomi MiMo provider tracks your current balance from the Xiaomi MiMo consol
 2. Enable **Xiaomi MiMo**
 3. Leave **Cookie source** on **Auto** (recommended)
 
-CodexBar imports cookies from these browsers in order: **Safari**, **Chrome** / **Chrome Beta** / **Chrome Canary**, **Firefox**, and **Microsoft Edge**. Switch to **Manual** and paste a `Cookie:` header if your active MiMo session lives in Arc, Brave, or another browser profile CodexBar does not auto-detect.
+CodexBar imports cookies in the shared supported-browser order, including Safari, Chrome variants, Firefox, Zen, Edge, Arc, and Brave. The shared access gate bounds Keychain prompts. Use **Manual** with a pasted `Cookie:` header when browser import is unavailable.
+
+Automatic refresh validates each browser's sessions before reading the next browser. A working session stops
+traversal; missing or rejected sessions continue in the order above.
 
 Safari cookie import may require granting CodexBar Full Disk Access in **System Settings → Privacy & Security**.
+
+### Token Plan API key
+
+Choose **Usage source → API** and paste the dedicated `tp-` key in **API key**. Set **API region** to
+**China mainland** (`cn`, the default) or **Singapore** (`sgp`) to match the base URL shown in your Token Plan console.
+The key and region use the existing shared provider config (`apiKey` and `region`). For the CLI, use
+`codexbar config set-api-key --provider mimo --stdin`, or supply `MIMO_API_KEY` and `MIMO_TOKEN_PLAN_REGION`.
+
+The bundled `mimo.ts` plugin reads `GET https://token-plan-{cn|sgp}.xiaomimimo.com/v1/platform/token_plan`
+with bearer authentication. It maps the reported credit counts and UTC billing-period end without treating quota
+credits as money. An inference API key for the ordinary console API is not a Token Plan key.
+
+Auto uses the API when a key is configured; API failures remain visible and never switch to a browser account.
+Auto without a key retains the console/local fallback. Explicit Web retains the console source, including its
+separate cash balance. API data contains no cash wallet balance. No browser cookies or Keychain reads are needed
+for the API request. Missing dates remain unavailable; malformed counts and inconsistent remaining quota fail.
+
+Contract: [Xiaomi Query Token Plan Credits](https://mimo.mi.com/docs/en-US/api/asset/credits-get).
 
 ### Manual cookie import (optional)
 
@@ -46,13 +73,13 @@ Safari cookie import may require granting CodexBar Full Disk Access in **System 
 
 - Token cost, status polling, and debug log output are not supported yet
 - Widgets do not support Xiaomi MiMo yet
-- Auto import covers Safari, Chrome variants, Firefox, and Edge only; other browsers use **Manual** mode
+- Auto import covers the shared browser catalog; browsers outside the catalog use **Manual** mode
 
 ## Troubleshooting
 
 ### “No Xiaomi MiMo browser session found”
 
-Log in at `https://platform.xiaomimimo.com/#/console/balance` in Safari, Chrome, Firefox, or Edge, then refresh CodexBar. If your session lives in another browser, switch the MiMo provider to **Cookie source → Manual** and paste the `Cookie:` header instead.
+Log in at `https://platform.xiaomimimo.com/#/console/balance` in a supported browser, then refresh CodexBar. If browser access is unavailable, switch the MiMo provider to **Cookie source → Manual** and paste the `Cookie:` header instead.
 
 ### “Xiaomi MiMo requires the api-platform_serviceToken and userId cookies”
 
@@ -79,7 +106,11 @@ This fallback is **implicit opt-in**: it only activates when `~/.codexbar/mimo-l
 
 2. Run `mimo-usage --update` once to populate `~/.codexbar/mimo-local-usage.json`. The tracker scans `~/.claude-envs/mimo/.claude/projects/**/*.jsonl` (default path for a `cc-mimo`-style wrapper) and aggregates input, output, cache-read, and cache-creation tokens per time window (today / this week / all time).
 
+   Invalid session records are skipped so valid usage can still refresh the cache.
+
 3. Trigger updates either on each wrapper invocation (recommended — call `mimo-usage --update` post-exec from your MiMo CLI launcher) or via a `launchd` / `cron` job every 5 minutes.
+
+   Overlapping updates use separate temporary files and atomically replace the cache; a failed write leaves the previous cache intact.
 
 4. CodexBar picks up the file on its next refresh. The MiMo card displays `Xiaomi MiMo (local)` with a `Local · <today> · <week> · <lifetime> · <sessions>` summary and the cache's actual update time. Local activity is not rendered as a quota percentage. The `Balance updates / Daily billing finalizes` footer is suppressed for `local` source since neither applies. Because CodexBar only reads this cache (it never regenerates it), a summary whose cache has not refreshed within 12 hours gets a `stale <age>` marker (e.g. `stale 34d`) so a frozen tracker is not misread as live usage — re-run `mimo-usage --update`, or add the scheduled job in step 3, to clear it.
 

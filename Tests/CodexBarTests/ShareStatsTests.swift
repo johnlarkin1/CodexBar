@@ -5,8 +5,27 @@ import Testing
 @testable import CodexBar
 
 struct ShareStatsTests {
+    @Test(arguments: [(0, "0 subscriptions"), (1, "1 subscription"), (2, "2 subscriptions"), (12, "12 subscriptions")])
+    func `subscription captions use the singular only for one subscription`(_ scenario: (Int, String)) {
+        #expect(ShareStatsFormatting.subscriptionSummary(count: scenario.0) == scenario.1)
+    }
+
     @Test
-    func `builder preserves native currencies and unavailable spend`() throws {
+    func `descriptor share plan labels preserve the legacy central table`() throws {
+        var fingerprint: UInt64 = 1_469_598_103_934_665_603
+        for descriptor in ProviderDescriptorRegistry.all where !descriptor.metadata.sharePlanLabels.isEmpty {
+            Self.hash(descriptor.id.rawValue, into: &fingerprint)
+            for key in descriptor.metadata.sharePlanLabels.keys.sorted() {
+                Self.hash(key, into: &fingerprint)
+                try Self.hash(#require(descriptor.metadata.sharePlanLabels[key]), into: &fingerprint)
+            }
+        }
+
+        #expect(fingerprint == 2_500_333_924_415_227_190)
+    }
+
+    @Test
+    func `builder preserves native currencies and partial group spend`() throws {
         let subscriptionNames = try [
             "codex:one": #require(Self.subscriptionName(provider: .codex, rawName: "pro")),
             "cursor": #require(Self.subscriptionName(provider: .cursor, rawName: "Cursor Pro")),
@@ -17,10 +36,15 @@ struct ShareStatsTests {
             subscriptionNames: subscriptionNames))
 
         #expect(payload.days == 30)
-        #expect(payload.totalTokens == nil)
+        #expect(payload.totalTokens == 500)
+        #expect(payload.hasPartialTokens)
         #expect(payload.currencies == [
             ShareStatsCurrencyPayload(currencyCode: "GBP", estimatedCost: 12, coveredDayCount: 10),
-            ShareStatsCurrencyPayload(currencyCode: "USD", estimatedCost: nil, coveredDayCount: 0),
+            ShareStatsCurrencyPayload(
+                currencyCode: "USD",
+                estimatedCost: 4,
+                coveredDayCount: 0,
+                isPartial: true),
         ])
         #expect(payload.providers.map(\.providerName) == ["Claude", "Codex · #1", "Cursor"])
         #expect(payload.providers.map(\.subscriptionName) == ["Max", "Pro 20x", "Cursor Pro"])
@@ -30,9 +54,26 @@ struct ShareStatsTests {
         let text = ShareStatsFormatting.text(payload)
         #expect(text.contains("GBP: £12.00 estimated · coverage 10/30 days"))
         #expect(text.contains("Claude · Max: 300 tokens · ~£12.00 est · 10/30 days"))
-        #expect(text.contains("USD: Spend unavailable · coverage 0/30 days"))
+        #expect(text.contains("USD: $4.00 estimated (partial) · coverage 0/30 days"))
+        #expect(text.contains("~500 tracked tokens (partial)"))
         #expect(text.contains("Cursor · Cursor Pro: Spend unavailable"))
         #expect(!text.contains("£12.00 +"))
+    }
+
+    @Test
+    func `copied share stats uses all-time labels for the scan window`() throws {
+        let payload = try #require(ShareStatsBuilder.make(
+            model: SpendDashboardModel(
+                requestedDays: SpendDashboardSource.scanDays,
+                groups: Self.dashboard.groups)))
+        let text = ShareStatsFormatting.text(payload)
+
+        #expect(payload.days == SpendDashboardSource.scanDays)
+        #expect(text.contains("My AI subscriptions · all time"))
+        #expect(text.contains("GBP: £12.00 estimated · coverage 10/all"))
+        #expect(text.contains("Claude: 300 tokens · ~£12.00 est · 10/all"))
+        #expect(!text.contains("last \(SpendDashboardSource.scanDays) days"))
+        #expect(!text.contains("/\(SpendDashboardSource.scanDays) days"))
     }
 
     @Test
@@ -109,6 +150,73 @@ struct ShareStatsTests {
     }
 
     @Test
+    @MainActor
+    func `account scoped history never borrows the ambient account plan`() throws {
+        let settings = testSettingsStore(
+            suiteName: "ShareStatsTests-scoped-plan",
+            userDefaults: InMemoryUserDefaults())
+        let store = UsageStore(
+            fetcher: UsageFetcher(environment: [:]),
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            settings: settings,
+            startupBehavior: .testing,
+            environmentBase: [:])
+        defer { store.stopSharedSpendDashboardPublication() }
+        store._setSnapshotForTesting(Self.snapshot(provider: .codex, rawName: "pro"), provider: .codex)
+
+        let payload = try #require(ShareStatsPayloadFactory.make(model: Self.dashboard, store: store))
+
+        let scoped = try #require(payload.providers.first { $0.providerName == "Codex · #1" })
+        #expect(scoped.subscriptionName == nil)
+    }
+
+    @Test(arguments: [
+        ("openai/gpt-4o", "GPT"),
+        ("  OPENAI/GPT-4o  ", "GPT"),
+        ("anthropic/claude-sonnet-4", "Claude"),
+        ("x-ai/grok-4-fast", "Grok"),
+        ("google/gemini-2.5-pro", "Gemini"),
+        ("deepseek/deepseek-fixture-1", "DeepSeek"),
+        ("qwen/qwen-fixture-1", "Qwen"),
+        ("openai/o1", "o1"),
+        ("openai/o3", "o3"),
+        ("openai/o4-mini", "o4"),
+        ("acme/gpt-private-fixture", "GPT"),
+        ("openai/gpt-fixture:free", "GPT"),
+        ("bedrock/us.anthropic.claude-fixture-v1:0", "Claude"),
+        ("gateway/global.amazon.nova-fixture-v1:0", "Amazon Nova"),
+    ])
+    func `gateway namespaced model identifiers map to public families`(testCase: (String, String)) {
+        #expect(ShareStatsSanitizer.modelName(testCase.0) == testCase.1)
+    }
+
+    @Test(arguments: [
+        "openai/models/gpt-fixture",
+        "/gpt-fixture",
+        "openai/",
+        "Users/alice/gpt-fixture",
+        "Users/gpt-fixture",
+        "home/gpt-fixture",
+        "private/gpt-fixture",
+        "acme/unknown-model-1",
+        "openai//gpt-fixture",
+        "https://host/gpt-fixture",
+        "file://gpt-fixture",
+        "C:\\models\\gpt-fixture",
+        "person@example.test/gpt-fixture",
+        "acme\nteam/gpt-fixture",
+        "acme\u{1F}/gpt-fixture",
+        "550e8400-e29b-41d4-a716-446655440000/gpt-fixture",
+        "abcdefabcdefabcdefabcdef/gpt-fixture",
+        "acme%2Fteam/gpt-fixture",
+        "example/reasoning-model",
+        String(repeating: "x", count: 65) + "/gpt-fixture",
+    ])
+    func `gateway model identifiers retain whole input privacy and shape checks`(raw: String) {
+        #expect(ShareStatsSanitizer.modelName(raw) == nil)
+    }
+
+    @Test
     func `bedrock regional model identifiers map to public families`() {
         #expect(ShareStatsSanitizer.modelName("us.amazon.nova-2-lite-v1:0") == "Amazon Nova")
         #expect(ShareStatsSanitizer.modelName("global.anthropic.claude-sonnet-4-v1:0") == "Claude")
@@ -152,6 +260,7 @@ struct ShareStatsTests {
                     coveredDayCount: 7),
             ],
             models: rows,
+            projects: [],
             dailyPoints: [],
             totalTokens: 1,
             totalCost: nil,
@@ -207,6 +316,7 @@ struct ShareStatsTests {
                         totalTokens: nil,
                         totalCost: nil),
                 ],
+                projects: [],
                 dailyPoints: [],
                 totalTokens: 10,
                 totalCost: -.infinity,
@@ -248,12 +358,14 @@ struct ShareStatsTests {
                     totalTokens: 10,
                     totalCost: 2),
             ],
+            projects: [],
             dailyPoints: [],
             totalTokens: nil,
             totalCost: nil,
             coveredDayCount: 7,
             chartDomain: Self.date...Self.date,
-            modelHistoryCompleteness: .incomplete)
+            modelHistoryCompleteness: .incomplete,
+            incompleteModelProviders: [.codex])
         let payload = try #require(ShareStatsBuilder.make(
             model: SpendDashboardModel(requestedDays: 7, groups: [group])))
 
@@ -291,28 +403,72 @@ struct ShareStatsTests {
     }
 
     @Test @MainActor
+    func `image exporter writes PNG and TIFF to an isolated pasteboard`() throws {
+        let payload = try #require(ShareStatsBuilder.make(model: Self.dashboard))
+        let pasteboard = NSPasteboard(name: .init("com.steipete.codexbar.tests.share-stats.\(UUID().uuidString)"))
+        defer { pasteboard.clearContents() }
+
+        #expect(ShareStatsExporter.copyImage(payload, pasteboard: pasteboard))
+        let png = try #require(pasteboard.data(forType: .png))
+        let tiff = try #require(pasteboard.data(forType: .tiff))
+        let bitmap = try #require(NSBitmapImageRep(data: png))
+
+        #expect(png.starts(with: [0x89, 0x50, 0x4E, 0x47]))
+        #expect(!tiff.isEmpty)
+        #expect(bitmap.pixelsWide == 1200)
+        #expect(bitmap.pixelsHigh == 630)
+        let sampledColors = Set(stride(from: 0, to: bitmap.pixelsWide, by: 31).compactMap { x in
+            bitmap.colorAt(x: x, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.deviceRGB)?.description
+        })
+        #expect(sampledColors.count > 1)
+
+        if let outputPath = ProcessInfo.processInfo.environment["CODEXBAR_SHARE_STATS_SCREENSHOT_DIR"] {
+            let outputDirectory = URL(fileURLWithPath: outputPath, isDirectory: true)
+            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            try png.write(to: outputDirectory.appendingPathComponent("share-stats.png"), options: .atomic)
+            for language in ["de", "fr", "es", "zh-Hans", "ja", "ar"] {
+                try CodexBarLocalizationOverride.$appLanguage.withValue(language) {
+                    let localizedPNG = try #require(ShareStatsRenderer.pngData(for: payload))
+                    try localizedPNG.write(to: outputDirectory.appendingPathComponent(
+                        "share-stats-\(language).png"), options: .atomic)
+                }
+            }
+        }
+    }
+
+    @Test
+    func `image copy feedback reports semantic success and failure`() {
+        #expect(ShareStatsImageCopyFeedback.idle.title == "Copy Image")
+        #expect(ShareStatsImageCopyFeedback.idle.systemImage == "photo.on.rectangle")
+        #expect(ShareStatsImageCopyFeedback.copied.title == "Image copied")
+        #expect(ShareStatsImageCopyFeedback.copied.systemImage == "checkmark")
+        #expect(ShareStatsImageCopyFeedback.failed.title == "Could not copy image")
+        #expect(ShareStatsImageCopyFeedback.failed.systemImage == "photo.on.rectangle")
+    }
+
+    @Test @MainActor
     func `provider rows leave room for overflow summary`() {
         #expect(ShareStatsCardView.providerDisplayLimit(for: 5) == 5)
         #expect(ShareStatsCardView.providerDisplayLimit(for: 6) == 4)
         #expect(ShareStatsCardView.providerDisplayLimit(for: 12) == 4)
     }
 
-    @Test @MainActor
-    func `model colors use provider identity instead of decorated account name`() throws {
-        let payload = try #require(ShareStatsBuilder.make(model: Self.dashboard))
-        let codexModel = try #require(payload.topModels.first { $0.provider == .codex })
-
-        #expect(ShareStatsCardView.providerPaletteIndex(for: codexModel, providers: payload.providers) == 1)
-    }
-
     @Test
-    func `overall token total becomes unavailable on overflow`() {
+    func `overall token total skips unavailable groups and fails closed on overflow`() {
         #expect(ShareStatsBuilder.combinedTotalTokens([Int.max, 1]) == nil)
-        #expect(ShareStatsBuilder.combinedTotalTokens([10, nil]) == nil)
+        #expect(ShareStatsBuilder.combinedTotalTokens([10, nil]) == 10)
+        #expect(ShareStatsBuilder.combinedTotalTokens([nil, nil]) == nil)
         #expect(ShareStatsBuilder.combinedTotalTokens([10, 20]) == 30)
     }
 
     private static let date = Date(timeIntervalSince1970: 1_783_382_400)
+
+    private static func hash(_ value: String, into fingerprint: inout UInt64) {
+        for byte in value.utf8 {
+            fingerprint = (fingerprint ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        fingerprint = (fingerprint ^ 0xFF) &* 1_099_511_628_211
+    }
 
     private static func subscriptionName(
         provider: UsageProvider,
@@ -333,7 +489,7 @@ struct ShareStatsTests {
         accountOrganization: String? = nil) -> UsageSnapshot
     {
         let identity = ProviderIdentitySnapshot(
-            providerID: provider,
+            providerID: provider.instanceID,
             accountEmail: nil,
             accountOrganization: accountOrganization,
             loginMethod: rawName)
@@ -367,6 +523,7 @@ struct ShareStatsTests {
                         totalTokens: 1000,
                         totalCost: 1),
                 ],
+                projects: [],
                 dailyPoints: [],
                 totalTokens: 300,
                 totalCost: 12,
@@ -402,9 +559,10 @@ struct ShareStatsTests {
                         totalTokens: 200,
                         totalCost: 4)
                 },
+                projects: [],
                 dailyPoints: [],
-                totalTokens: nil,
-                totalCost: nil,
+                totalTokens: 200,
+                totalCost: 4,
                 coveredDayCount: 0,
                 chartDomain: self.date...self.date,
                 modelHistoryCompleteness: .complete),

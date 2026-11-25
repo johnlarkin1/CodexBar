@@ -6,6 +6,22 @@ import Testing
 
 struct CLIConfigCommandTests {
     @Test
+    func `Moonshot API key is bound to configured region`() {
+        var config = CodexBarConfig.makeDefault()
+        config.setProviderConfig(ProviderConfig(id: .moonshot, region: MoonshotRegion.china.rawValue))
+
+        let updated = CodexBarCLI.configSettingAPIKey(
+            config,
+            provider: .moonshot,
+            apiKey: "china-token",
+            enableProvider: true)
+
+        let moonshot = updated.providerConfig(for: .moonshot)
+        #expect(moonshot?.apiKey == "china-token")
+        #expect(moonshot?.apiKeyRegion == MoonshotRegion.china.rawValue)
+    }
+
+    @Test
     func `config set api key parses provider stdin and no enable flags`() throws {
         let parser = CommandParser(signature: CodexBarCLI._configSetAPIKeySignatureForTesting())
         let parsed = try parser.parse(arguments: [
@@ -19,6 +35,17 @@ struct CLIConfigCommandTests {
         #expect(parsed.flags.contains("stdin"))
         #expect(parsed.flags.contains("noEnable"))
         #expect(CodexBarCLI._decodeFormatForTesting(from: parsed) == .json)
+    }
+
+    @Test
+    func `config set api key for codex provider hints openai provider`() {
+        #expect(ProviderConfigEnvironment.supportsAPIKeyOverride(for: .codex) == false)
+        let codexMsg = CodexBarCLI.unsupportedAPIKeyErrorMessage(for: .codex, rawProvider: "codex")
+        #expect(codexMsg ==
+            "codex does not support config API keys. For OpenAI Platform API keys, use '--provider openai'.")
+
+        let claudeMsg = CodexBarCLI.unsupportedAPIKeyErrorMessage(for: .claude, rawProvider: "claude")
+        #expect(claudeMsg == "claude does not support config API keys.")
     }
 
     @Test
@@ -250,7 +277,7 @@ struct CLIConfigCommandTests {
     }
 
     @Test
-    func `config dump command redacts fixture secrets unless explicitly requested`() throws {
+    func `config dump drains large output and redacts fixture secrets unless explicitly requested`() async throws {
         let fixtureDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexbar-config-dump-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true)
@@ -262,9 +289,10 @@ struct CLIConfigCommandTests {
             "fixture-cookie-value",
             "fixture-token-account-value",
         ]
+        let accountLabel = String(repeating: "Fixture account ", count: 8192)
         let account = ProviderTokenAccount(
             id: UUID(),
-            label: "Fixture account",
+            label: accountLabel,
             token: secrets[3],
             addedAt: 1000,
             lastUsed: nil,
@@ -281,55 +309,46 @@ struct CLIConfigCommandTests {
         let configURL = fixtureDirectory.appendingPathComponent("config.json")
         try CodexBarConfigStore(fileURL: configURL).save(config)
 
-        let redactedData = try Self.runConfigDump(configURL: configURL, showSecrets: false)
+        let redactedData = try await Self.runConfigDump(configURL: configURL, showSecrets: false)
         let redactedJSON = try JSONSerialization.jsonObject(with: redactedData)
         let redactedOutput = try #require(String(data: redactedData, encoding: .utf8))
         #expect(redactedJSON is [String: Any])
+        #expect(redactedData.count > 64 * 1024)
+        #expect(redactedOutput.contains(accountLabel.trimmingCharacters(in: .whitespaces)))
         #expect(redactedOutput.contains("[REDACTED]"))
         for secret in secrets {
             #expect(!redactedOutput.contains(secret))
         }
 
-        let rawData = try Self.runConfigDump(configURL: configURL, showSecrets: true)
+        let rawData = try await Self.runConfigDump(configURL: configURL, showSecrets: true)
         let rawJSON = try JSONSerialization.jsonObject(with: rawData)
         let rawOutput = try #require(String(data: rawData, encoding: .utf8))
         #expect(rawJSON is [String: Any])
+        #expect(rawData.count > 64 * 1024)
         for secret in secrets {
             #expect(rawOutput.contains(secret))
         }
     }
 
-    private static func runConfigDump(configURL: URL, showSecrets: Bool) throws -> Data {
-        let process = Process()
-        process.executableURL = Self.cliExecutableURL
-        process.arguments = ["config", "dump"] + (showSecrets ? ["--show-secrets"] : [])
-        process.environment = ProcessInfo.processInfo.environment.merging([
+    private static func runConfigDump(configURL: URL, showSecrets: Bool) async throws -> Data {
+        let environment = ProcessInfo.processInfo.environment.merging([
             CodexBarConfigStore.pathEnvironmentKey: configURL.path,
+            "HOME": configURL.deletingLastPathComponent().path,
+            "CFFIXED_USER_HOME": configURL.deletingLastPathComponent().path,
+            "CODEX_HOME": configURL.deletingLastPathComponent().appendingPathComponent(".codex").path,
+            // Spawned CLI binaries match no test-process name pattern; make the
+            // keychain suppression explicit instead of relying on env inheritance.
+            "CODEXBAR_SUPPRESS_TEST_KEYCHAIN_ACCESS": "1",
         ]) { _, fixturePath in fixturePath }
 
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errorOutput = stderr.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errorOutput, encoding: .utf8) ?? "CodexBarCLI exited without an error message"
-            throw NSError(domain: "CLIConfigCommandTests", code: Int(process.terminationStatus), userInfo: [
-                NSLocalizedDescriptionKey: message,
-            ])
-        }
-        return output
-    }
-
-    private static var cliExecutableURL: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent(".build/debug/CodexBarCLI")
+        // Drain both pipes while the child runs; waiting first can block its final stdout flush.
+        let result = try await SubprocessRunner.run(
+            binary: TestBuildProducts.executableURL(named: "CodexBarCLI").path,
+            arguments: ["config", "dump"] + (showSecrets ? ["--show-secrets"] : []),
+            environment: environment,
+            timeout: 15,
+            maxOutputBytes: 1024 * 1024,
+            label: "fixture config dump")
+        return Data(result.stdout.utf8)
     }
 }

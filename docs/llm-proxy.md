@@ -36,6 +36,10 @@ available for self-hosted proxies on loopback, RFC 1918, link-local, and IPv6 un
 URL that does not meet these rules is rejected, and the provider reports that `LLM_PROXY_BASE_URL` is invalid
 instead of fetching.
 
+The bundled TypeScript provider runs on both plugin engines and uses the same configured-origin validation as the
+original native provider, including authenticated private-network and `.local` HTTP. The host attaches the bearer key;
+the plugin parses quota groups, aggregate totals, and the top three provider summaries.
+
 ## Menu display
 
 - Primary: lowest remaining quota group, rendered as percent used.

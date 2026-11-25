@@ -1,5 +1,9 @@
 import CodexBarCore
 import Commander
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -7,39 +11,51 @@ import Glibc
 #elseif canImport(Musl)
 import Musl
 #endif
-import Foundation
+#if os(macOS)
+import CoreFoundation
+#endif
 
 extension CodexBarCLI {
-    static func decodeProvider(from values: ParsedValues, config: CodexBarConfig) -> ProviderSelection {
+    static func decodeProvider(
+        from values: ParsedValues,
+        config: CodexBarConfig,
+        output: CLIOutputPreferences) -> ProviderSelection
+    {
         let rawOverride = values.options["provider"]?.last
-        return Self.providerSelection(rawOverride: rawOverride, enabled: config.enabledProviders())
+        do {
+            return try Self.providerSelection(
+                rawOverride: rawOverride,
+                enabled: config.enabledProviders().compactMap(\.firstPartyProvider))
+        } catch {
+            Self.exit(code: .failure, message: "Error: \(error.localizedDescription)", output: output, kind: .args)
+        }
     }
 
-    static func providerSelection(rawOverride: String?, enabled: [UsageProvider]) -> ProviderSelection {
-        if let rawOverride, let parsed = ProviderSelection(argument: rawOverride) {
+    /// An omitted override falls back to the enabled providers; an explicit but unrecognized one is an error.
+    static func providerSelection(rawOverride: String?, enabled: [UsageProvider]) throws -> ProviderSelection {
+        if let rawOverride {
+            guard let parsed = ProviderSelection(argument: rawOverride) else {
+                throw CLIArgumentError("unknown provider '\(rawOverride)'")
+            }
             return parsed
         }
-        if enabled.count == 2 {
-            let enabledSet = Set(enabled)
-            let primary = Set(ProviderDescriptorRegistry.all.filter(\ .metadata.isPrimaryProvider).map(\ .id))
-            if !primary.isEmpty, enabledSet == primary {
-                return .both
-            }
-            return .custom(enabled)
+        return Self.defaultProviderSelection(enabled: enabled)
+    }
+
+    static func defaultProviderSelection(enabled: [UsageProvider]) -> ProviderSelection {
+        if enabled.count == 2,
+           Set(enabled) == Set(ProviderDescriptorRegistry.all.filter(\ .metadata.isPrimaryProvider).map(\ .id))
+        {
+            return .both
         }
-        if enabled.count >= 3 { return .custom(enabled) }
-        if let first = enabled.first { return ProviderSelection(provider: first) }
-        return .custom([])
+        if enabled.count == 1, let first = enabled.first {
+            return ProviderSelection(provider: first)
+        }
+        return .custom(enabled)
     }
 
     static func decodeFormat(from values: ParsedValues) -> OutputFormat {
-        if let raw = values.options["format"]?.last, let parsed = OutputFormat(argument: raw) {
-            return parsed
-        }
-        if values.flags.contains("jsonShortcut") || values.flags.contains("json") || values.flags.contains("jsonOnly") {
-            return .json
-        }
-        return .text
+        CLIOutputPreferences.resolveOutputFormat(from: values).format
     }
 
     static func decodeTokenAccountSelection(from values: ParsedValues) throws -> TokenAccountCLISelection {
@@ -58,9 +74,13 @@ extension CodexBarCLI {
 
     static func shouldUseColor(noColor: Bool, format: OutputFormat) -> Bool {
         guard format == .text else { return false }
-        if noColor { return false }
+        if noColor {
+            return false
+        }
         let env = ProcessInfo.processInfo.environment
-        if env["TERM"]?.lowercased() == "dumb" { return false }
+        if env["TERM"]?.lowercased() == "dumb" {
+            return false
+        }
         return isatty(STDOUT_FILENO) == 1
     }
 
@@ -88,7 +108,7 @@ extension CodexBarCLI {
         guard !attempts.isEmpty else { return }
         self.writeStderr("[\(provider.rawValue)] fetch strategies:\n")
         for attempt in attempts {
-            let kindLabel = Self.fetchKindLabel(attempt.kind)
+            let kindLabel = ProviderDiagnosticFetchAttempt.kindLabel(attempt.kind)
             var line = "  - \(attempt.strategyID) (\(kindLabel))"
             line += attempt.wasAvailable ? " available" : " unavailable"
             if let error = attempt.errorDescription, !error.isEmpty {
@@ -101,8 +121,15 @@ extension CodexBarCLI {
     static func usageTextNotes(
         provider: UsageProvider,
         sourceMode: ProviderSourceMode,
-        resolvedSourceLabel: String) -> [String]
+        resolvedSourceLabel: String,
+        dataConfidence: UsageDataConfidence = .unknown) -> [String]
     {
+        // Provider-specific by design: OpenCode Go local quota windows need an explicit authority warning.
+        if provider == .opencodego, dataConfidence == .estimated {
+            return ["Quota estimated from local usage history"]
+        }
+
+        // Provider-specific by design: Kilo automatic mode reports when its CLI fallback won strategy selection.
         guard provider == .kilo,
               sourceMode == .auto,
               resolvedSourceLabel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "cli"
@@ -117,36 +144,67 @@ extension CodexBarCLI {
         sourceMode: ProviderSourceMode,
         attempts: [ProviderFetchAttempt]) -> String?
     {
+        // Provider-specific by design: Kilo exposes its ordered API-to-CLI fallback attempts in verbose output.
         guard provider == .kilo, sourceMode == .auto, !attempts.isEmpty else { return nil }
         let parts = attempts.map { attempt in
-            let label = Self.fetchKindLabel(attempt.kind)
+            let label = ProviderDiagnosticFetchAttempt.kindLabel(attempt.kind)
             let message = attempt.errorDescription?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !message.isEmpty {
                 return "\(label): \(message)"
             }
             return "\(label): \(attempt.wasAvailable ? "success" : "unavailable")"
         }
-        guard !parts.isEmpty else { return nil }
         return "Kilo auto fallback attempts: " + parts.joined(separator: " -> ")
     }
 
-    private static func fetchKindLabel(_ kind: ProviderFetchKind) -> String {
-        switch kind {
-        case .cli: "cli"
-        case .web: "web"
-        case .oauth: "oauth"
-        case .apiToken: "api"
-        case .localProbe: "local"
-        case .webDashboard: "web"
+    /// Provider-specific by design: Antigravity's auto chain probes several
+    /// distinct local servers, so failures are attributed per source strategy
+    /// (app > cli > ide > oauth > offline) rather than by transport kind alone.
+    static func antigravityAutoFallbackSummary(
+        provider: UsageProvider,
+        sourceMode: ProviderSourceMode,
+        attempts: [ProviderFetchAttempt]) -> String?
+    {
+        guard provider == .antigravity, sourceMode == .auto, !attempts.isEmpty else { return nil }
+        let parts = attempts.map { attempt in
+            let source = Self.antigravitySourceShortLabel(attempt.strategyID)
+            switch attempt.outcome {
+            case .failed:
+                let message = attempt.errorDescription?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return "\(source): \(message.isEmpty ? "failed" : message)"
+            case .skipped:
+                return "\(source): skipped (unavailable)"
+            case .succeeded:
+                return "\(source): success"
+            }
         }
+        return "Antigravity auto source outcomes: " + parts.joined(separator: " -> ")
     }
 
-    static func fetchStatus(for provider: UsageProvider) async -> ProviderStatusPayload? {
+    /// Provider-specific by design: shortens Antigravity strategy IDs to their
+    /// source names (app/cli/ide/oauth/offline).
+    private static func antigravitySourceShortLabel(_ strategyID: String) -> String {
+        guard strategyID.hasPrefix("antigravity.") else { return strategyID }
+        let short = String(strategyID.dropFirst("antigravity.".count))
+        return short.replacingOccurrences(of: "-local", with: "")
+            .replacingOccurrences(of: "-https", with: "")
+    }
+
+    static func fetchStatus(
+        for provider: UsageProvider,
+        transport: any ProviderHTTPTransport = ProviderHTTPClient(session: .shared)) async -> ProviderStatusPayload?
+    {
         let urlString = ProviderDescriptorRegistry.descriptor(for: provider).metadata.statusPageURL
         guard let urlString,
               let baseURL = URL(string: urlString) else { return nil }
         do {
-            return try await StatusFetcher.fetch(from: baseURL)
+            let status = try await ProviderStatusFetcher.fetchStatus(from: baseURL, transport: transport)
+            return ProviderStatusPayload(
+                indicator: status.indicator,
+                description: status.description,
+                updatedAt: status.updatedAt,
+                url: urlString)
         } catch {
             return ProviderStatusPayload(
                 indicator: .unknown,
@@ -157,17 +215,7 @@ extension CodexBarCLI {
     }
 
     static func resetTimeDisplayStyleFromDefaults() -> ResetTimeDisplayStyle {
-        let domains = [
-            "com.steipete.codexbar",
-            "com.steipete.codexbar.debug",
-        ]
-        for domain in domains {
-            if let value = UserDefaults(suiteName: domain)?.object(forKey: "resetTimesShowAbsolute") as? Bool {
-                return value ? .absolute : .countdown
-            }
-        }
-        let fallback = UserDefaults.standard.object(forKey: "resetTimesShowAbsolute") as? Bool ?? false
-        return fallback ? .absolute : .countdown
+        (self.boolFromAppDefaults("resetTimesShowAbsolute") ?? false) ? .absolute : .countdown
     }
 
     static func weeklyProgressWorkDaysFromDefaults() -> Int? {
@@ -176,11 +224,69 @@ extension CodexBarCLI {
             "com.steipete.codexbar.debug",
         ]
         for domain in domains {
+            #if os(macOS)
+            let cfDomain = domain as CFString
+            CFPreferencesSynchronize(cfDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+            if let cfValue = CFPreferencesCopyValue(
+                "weeklyProgressWorkDays" as CFString,
+                cfDomain,
+                kCFPreferencesCurrentUser,
+                kCFPreferencesAnyHost) as? Int
+            {
+                return cfValue
+            }
+            #endif
             if let value = UserDefaults(suiteName: domain)?.object(forKey: "weeklyProgressWorkDays") as? Int {
                 return value
             }
         }
         return UserDefaults.standard.object(forKey: "weeklyProgressWorkDays") as? Int
+    }
+
+    /// The app's "Hide personal information" privacy toggle. Read per request so the
+    /// serve dashboard follows the setting without a restart, the same way reset style
+    /// and weekly work days already do.
+    static func hidePersonalInfoFromDefaults() -> Bool {
+        self.boolFromAppDefaults("hidePersonalInfo") ?? false
+    }
+
+    /// The app's "Usage bars fill" preference (true = as used, false = as remaining). Read
+    /// per request so the serve dashboard follows the setting without a restart.
+    static func usageBarsShowUsedFromDefaults() -> Bool {
+        self.boolFromAppDefaults("usageBarsShowUsed") ?? false
+    }
+
+    static func boolFromAppDefaults(_ key: String) -> Bool? {
+        self.valueFromAppDefaults(key)
+    }
+
+    static func stringFromAppDefaults(_ key: String) -> String? {
+        let value: String? = self.valueFromAppDefaults(key)
+        return value?.isEmpty == false ? value : nil
+    }
+
+    static func valueFromAppDefaults<Value>(_ key: String) -> Value? {
+        for domain in ["com.steipete.codexbar", "com.steipete.codexbar.debug"] {
+            #if os(macOS)
+            let cfDomain = domain as CFString
+            CFPreferencesSynchronize(cfDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+            if let value = CFPreferencesCopyValue(
+                key as CFString, cfDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? Value,
+                (value as? String)?.isEmpty != true
+            {
+                return value
+            }
+            #endif
+            if let value = UserDefaults(suiteName: domain)?.object(forKey: key) as? Value,
+               (value as? String)?.isEmpty != true { return value }
+        }
+        return UserDefaults.standard.object(forKey: key) as? Value
+    }
+
+    static func costReportingPeriodFromDefaults() -> CostReportingPeriod {
+        .migrated(
+            rawValue: self.stringFromAppDefaults(CostReportingPeriod.defaultsKey),
+            legacyDays: self.valueFromAppDefaults(CostReportingPeriod.legacyDaysKey))
     }
 
     static func fetchProviderUsage(
@@ -208,10 +314,16 @@ extension CodexBarCLI {
         }
     }
 
+    /// Oldest supplemental OpenAI dashboard cache the CLI attaches to freshly fetched Codex usage.
+    static let openAIDashboardCacheMaxAge: TimeInterval = 60 * 60
+    /// Accepts caches stamped slightly ahead of `now`, e.g. after a small clock correction.
+    static let openAIDashboardCacheFutureTolerance: TimeInterval = 60
+
     static func loadOpenAIDashboardIfAvailable(
         usage: UsageSnapshot,
         sourceLabel: String,
-        context: ProviderFetchContext) -> OpenAIDashboardSnapshot?
+        context: ProviderFetchContext,
+        now: Date = Date()) -> OpenAIDashboardSnapshot?
     {
         guard let cache = OpenAIDashboardCacheStore.load() else { return nil }
         let snapshot: OpenAIDashboardSnapshot = if cache.snapshot.dailyBreakdown.isEmpty,
@@ -219,6 +331,7 @@ extension CodexBarCLI {
         {
             OpenAIDashboardSnapshot(
                 signedInEmail: cache.snapshot.signedInEmail,
+                accountID: cache.snapshot.accountID,
                 codeReviewRemainingPercent: cache.snapshot.codeReviewRemainingPercent,
                 codeReviewLimit: cache.snapshot.codeReviewLimit,
                 creditEvents: cache.snapshot.creditEvents,
@@ -227,6 +340,16 @@ extension CodexBarCLI {
                     maxDays: 30),
                 usageBreakdown: cache.snapshot.usageBreakdown,
                 creditsPurchaseURL: cache.snapshot.creditsPurchaseURL,
+                primaryLimit: cache.snapshot.primaryLimit,
+                secondaryLimit: cache.snapshot.secondaryLimit,
+                extraRateWindows: cache.snapshot.extraRateWindows,
+                creditsRemaining: cache.snapshot.creditsRemaining,
+                creditsAvailable: cache.snapshot.creditsAvailable,
+                balanceIsWorkspace: cache.snapshot.balanceIsWorkspace,
+                codexCreditLimit: cache.snapshot.codexCreditLimit,
+                accountPlan: cache.snapshot.accountPlan,
+                subscriptionExpiresAt: cache.snapshot.subscriptionExpiresAt,
+                subscriptionRenewsAt: cache.snapshot.subscriptionRenewsAt,
                 updatedAt: cache.snapshot.updatedAt)
         } else {
             cache.snapshot
@@ -240,6 +363,11 @@ extension CodexBarCLI {
             context: context)
         let decision = CodexDashboardAuthority.evaluate(input)
         if decision.allowedEffects.contains(.cachedDashboardReuse) {
+            // Supplemental balances and limits must not look current beside freshly fetched usage.
+            let age = now.timeIntervalSince(snapshot.updatedAt)
+            guard age >= -Self.openAIDashboardCacheFutureTolerance,
+                  age <= Self.openAIDashboardCacheMaxAge
+            else { return nil }
             return snapshot
         }
         if decision.cleanup.contains(.dashboardCache) {
@@ -353,7 +481,7 @@ extension CodexBarCLI {
                     antigravityPlanInfo: nil,
                     openaiDashboard: nil,
                     error: self.makeErrorPayload(code: .failure, message: error.localizedDescription, kind: .config))
-                self.printJSON([payload], pretty: output.pretty)
+                self.printProviderPayloads([payload], output: output)
             } else {
                 self.writeStderr("Error: \(error.localizedDescription)\n")
             }
@@ -377,35 +505,39 @@ struct CLIArgumentError: LocalizedError {
 #if DEBUG
 extension CodexBarCLI {
     static func _usageSignatureForTesting() -> CommandSignature {
-        CommandSignature.describe(UsageOptions())
+        CommandSignature.describe(UsageOptions()).flattened()
     }
 
     static func _costSignatureForTesting() -> CommandSignature {
-        CommandSignature.describe(CostOptions())
+        CommandSignature.describe(CostOptions()).flattened()
     }
 
     static func _cacheSignatureForTesting() -> CommandSignature {
-        CommandSignature.describe(CacheOptions())
+        CommandSignature.describe(CacheOptions()).flattened()
     }
 
     static func _diagnoseSignatureForTesting() -> CommandSignature {
-        CommandSignature.describe(DiagnoseOptions())
+        CommandSignature.describe(DiagnoseOptions()).flattened()
     }
 
     static func _configSetAPIKeySignatureForTesting() -> CommandSignature {
-        CommandSignature.describe(ConfigSetAPIKeyOptions())
+        CommandSignature.describe(ConfigSetAPIKeyOptions()).flattened()
     }
 
     static func _configDumpSignatureForTesting() -> CommandSignature {
-        CommandSignature.describe(ConfigDumpOptions())
+        CommandSignature.describe(ConfigDumpOptions()).flattened()
     }
 
     static func _configProviderToggleSignatureForTesting() -> CommandSignature {
-        CommandSignature.describe(ConfigProviderToggleOptions())
+        CommandSignature.describe(ConfigProviderToggleOptions()).flattened()
     }
 
     static func _decodeFormatForTesting(from values: ParsedValues) -> OutputFormat {
         self.decodeFormat(from: values)
+    }
+
+    static func _decodeCostGroupByForTesting(from values: ParsedValues) -> CostGroupBy {
+        self.decodeCostGroupBy(from: values)
     }
 
     static func _decodeWebTimeoutForTesting(from values: ParsedValues) throws -> TimeInterval? {

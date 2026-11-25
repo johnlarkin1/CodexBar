@@ -4,7 +4,7 @@ import FoundationNetworking
 #endif
 
 public struct DevinUsageFetcher: Sendable {
-    private static let log = CodexBarLog.logger(LogCategories.devin)
+    private static let log = CodexBarLog.logger(LogCategories.provider(.devin))
     private static let baseURL = URL(string: "https://app.devin.ai")!
     private static let defaultUserAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
@@ -30,10 +30,23 @@ public struct DevinUsageFetcher: Sendable {
     }
 
     public let browserDetection: BrowserDetection
+    #if os(macOS)
+    private let devinAppImporter: DevinAppSessionImporter
+    #endif
 
     public init(browserDetection: BrowserDetection) {
         self.browserDetection = browserDetection
+        #if os(macOS)
+        self.devinAppImporter = DevinAppSessionImporter()
+        #endif
     }
+
+    #if DEBUG && os(macOS)
+    init(browserDetection: BrowserDetection, devinAppImporter: DevinAppSessionImporter) {
+        self.browserDetection = browserDetection
+        self.devinAppImporter = devinAppImporter
+    }
+    #endif
 
     public func fetch(
         bearerTokenOverride: String? = nil,
@@ -43,26 +56,49 @@ public struct DevinUsageFetcher: Sendable {
         now: Date = Date(),
         transport: any ProviderHTTPTransport = ProviderHTTPClient.shared) async throws -> DevinUsageSnapshot
     {
-        let auths = try self.resolveAuths(
-            bearerTokenOverride: bearerTokenOverride,
-            organizationOverride: organizationOverride,
-            logger: logger)
         var lastError: Error?
-        for auth in auths {
-            do {
-                return try await Self.fetchQuotaUsage(
-                    auth: auth,
-                    organizationOverride: organizationOverride,
-                    timeout: timeout,
-                    logger: logger,
-                    now: now,
-                    transport: transport)
-            } catch {
-                lastError = error
-                logger?("[devin] Session from \(auth.sourceLabel) failed: \(error.localizedDescription)")
-                if auth.sourceLabel == "manual" || !Self.shouldTryNextSession(after: error) {
-                    throw error
+        let auths: [RequestAuth]
+        do {
+            auths = try self.resolveAuths(
+                bearerTokenOverride: bearerTokenOverride,
+                organizationOverride: organizationOverride,
+                logger: logger)
+        } catch {
+            // An unreadable browser store still surfaces when no Devin app session can take over.
+            auths = []
+            lastError = error
+        }
+        // Defer the desktop secret read until all browser candidates have been tried.
+        let authStages: [() -> [RequestAuth]] = [
+            { auths },
+            { self.appSessionAuths(organizationOverride: organizationOverride, logger: logger) },
+        ]
+        for (index, stage) in authStages.enumerated() {
+            let candidates = stage()
+            for auth in candidates {
+                do {
+                    return try await Self.fetchQuotaUsage(
+                        auth: auth,
+                        organizationOverride: organizationOverride,
+                        timeout: timeout,
+                        logger: logger,
+                        now: now,
+                        transport: transport)
+                } catch {
+                    lastError = error
+                    logger?("[devin] Session from \(auth.sourceLabel) failed: \(error.localizedDescription)")
+                    if auth.sourceLabel == "manual" || !Self.shouldTryNextSession(after: error) {
+                        throw error
+                    }
                 }
+            }
+            // A service error cannot be resolved by reading another credential.
+            if index < authStages.count - 1,
+               !candidates.isEmpty,
+               let lastError,
+               !Self.shouldTryDevinAppSession(after: lastError)
+            {
+                throw lastError
             }
         }
         throw lastError ?? DevinUsageError.noSession
@@ -97,10 +133,10 @@ public struct DevinUsageFetcher: Sendable {
             } catch {
                 lastError = error
                 logger?("[devin] /api/\(path) failed: \(error.localizedDescription)")
-                if case DevinUsageError.invalidCredentials = error {
-                    throw error
+                switch error {
+                case DevinUsageError.invalidCredentials, DevinUsageError.missingOrganization: throw error
+                default: continue
                 }
-                continue
             }
             logger?("[devin] Fetched quota usage from /api/\(path)")
             return try DevinUsageParser.parse(data, organization: organization, now: now)
@@ -114,7 +150,7 @@ public struct DevinUsageFetcher: Sendable {
             return nil
         }
         if token.lowercased().hasPrefix("authorization:") {
-            token = token.dropHeaderName().trimmingCharacters(in: .whitespacesAndNewlines)
+            token = String(token.dropFirst("authorization:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         if token.lowercased().hasPrefix("bearer ") {
             token = String(token.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -139,13 +175,10 @@ public struct DevinUsageFetcher: Sendable {
 
         #if os(macOS)
         let normalizedOrganizationOverride = Self.normalizedOrganization(organizationOverride)
-        let sessions = DevinSessionImporter.importSessions(
+        let sessions = try DevinSessionImporter.importSessions(
             browserDetection: self.browserDetection,
             organizationOverride: normalizedOrganizationOverride,
             logger: logger)
-        guard !sessions.isEmpty else {
-            throw DevinUsageError.noSession
-        }
         logger?("[devin] Found \(sessions.count) browser session(s)")
         return sessions.map { session in
             RequestAuth(
@@ -159,9 +192,41 @@ public struct DevinUsageFetcher: Sendable {
         #endif
     }
 
+    private func appSessionAuths(
+        organizationOverride: String?,
+        logger: ((String) -> Void)?) -> [RequestAuth]
+    {
+        #if os(macOS)
+        let normalizedOrganizationOverride = Self.normalizedOrganization(organizationOverride)
+        logger?("[devin] Trying the Devin app session")
+        return self.devinAppImporter
+            .importSessions(organizationOverride: normalizedOrganizationOverride, logger: logger)
+            .map { session in
+                RequestAuth(
+                    bearerToken: session.accessToken,
+                    organization: normalizedOrganizationOverride ?? Self.normalizedOrganization(session.organization),
+                    internalOrganizationID: session.internalOrganizationID,
+                    sourceLabel: session.sourceLabel)
+            }
+        #else
+        []
+        #endif
+    }
+
     static func shouldTryNextSession(after error: Error) -> Bool {
         switch error {
         case DevinUsageError.invalidCredentials, DevinUsageError.apiError, DevinUsageError.missingOrganization:
+            true
+        default:
+            false
+        }
+    }
+
+    /// Whether a browser-stage failure justifies consulting the Keychain-gated Devin app source:
+    /// only rejections an alternate credential can resolve — not service-side errors.
+    static func shouldTryDevinAppSession(after error: Error) -> Bool {
+        switch error {
+        case DevinUsageError.invalidCredentials, DevinUsageError.missingOrganization:
             true
         default:
             false
@@ -189,7 +254,9 @@ public struct DevinUsageFetcher: Sendable {
         guard response.statusCode == 200 else {
             let body = String(data: response.data.prefix(200), encoding: .utf8) ?? "<binary>"
             if response.statusCode == 401 || response.statusCode == 403 {
-                throw DevinUsageError.invalidCredentials
+                let payload = try? JSONSerialization.jsonObject(with: response.data) as? [String: Any]
+                throw payload?["detail"] as? String == "No organizations found for auth1 user"
+                    ? DevinUsageError.missingOrganization : DevinUsageError.invalidCredentials
             }
             Self.log.error("Devin API returned \(response.statusCode): \(body)")
             throw DevinUsageError.apiError("HTTP \(response.statusCode)")
@@ -214,7 +281,8 @@ public struct DevinUsageFetcher: Sendable {
         if let internalOrganizationID {
             paths.append("organizations/\(internalOrganizationID)/billing/quota/usage")
         }
-        return paths.removingDuplicates()
+        var seen = Set<String>()
+        return paths.filter { seen.insert($0).inserted }
     }
 
     public static func normalizedOrganization(_ raw: String?) -> String? {
@@ -253,19 +321,5 @@ public struct DevinUsageFetcher: Sendable {
 
     static func isInternalOrganizationID(_ value: String) -> Bool {
         value.hasPrefix("org-") || value.hasPrefix("org_")
-    }
-}
-
-extension String {
-    fileprivate func dropHeaderName() -> String {
-        guard let index = self.firstIndex(of: ":") else { return self }
-        return String(self[self.index(after: index)...])
-    }
-}
-
-extension [String] {
-    fileprivate func removingDuplicates() -> [String] {
-        var seen = Set<String>()
-        return self.filter { seen.insert($0).inserted }
     }
 }

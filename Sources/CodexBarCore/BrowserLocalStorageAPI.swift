@@ -50,64 +50,38 @@ struct BrowserLocalStorageAPI: Sendable {
         }
     }
 
-    private static func loadProfiles(
+    static func loadProfiles(
         origin: String,
         root: URL,
         browserID: String,
         labelPrefix: String,
         logger: @escaping @Sendable (String) -> Void) -> [Profile]
     {
-        guard let directories = try? FileManager.default.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles])
-        else { return [] }
+        let profileNames = ProviderBrowserProfile.chromiumProfileNames(
+            root: root,
+            nameKeys: ["gaia_given_name", "name"])
+        return ChromiumLocalStorageDiscovery.profileCandidates(root: root, labelPrefix: labelPrefix)
+            .compactMap { candidate in
+                guard !Task.isCancelled else { return nil }
+                let levelDB = candidate.url
+                let name = levelDB.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
 
-        let profileNames = Self.chromeProfileNames(root: root)
-        return directories.compactMap { directory in
-            guard !Task.isCancelled,
-                  let isDirectory = try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory,
-                  isDirectory
-            else { return nil }
-            let name = directory.lastPathComponent
-            guard name == "Default" || name.hasPrefix("Profile ") || name.hasPrefix("user-") else {
-                return nil
+                let id = "\(browserID):\(name)"
+                logger("Checking \(id)")
+                let entries = SweetCookieKit.ChromiumLocalStorageReader.readEntries(
+                    for: origin,
+                    in: levelDB,
+                    logger: logger)
+                    .map { Entry(key: $0.key, value: $0.value) }
+                let displayName = profileNames[name]
+                let label = if let displayName, !displayName.isEmpty, displayName != name {
+                    "\(labelPrefix) — \(displayName)"
+                } else {
+                    "\(labelPrefix) \(name)"
+                }
+                return Profile(id: id, label: label, entries: entries)
             }
-            let levelDB = directory.appendingPathComponent("Local Storage").appendingPathComponent("leveldb")
-            guard FileManager.default.fileExists(atPath: levelDB.path) else { return nil }
-
-            let id = "\(browserID):\(name)"
-            logger("Checking \(id)")
-            let entries = SweetCookieKit.ChromiumLocalStorageReader.readEntries(
-                for: origin,
-                in: levelDB,
-                logger: logger)
-                .map { Entry(key: $0.key, value: $0.value) }
-            let displayName = profileNames[name]?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let label = if let displayName, !displayName.isEmpty, displayName != name {
-                "\(labelPrefix) — \(displayName)"
-            } else {
-                "\(labelPrefix) \(name)"
-            }
-            return Profile(id: id, label: label, entries: entries)
-        }
-        .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
-    }
-
-    private static func chromeProfileNames(root: URL) -> [String: String] {
-        let localStateURL = root.appendingPathComponent("Local State")
-        guard let data = try? Data(contentsOf: localStateURL),
-              let rootObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let profile = rootObject["profile"] as? [String: Any],
-              let infoCache = profile["info_cache"] as? [String: Any]
-        else { return [:] }
-
-        return infoCache.reduce(into: [:]) { result, entry in
-            guard let info = entry.value as? [String: Any] else { return }
-            let name = (info["gaia_given_name"] as? String) ?? (info["name"] as? String)
-            guard let name else { return }
-            result[entry.key] = name
-        }
+            .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
     }
 }
 #endif

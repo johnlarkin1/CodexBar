@@ -18,11 +18,21 @@ import FoundationNetworking
 @main
 enum CodexBarCLI {
     static func main() async {
+        if CodexBarCoreResourceSmoke.isRequested() {
+            #if canImport(Darwin)
+            Darwin.exit(CodexBarCoreResourceSmoke.run())
+            #elseif canImport(Glibc)
+            Glibc.exit(CodexBarCoreResourceSmoke.run())
+            #elseif canImport(Musl)
+            Musl.exit(CodexBarCoreResourceSmoke.run())
+            #endif
+        }
         self.configureLinuxTimeZoneIfNeeded()
 
         let rawArgv = Array(CommandLine.arguments.dropFirst())
         let argv = Self.effectiveArgv(rawArgv)
         let outputPreferences = CLIOutputPreferences.from(argv: argv)
+        let errorOutputPreferences: CLIOutputPreferences? = argv.first == "dashboard" ? nil : outputPreferences
 
         // Fast path: global help/version before building descriptors.
         if let helpIndex = argv.firstIndex(where: { $0 == "-h" || $0 == "--help" }) {
@@ -33,24 +43,29 @@ enum CodexBarCLI {
             Self.printVersion()
         }
 
-        let program = Program(descriptors: Self.commandDescriptors())
+        let program = Program(descriptors: Self.commandDescriptors(for: argv.first))
 
         do {
-            let invocation = try program.resolve(argv: argv)
+            let invocation = try program.resolve(arguments: argv)
             Self.bootstrapLogging(path: invocation.path, values: invocation.parsedValues)
+            UserProviderPluginRegistry.refresh()
             switch invocation.path {
             case ["cards"], ["usage"]:
                 await self.runUsageDisplay(path: invocation.path, values: invocation.parsedValues)
+            case let path where path.first == "codex-accounts":
+                await self.runCodexAccounts(path: path, values: invocation.parsedValues)
             case ["cost"]:
                 await self.runCost(invocation.parsedValues)
             case ["sessions", "list"]:
                 await self.runSessions(invocation.parsedValues)
             case ["sessions", "focus"]:
                 await self.runSessionsFocus(invocation.parsedValues)
+            case ["dashboard"]:
+                await self.runDashboard(invocation.parsedValues)
             case ["serve"]:
                 await self.runServe(invocation.parsedValues)
             case let path where path.first == "config":
-                self.runConfig(path: path, values: invocation.parsedValues)
+                await self.runConfig(path: path, values: invocation.parsedValues)
             case let path where path.first == "hooks":
                 await self.runHooks(path: path, values: invocation.parsedValues)
             case ["cache", "clear"]:
@@ -65,6 +80,8 @@ enum CodexBarCLI {
                 await self.runDiagnose(invocation.parsedValues)
             case ["guard"]:
                 await self.runGuard(invocation.parsedValues)
+            case let path where path.first == "plugins":
+                await self.runPlugins(path: path, values: invocation.parsedValues)
             default:
                 Self.exit(
                     code: .failure,
@@ -74,9 +91,13 @@ enum CodexBarCLI {
             }
         } catch let error as CommanderProgramError {
             let exitCode: ExitCode = argv.first == "guard" ? .usage : .failure
-            Self.exit(code: exitCode, message: error.description, output: outputPreferences, kind: .args)
+            Self.exit(code: exitCode, message: error.description, output: errorOutputPreferences, kind: .args)
         } catch {
-            Self.exit(code: .failure, message: error.localizedDescription, output: outputPreferences, kind: .runtime)
+            Self.exit(
+                code: .failure,
+                message: error.localizedDescription,
+                output: errorOutputPreferences,
+                kind: .runtime)
         }
     }
 
@@ -101,153 +122,236 @@ enum CodexBarCLI {
         await self.runCookieRefresh(values)
     }
 
-    private static func commandDescriptors() -> [CommandDescriptor] {
-        let cardsSignature = CommandSignature.describe(CardsOptions())
-        let usageSignature = CommandSignature.describe(UsageOptions())
-        let costSignature = CommandSignature.describe(CostOptions())
-        let sessionsSignature = CommandSignature.describe(SessionsOptions())
-        let sessionsFocusSignature = CommandSignature.describe(SessionsFocusOptions())
-        let serveSignature = CommandSignature.describe(ServeOptions())
-        let configSignature = CommandSignature.describe(ConfigOptions())
-        let configDumpSignature = CommandSignature.describe(ConfigDumpOptions())
-        let configProviderToggleSignature = CommandSignature.describe(ConfigProviderToggleOptions())
-        let configSetAPIKeySignature = CommandSignature.describe(ConfigSetAPIKeyOptions())
-        let cacheSignature = CommandSignature.describe(CacheOptions())
-        let diagnoseSignature = CommandSignature.describe(DiagnoseOptions())
+    private static func hooksCommandDescriptor() -> CommandDescriptor {
         let hooksSignature = CommandSignature.describe(HooksOptions())
-        let hooksTestSignature = CommandSignature.describe(HooksTestOptions())
-        let guardSignature = CommandSignature.describe(GuardOptions())
+        let hooksTestSignature = CommandSignature.describe(HooksTestOptions()).flattened()
+        let hooksWatchSignature = CommandSignature.describe(HooksWatchOptions()).flattened()
 
-        return [
-            CommandDescriptor(
-                name: "cards",
-                abstract: "Print usage as a terminal card grid",
-                discussion: nil,
-                signature: cardsSignature),
-            CommandDescriptor(
-                name: "usage",
-                abstract: "Print usage as text or JSON",
-                discussion: nil,
-                signature: usageSignature),
-            CommandDescriptor(
-                name: "guard",
-                abstract: "Exit non-zero when a provider lacks quota headroom (for gating scripts)",
-                discussion: nil,
-                signature: guardSignature),
-            CommandDescriptor(
-                name: "cost",
-                abstract: "Print local cost usage as text or JSON",
-                discussion: nil,
-                signature: costSignature),
-            CommandDescriptor(
-                name: "sessions",
-                abstract: "List live Codex and Claude Code sessions",
-                discussion: nil,
-                signature: CommandSignature(),
-                subcommands: [
-                    CommandDescriptor(
-                        name: "list",
-                        abstract: "List live Codex and Claude Code sessions",
-                        discussion: nil,
-                        signature: sessionsSignature),
-                    CommandDescriptor(
-                        name: "focus",
-                        abstract: "Focus the window for a session",
-                        discussion: nil,
-                        signature: sessionsFocusSignature),
-                ],
-                defaultSubcommandName: "list"),
-            CommandDescriptor(
-                name: "serve",
-                abstract: "Serve usage, cost, and dashboard JSON over HTTP",
-                discussion: nil,
-                signature: serveSignature),
-            CommandDescriptor(
-                name: "config",
-                abstract: "Config utilities",
-                discussion: nil,
-                signature: CommandSignature(),
-                subcommands: [
-                    CommandDescriptor(
-                        name: "validate",
-                        abstract: "Validate config file",
-                        discussion: nil,
-                        signature: configSignature),
-                    CommandDescriptor(
-                        name: "dump",
-                        abstract: "Print normalized config JSON",
-                        discussion: nil,
-                        signature: configDumpSignature),
-                    CommandDescriptor(
-                        name: "providers",
-                        abstract: "List provider enablement",
-                        discussion: nil,
-                        signature: configSignature),
-                    CommandDescriptor(
-                        name: "enable",
-                        abstract: "Enable a provider",
-                        discussion: nil,
-                        signature: configProviderToggleSignature),
-                    CommandDescriptor(
-                        name: "disable",
-                        abstract: "Disable a provider",
-                        discussion: nil,
-                        signature: configProviderToggleSignature),
-                    CommandDescriptor(
-                        name: "set-api-key",
-                        abstract: "Store a provider API key",
-                        discussion: nil,
-                        signature: configSetAPIKeySignature),
-                ],
-                defaultSubcommandName: "validate"),
-            CommandDescriptor(
-                name: "hooks",
-                abstract: "Run external commands on quota/provider events",
-                discussion: nil,
-                signature: CommandSignature(),
-                subcommands: [
-                    CommandDescriptor(
-                        name: "list",
-                        abstract: "List configured hooks",
-                        discussion: nil,
-                        signature: hooksSignature),
-                    CommandDescriptor(
-                        name: "enable",
-                        abstract: "Enable hooks",
-                        discussion: nil,
-                        signature: hooksSignature),
-                    CommandDescriptor(
-                        name: "disable",
-                        abstract: "Disable hooks",
-                        discussion: nil,
-                        signature: hooksSignature),
-                    CommandDescriptor(
-                        name: "test",
-                        abstract: "Fire matching hooks for an event",
-                        discussion: nil,
-                        signature: hooksTestSignature),
-                ],
-                defaultSubcommandName: "list"),
-            CommandDescriptor(
-                name: "cache",
-                abstract: "Cache management",
-                discussion: nil,
-                signature: CommandSignature(),
-                subcommands: [
-                    CommandDescriptor(
-                        name: "clear",
-                        abstract: "Clear cached data (cookies, cost, or all)",
-                        discussion: nil,
-                        signature: cacheSignature),
-                ],
-                defaultSubcommandName: "clear"),
-            Self.cookieCommandDescriptor(),
-            CommandDescriptor(
-                name: "diagnose",
-                abstract: "Run provider diagnostic and emit safe JSON export",
-                discussion: nil,
-                signature: diagnoseSignature),
+        return CommandDescriptor(
+            name: "hooks",
+            abstract: "Run external commands on quota/provider events",
+            discussion: nil,
+            signature: CommandSignature(),
+            subcommands: [
+                CommandDescriptor(
+                    name: "list",
+                    abstract: "List configured hooks",
+                    discussion: nil,
+                    signature: hooksSignature),
+                CommandDescriptor(
+                    name: "enable",
+                    abstract: "Enable hooks",
+                    discussion: nil,
+                    signature: hooksSignature),
+                CommandDescriptor(
+                    name: "disable",
+                    abstract: "Disable hooks",
+                    discussion: nil,
+                    signature: hooksSignature),
+                CommandDescriptor(
+                    name: "test",
+                    abstract: "Fire matching hooks for an event",
+                    discussion: nil,
+                    signature: hooksTestSignature),
+                CommandDescriptor(
+                    name: "watch",
+                    abstract: "Poll providers and fire hooks on quota/status changes",
+                    discussion: nil,
+                    signature: hooksWatchSignature),
+            ],
+            defaultSubcommandName: "list")
+    }
+
+    static func commandDescriptors(for command: String? = nil) -> [CommandDescriptor] {
+        let factories: [(name: String, make: () -> CommandDescriptor)] = [
+            ("codex-accounts", Self.codexAccountsCommandDescriptor),
+            ("cards", {
+                CommandDescriptor(
+                    name: "cards",
+                    abstract: "Print usage as a terminal card grid",
+                    discussion: nil,
+                    signature: CommandSignature.describe(CardsOptions()).flattened())
+            }),
+            ("usage", {
+                CommandDescriptor(
+                    name: "usage",
+                    abstract: "Print usage as text or JSON",
+                    discussion: nil,
+                    signature: CommandSignature.describe(UsageOptions()).flattened())
+            }),
+            ("guard", {
+                CommandDescriptor(
+                    name: "guard",
+                    abstract: "Exit non-zero when a provider lacks quota headroom (for gating scripts)",
+                    discussion: nil,
+                    signature: CommandSignature.describe(GuardOptions()).flattened())
+            }),
+            ("cost", {
+                CommandDescriptor(
+                    name: "cost",
+                    abstract: "Print local cost usage as text or JSON",
+                    discussion: nil,
+                    signature: CommandSignature.describe(CostOptions()).flattened())
+            }),
+            ("sessions", {
+                CommandDescriptor(
+                    name: "sessions",
+                    abstract: "List live Codex, Claude Code, pi, and OMP sessions",
+                    discussion: nil,
+                    signature: CommandSignature(),
+                    subcommands: [
+                        CommandDescriptor(
+                            name: "list",
+                            abstract: "List live Codex, Claude Code, pi, and OMP sessions",
+                            discussion: nil,
+                            signature: CommandSignature.describe(SessionsOptions())),
+                        CommandDescriptor(
+                            name: "focus",
+                            abstract: "Focus the window for a session",
+                            discussion: nil,
+                            signature: CommandSignature.describe(SessionsFocusOptions())),
+                    ],
+                    defaultSubcommandName: "list")
+            }),
+            ("serve", {
+                CommandDescriptor(
+                    name: "serve",
+                    abstract: "Serve usage, cost, and dashboard JSON over HTTP",
+                    discussion: nil,
+                    signature: CommandSignature.describe(ServeOptions()))
+            }),
+            ("dashboard", Self.dashboardCommandDescriptor),
+            ("config", Self.configCommandDescriptor),
+            ("hooks", Self.hooksCommandDescriptor),
+            ("cache", {
+                CommandDescriptor(
+                    name: "cache",
+                    abstract: "Cache management",
+                    discussion: nil,
+                    signature: CommandSignature(),
+                    subcommands: [
+                        CommandDescriptor(
+                            name: "clear",
+                            abstract: "Clear cached data (cookies, cost, or all)",
+                            discussion: nil,
+                            signature: CommandSignature.describe(CacheOptions()).flattened()),
+                    ],
+                    defaultSubcommandName: "clear")
+            }),
+            ("cookie", Self.cookieCommandDescriptor),
+            ("diagnose", {
+                CommandDescriptor(
+                    name: "diagnose",
+                    abstract: "Run provider diagnostic and emit safe JSON export",
+                    discussion: nil,
+                    signature: CommandSignature.describe(DiagnoseOptions()).flattened())
+            }),
+            ("plugins", Self.pluginsCommandDescriptor),
         ]
+        // Build option signatures only for the command being invoked.
+        if let factory = factories.first(where: { $0.name == command }) {
+            return [factory.make()]
+        }
+        return factories.map { $0.make() }
+    }
+
+    private static func configCommandDescriptor() -> CommandDescriptor {
+        let configSignature = CommandSignature.describe(ConfigOptions()).flattened()
+        let configDumpSignature = CommandSignature.describe(ConfigDumpOptions()).flattened()
+        let configProviderToggleSignature = CommandSignature.describe(ConfigProviderToggleOptions()).flattened()
+        let configLoginSignature = CommandSignature.describe(ConfigLoginOptions()).flattened()
+        let configSetSourceSignature = CommandSignature.describe(ConfigSetSourceOptions()).flattened()
+        let configSetAPIKeySignature = CommandSignature.describe(ConfigSetAPIKeyOptions()).flattened()
+        let configSetCookieSignature = CommandSignature.describe(ConfigSetCookieOptions()).flattened()
+        let configClearCredentialSignature = CommandSignature.describe(ConfigClearCredentialOptions()).flattened()
+        return CommandDescriptor(
+            name: "config",
+            abstract: "Config utilities",
+            discussion: nil,
+            signature: CommandSignature(),
+            subcommands: [
+                CommandDescriptor(
+                    name: "validate",
+                    abstract: "Validate config file",
+                    discussion: nil,
+                    signature: configSignature),
+                CommandDescriptor(
+                    name: "dump",
+                    abstract: "Print normalized config JSON",
+                    discussion: nil,
+                    signature: configDumpSignature),
+                CommandDescriptor(
+                    name: "providers",
+                    abstract: "List provider enablement",
+                    discussion: nil,
+                    signature: configSignature),
+                CommandDescriptor(
+                    name: "enable",
+                    abstract: "Enable a provider",
+                    discussion: nil,
+                    signature: configProviderToggleSignature),
+                CommandDescriptor(
+                    name: "disable",
+                    abstract: "Disable a provider",
+                    discussion: nil,
+                    signature: configProviderToggleSignature),
+                CommandDescriptor(
+                    name: "login",
+                    abstract: UsageFormatter.localized("Authentication"),
+                    discussion: nil,
+                    signature: configLoginSignature),
+                CommandDescriptor(
+                    name: "set-api-key",
+                    abstract: "Store a provider API key",
+                    discussion: nil,
+                    signature: configSetAPIKeySignature),
+                CommandDescriptor(
+                    name: "set-cookie",
+                    abstract: "Store a provider manual cookie",
+                    discussion: nil,
+                    signature: configSetCookieSignature),
+                CommandDescriptor(
+                    name: "clear-credential",
+                    abstract: "Clear a provider API key or manual cookie",
+                    discussion: nil,
+                    signature: configClearCredentialSignature),
+                CommandDescriptor(
+                    name: "set-source",
+                    abstract: "Store a provider data source",
+                    discussion: nil,
+                    signature: configSetSourceSignature),
+                Self.preferencesCommandDescriptor(),
+            ],
+            defaultSubcommandName: "validate")
+    }
+
+    private static func pluginsCommandDescriptor() -> CommandDescriptor {
+        CommandDescriptor(
+            name: "plugins",
+            abstract: "List or fetch user-installed provider plugins",
+            discussion: nil,
+            signature: CommandSignature(),
+            subcommands: [
+                CommandDescriptor(
+                    name: "list",
+                    abstract: "List discovered local plugins",
+                    discussion: nil,
+                    signature: CommandSignature()),
+                CommandDescriptor(
+                    name: "fetch",
+                    abstract: "Fetch one plugin, interactively approving network access when needed",
+                    discussion: nil,
+                    signature: CommandSignature.describe(PluginFetchOptions())),
+            ],
+            defaultSubcommandName: "list")
+    }
+
+    private static func dashboardCommandDescriptor() -> CommandDescriptor {
+        CommandDescriptor(
+            name: "dashboard",
+            abstract: "Print a dashboard-v1 snapshot as JSON",
+            discussion: nil,
+            signature: CommandSignature.describe(DashboardOptions()))
     }
 
     private static func cookieCommandDescriptor() -> CommandDescriptor {

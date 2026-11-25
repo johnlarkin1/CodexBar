@@ -1,7 +1,7 @@
-import CodexBarCore
 import Foundation
 import Testing
 @testable import CodexBar
+@testable import CodexBarCore
 
 @MainActor
 struct UsageStoreHighestUsageTests {
@@ -48,6 +48,69 @@ struct UsageStoreHighestUsageTests {
     }
 
     @Test
+    func `automatic highest usage ignores pace unsupported OpenCode lane`() {
+        let settings = testSettingsStore(
+            suiteName: "UsageStoreHighestUsageTests-opencode-lane-pace",
+            userDefaults: InMemoryUserDefaults(),
+            keychainAccessPolicy: .init(setDisabled: { _ in }, isExplicitlyDisabled: { true }))
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = false
+        settings.setMenuBarMetricPreference(.automatic, for: .claude)
+        settings.setMenuBarMetricPreference(.automatic, for: .opencode)
+
+        let registry = ProviderRegistry.shared
+        if let claudeMeta = registry.metadata[.claude] {
+            settings.setProviderEnabled(provider: .claude, metadata: claudeMeta, enabled: true)
+        }
+        if let opencodeMeta = registry.metadata[.opencode] {
+            settings.setProviderEnabled(provider: .opencode, metadata: opencodeMeta, enabled: true)
+        }
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let store = UsageStore(
+            fetcher: UsageFetcher(environment: [:]),
+            browserDetection: BrowserDetection(
+                homeDirectory: "/synthetic-opencode-lane-pace",
+                cacheTTL: 0,
+                now: { now },
+                fileExists: { _ in false },
+                directoryContents: { _ in [] },
+                applicationURLs: { _ in [] },
+                profileAccessIssue: { _ in nil }),
+            settings: settings,
+            startupBehavior: .testing,
+            environmentBase: [:])
+
+        let claude = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 99,
+                windowMinutes: 300,
+                resetsAt: now.addingTimeInterval(1800),
+                resetDescription: nil),
+            secondary: nil,
+            updatedAt: now)
+        let opencode = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 99.5,
+                windowMinutes: 300,
+                resetsAt: now.addingTimeInterval(1800),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 95,
+                windowMinutes: 10080,
+                resetsAt: now.addingTimeInterval(86400),
+                resetDescription: nil),
+            updatedAt: now)
+
+        store._setSnapshotForTesting(claude, provider: .claude)
+        store._setSnapshotForTesting(opencode, provider: .opencode)
+
+        let highest = store.providerWithHighestUsage(now: now)
+        #expect(highest?.provider == .claude)
+        #expect(highest?.usedPercent == 99)
+    }
+
+    @Test
     func `skips fully used providers`() {
         let settings = SettingsStore(
             configStore: testConfigStore(suiteName: "UsageStoreHighestUsageTests-skips"),
@@ -84,12 +147,11 @@ struct UsageStoreHighestUsageTests {
         #expect(highest?.usedPercent == 80)
     }
 
-    @Test
-    func `automatic metric uses rate limit for kimi when ranking highest usage`() {
-        let settings = SettingsStore(
-            configStore: testConfigStore(suiteName: "UsageStoreHighestUsageTests-kimi-automatic"),
-            zaiTokenStore: NoopZaiTokenStore(),
-            syntheticTokenStore: NoopSyntheticTokenStore())
+    @Test(arguments: [false, true])
+    func `automatic metric uses rate limit unless kimi membership is exhausted`(monthlyExhausted: Bool) {
+        let settings = testSettingsStore(
+            suiteName: "UsageStoreHighestUsageTests-kimi-automatic",
+            userDefaults: InMemoryUserDefaults())
         settings.refreshFrequency = .manual
         settings.statusChecksEnabled = false
         settings.setMenuBarMetricPreference(.automatic, for: .kimi)
@@ -102,8 +164,20 @@ struct UsageStoreHighestUsageTests {
             settings.setProviderEnabled(provider: .kimi, metadata: kimiMeta, enabled: true)
         }
 
-        let fetcher = UsageFetcher()
-        let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
+        let browserDetection = BrowserDetection(
+            homeDirectory: "/synthetic-kimi-proof",
+            cacheTTL: 0,
+            now: Date.init,
+            fileExists: { _ in false },
+            directoryContents: { _ in [] },
+            applicationURLs: { _ in [] },
+            profileAccessIssue: { _ in nil })
+        let store = UsageStore(
+            fetcher: UsageFetcher(environment: [:]),
+            browserDetection: browserDetection,
+            settings: settings,
+            startupBehavior: .testing,
+            environmentBase: [:])
 
         let codexSnapshot = UsageSnapshot(
             primary: RateWindow(usedPercent: 70, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
@@ -112,14 +186,20 @@ struct UsageStoreHighestUsageTests {
         let kimiSnapshot = UsageSnapshot(
             primary: RateWindow(usedPercent: 90, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
             secondary: RateWindow(usedPercent: 20, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            extraRateWindows: [NamedRateWindow(
+                id: "kimi-monthly", title: "Total usage", window: RateWindow(
+                    usedPercent: monthlyExhausted ? 100 : 50,
+                    windowMinutes: ProviderPaceCapability.monthlyWindowSentinelMinutes,
+                    resetsAt: nil,
+                    resetDescription: nil))],
             updatedAt: Date())
 
         store._setSnapshotForTesting(codexSnapshot, provider: .codex)
         store._setSnapshotForTesting(kimiSnapshot, provider: .kimi)
 
         let highest = store.providerWithHighestUsage()
-        #expect(highest?.provider == .codex)
-        #expect(highest?.usedPercent == 70)
+        #expect(highest?.provider == (monthlyExhausted ? .kimi : .codex))
+        #expect(highest?.usedPercent == (monthlyExhausted ? 100 : 70))
     }
 
     @Test
@@ -541,7 +621,7 @@ extension UsageStoreHighestUsageTests {
     @Test
     func `automatic metric uses zai 5-hour token lane when ranking highest usage`() {
         let settings = SettingsStore(
-            configStore: testConfigStore(suiteName: "UsageStoreHighestUsageTests-zai-automatic-tertiary"),
+            configStore: testConfigStore(suiteName: "UsageStoreHighestUsageTests-zai-automatic-primary"),
             zaiTokenStore: NoopZaiTokenStore(),
             syntheticTokenStore: NoopSyntheticTokenStore())
         settings.refreshFrequency = .manual
@@ -565,9 +645,9 @@ extension UsageStoreHighestUsageTests {
             secondary: nil,
             updatedAt: Date())
         let zaiSnapshot = UsageSnapshot(
-            primary: RateWindow(usedPercent: 15, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
-            secondary: RateWindow(usedPercent: 10, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
-            tertiary: RateWindow(usedPercent: 90, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            primary: RateWindow(usedPercent: 90, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 15, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            tertiary: nil,
             updatedAt: Date())
 
         store._setSnapshotForTesting(codexSnapshot, provider: .codex)

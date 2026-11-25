@@ -103,7 +103,7 @@ private let miMoCookieImportOrder: BrowserCookieImportOrder =
     ProviderDefaults.metadata[.mimo]?.browserCookieOrder ?? Browser.defaultImportOrder
 
 public enum MiMoCookieImporter {
-    private static let log = CodexBarLog.logger(LogCategories.mimoCookie)
+    private static let log = CodexBarLog.logger(LogCategories.provider(.mimo, scope: "cookie"))
     private static let cookieClient = BrowserCookieClient()
     private static let cookieDomains = [
         "platform.xiaomimimo.com",
@@ -154,92 +154,69 @@ public enum MiMoCookieImporter {
         browserDetection: BrowserDetection,
         logger: ((String) -> Void)? = nil) throws -> [SessionInfo]
     {
+        try Array(self.sessionCandidates(browserDetection: browserDetection, logger: logger))
+    }
+
+    static func sessionCandidates(
+        browserDetection: BrowserDetection,
+        logger: ((String) -> Void)? = nil) throws -> AnySequence<SessionInfo>
+    {
         #if DEBUG
         if let override = self.taskImportSessionsOverrideStore?.importSessions {
-            return try override(browserDetection, logger)
+            return try AnySequence(override(browserDetection, logger))
         }
         #endif
-
         return try self.importSessions(
             browserDetection: browserDetection,
             logger: logger,
-            loadRecords: { browserSource, query, log in
-                try Self.cookieClient.codexBarRecords(
-                    matching: query,
-                    in: browserSource,
-                    logger: log)
-            })
+            loadRecords: { try Self.cookieClient.codexBarRecords(matching: $1, in: $0, logger: $2) })
     }
 
     static func importSessions(
         browserDetection: BrowserDetection,
         logger: ((String) -> Void)? = nil,
-        loadRecords: (Browser, BrowserCookieQuery, ((String) -> Void)?) throws
-            -> [BrowserCookieStoreRecords]) throws -> [SessionInfo]
-    {
-        try self.importSessions(
-            browserDetection: browserDetection,
-            logger: logger,
-            loadRecords: loadRecords,
-            loadStores: { try self.cookieClient.codexBarStores(for: $0) })
-    }
-
-    static func importSessions(
-        browserDetection: BrowserDetection,
-        logger: ((String) -> Void)? = nil,
-        loadRecords: (Browser, BrowserCookieQuery, ((String) -> Void)?) throws
+        loadRecords: @escaping (Browser, BrowserCookieQuery, ((String) -> Void)?) throws
             -> [BrowserCookieStoreRecords],
-        loadStores: (Browser) throws -> [BrowserCookieStore]) throws -> [SessionInfo]
+        loadStores: @escaping (Browser) throws -> [BrowserCookieStore] = { try cookieClient.codexBarStores(for: $0) })
+        throws -> AnySequence<SessionInfo>
     {
         let log: (String) -> Void = { msg in
             logger?("[mimo-cookie] \(msg)")
             Self.log.debug("\(msg)")
         }
-        var sessions: [SessionInfo] = []
         var accessDeniedHints: [String] = []
-        let installed = miMoCookieImportOrder.cookieImportCandidates(using: browserDetection)
-        let labels = installed.map(\.displayName).joined(separator: ", ")
-        log("Cookie import candidates: \(labels)")
-
-        for browserSource in installed {
-            do {
-                let query = BrowserCookieQuery(domains: self.cookieDomains)
-                let sources = try loadRecords(browserSource, query, log)
-                let stores = browserSource.usesGeckoProfileStore ? try loadStores(browserSource) : []
-                let resolvedSources = self.recordsIncludingFirefoxSessionCookies(
-                    from: sources,
-                    browser: browserSource,
-                    stores: stores,
-                    logger: log)
-                let recordCount = sources.reduce(0) { $0 + $1.records.count }
-                let resolvedRecordCount = resolvedSources.reduce(0) { $0 + $1.records.count }
-                if resolvedRecordCount == recordCount {
-                    log("\(browserSource.displayName): \(sources.count) store(s), \(recordCount) record(s)")
-                } else {
-                    log(
-                        "\(browserSource.displayName): \(sources.count) store(s), " +
-                            "\(recordCount) persisted record(s), \(resolvedRecordCount) " +
-                            "record(s) after session restore")
+        let query = BrowserCookieQuery(domains: self.cookieDomains)
+        let installed = miMoCookieImportOrder.lazyCookieImportCandidates(using: browserDetection)
+        log("Cookie import order: \(miMoCookieImportOrder.map(\.displayName).joined(separator: ", "))")
+        return try BrowserCookieImportSupport.collectSessions(
+            from: installed,
+            missingError: accessDeniedHints.isEmpty ? nil : MiMoSettingsError.missingCookie(
+                details: Array(Set(accessDeniedHints)).sorted().joined(separator: " ")),
+            logger: log,
+            load: { browser in
+                do {
+                    let sources = try loadRecords(browser, query, log)
+                    let stores = browser.usesGeckoProfileStore ? try loadStores(browser) : []
+                    let resolvedSources = self.recordsIncludingFirefoxSessionCookies(
+                        from: sources, browser: browser, stores: stores, logger: log)
+                    let recordCount = sources.reduce(0) { $0 + $1.records.count }
+                    let resolvedRecordCount = resolvedSources.reduce(0) { $0 + $1.records.count }
+                    if resolvedRecordCount == recordCount {
+                        log("\(browser.displayName): \(sources.count) store(s), \(recordCount) record(s)")
+                    } else {
+                        log(
+                            "\(browser.displayName): \(sources.count) store(s), " +
+                                "\(recordCount) persisted record(s), \(resolvedRecordCount) " +
+                                "record(s) after session restore")
+                    }
+                    let sessions = self.sessionInfos(from: resolvedSources, origin: query.origin)
+                    log("Produced \(sessions.count) session(s) from \(browser.displayName)")
+                    return sessions
+                } catch let error as BrowserCookieError {
+                    if let hint = error.accessDeniedHint { accessDeniedHints.append(hint) }
+                    throw error
                 }
-                sessions.append(contentsOf: self.sessionInfos(from: resolvedSources, origin: query.origin))
-            } catch let error as BrowserCookieError {
-                BrowserCookieAccessGate.recordIfNeeded(error)
-                if let hint = error.accessDeniedHint {
-                    accessDeniedHints.append(hint)
-                }
-                log("\(browserSource.displayName) cookie import failed: \(error.localizedDescription)")
-            } catch {
-                BrowserCookieAccessGate.recordIfNeeded(error)
-                log("\(browserSource.displayName) cookie import failed: \(error.localizedDescription)")
-            }
-        }
-
-        log("Produced \(sessions.count) session(s) from \(installed.count) browser(s)")
-        if sessions.isEmpty, !accessDeniedHints.isEmpty {
-            let details = Array(Set(accessDeniedHints)).sorted().joined(separator: " ")
-            throw MiMoSettingsError.missingCookie(details: details)
-        }
-        return sessions
+            })
     }
 
     static func recordsIncludingFirefoxSessionCookies(
@@ -299,22 +276,18 @@ public enum MiMoCookieImporter {
         browserDetection: BrowserDetection,
         logger: ((String) -> Void)? = nil) -> Bool
     {
-        (try? self.importSessions(browserDetection: browserDetection, logger: logger).isEmpty == false) ?? false
+        (try? self.sessionCandidates(browserDetection: browserDetection, logger: logger).contains(where: { _ in true }))
+            ?? false
     }
 
     static func sessionInfos(
         from sources: [BrowserCookieStoreRecords],
         origin: BrowserCookieOriginStrategy = .domainBased) -> [SessionInfo]
     {
-        let grouped = Dictionary(grouping: sources, by: { $0.store.profile.id })
-        let sortedGroups = grouped.values.sorted { lhs, rhs in
-            self.mergedLabel(for: lhs) < self.mergedLabel(for: rhs)
-        }
-
         var sessions: [SessionInfo] = []
-        for group in sortedGroups where !group.isEmpty {
-            let label = self.mergedLabel(for: group)
-            let mergedRecords = self.mergeRecords(group)
+        for profile in BrowserCookieProfiles.merge(sources) {
+            let label = profile.label
+            let mergedRecords = profile.records
             guard !mergedRecords.isEmpty else { continue }
             let cookies = BrowserCookieClient.makeHTTPCookies(mergedRecords, origin: origin)
             guard let cookieHeader = MiMoCookieHeader.header(from: cookies) else {
@@ -326,61 +299,6 @@ public enum MiMoCookieImporter {
             sessions.append(SessionInfo(cookieHeader: cookieHeader, sourceLabel: label))
         }
         return sessions
-    }
-
-    private static func mergedLabel(for sources: [BrowserCookieStoreRecords]) -> String {
-        guard let base = sources.map(\.label).min() else {
-            return "Unknown"
-        }
-        if base.hasSuffix(" (Network)") {
-            return String(base.dropLast(" (Network)".count))
-        }
-        return base
-    }
-
-    private static func mergeRecords(_ sources: [BrowserCookieStoreRecords]) -> [BrowserCookieRecord] {
-        let sortedSources = sources.sorted { lhs, rhs in
-            self.storePriority(lhs.store.kind) < self.storePriority(rhs.store.kind)
-        }
-        var mergedByKey: [String: BrowserCookieRecord] = [:]
-        for source in sortedSources {
-            for record in source.records {
-                let key = self.recordKey(record)
-                if let existing = mergedByKey[key] {
-                    if self.shouldReplace(existing: existing, candidate: record) {
-                        mergedByKey[key] = record
-                    }
-                } else {
-                    mergedByKey[key] = record
-                }
-            }
-        }
-        return Array(mergedByKey.values)
-    }
-
-    private static func storePriority(_ kind: BrowserCookieStoreKind) -> Int {
-        switch kind {
-        case .network: 0
-        case .primary: 1
-        case .safari: 2
-        }
-    }
-
-    private static func recordKey(_ record: BrowserCookieRecord) -> String {
-        "\(record.name)|\(record.domain)|\(record.path)"
-    }
-
-    private static func shouldReplace(existing: BrowserCookieRecord, candidate: BrowserCookieRecord) -> Bool {
-        switch (existing.expires, candidate.expires) {
-        case let (lhs?, rhs?):
-            rhs > lhs
-        case (nil, .some):
-            true
-        case (.some, nil):
-            false
-        case (nil, nil):
-            false
-        }
     }
 }
 

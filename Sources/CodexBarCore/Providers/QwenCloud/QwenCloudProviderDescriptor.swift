@@ -1,21 +1,16 @@
 import Foundation
 
-#if os(macOS)
-import SweetCookieKit
-#endif
-
 public enum QwenCloudProviderDescriptor {
     public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    private static let credentials = ProviderCredentialAdapter(authDetector: { environment, _ in
+        QwenCloudSettingsReader.cookieHeader(environment: environment) == nil ? [] : ["web"]
+    })
 
     static func makeDescriptor() -> ProviderDescriptor {
-        #if os(macOS)
-        let browserOrder: BrowserCookieImportOrder = [.chrome]
-        #else
-        let browserOrder: BrowserCookieImportOrder? = nil
-        #endif
-
-        return ProviderDescriptor(
+        ProviderDescriptor(
             id: .qwencloud,
+            settingsSection: .init(QwenCloudProviderSettingsKey.self, cookieSettings: QwenCloudProviderSettings.self),
+            credentials: self.credentials,
             metadata: ProviderMetadata(
                 id: .qwencloud,
                 displayName: "Qwen Cloud",
@@ -30,12 +25,13 @@ public enum QwenCloudProviderDescriptor {
                 defaultEnabled: false,
                 isPrimaryProvider: false,
                 usesAccountFallback: false,
-                browserCookieOrder: browserOrder,
+                debugLogUnavailableMessage: "Qwen Cloud debug log not yet implemented",
+                browserCookieOrder: ProviderBrowserCookieDefaults.defaultImportOrder,
                 dashboardURL: QwenCloudUsageFetcher.dashboardURL.absoluteString,
                 statusPageURL: nil,
                 statusLinkURL: "https://status.alibabacloud.com"),
             branding: ProviderBranding(
-                iconStyle: .qwencloud,
+                iconStyle: .init(provider: .qwencloud),
                 iconResourceName: "ProviderIcon-qwencloud",
                 color: ProviderColor(hex: 0x615CED),
                 confettiPalette: [
@@ -46,20 +42,43 @@ public enum QwenCloudProviderDescriptor {
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "Qwen Cloud cost summary is not supported." }),
+            presentation: ProviderUsagePresentation(
+                rateWindowLabeler: { metadata, snapshot, _ in
+                    let primary = snapshot.primary?.resetDescription == "Team" ? "Team"
+                        : snapshot.primary?.windowMinutes == 30 * 24 * 60 ? "Monthly" : metadata.sessionLabel
+                    return ProviderRateWindowLabels(
+                        primary: primary,
+                        secondary: metadata.weeklyLabel,
+                        tertiary: metadata.opusLabel ?? "Sonnet",
+                        showsTertiary: metadata.supportsOpus)
+                },
+                primaryBindingQuotaLanes: [.secondary]),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .web],
-                pipeline: ProviderFetchPipeline(resolveStrategies: self.resolveStrategies)),
+                pipeline: ProviderFetchPipeline(
+                    resolveStrategies: self.resolveStrategies,
+                    resolveFallbackError: QwenCloudTeamFetchStrategy.fallbackError)),
             cli: ProviderCLIConfig(
                 name: "qwen-cloud",
                 aliases: ["qwencloud", "qwen", "qwen-token-plan"],
-                versionDetector: nil))
+                versionDetector: nil,
+                browserSupportExemption: { sourceMode, environment, settings in
+                    guard sourceMode == .auto || sourceMode == .web,
+                          settings?.qwenCloud?.cookieSource != .off else { return false }
+                    let hasEnvironmentCookie = environment.map {
+                        QwenCloudSettingsReader.cookieHeader(environment: $0) != nil
+                    } == true
+                    let hasManualCookie = settings?.qwenCloud?.cookieSource == .manual &&
+                        CookieHeaderNormalizer.normalize(settings?.qwenCloud?.manualCookieHeader) != nil
+                    return hasEnvironmentCookie || hasManualCookie
+                }))
     }
 
     private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
         guard context.settings?.qwenCloud?.cookieSource != .off else { return [] }
         switch context.sourceMode {
         case .auto, .web:
-            return [QwenCloudWebFetchStrategy()]
+            return [QwenCloudTeamFetchStrategy(), QwenCloudWebFetchStrategy()]
         case .api, .cli, .oauth:
             return []
         }
@@ -68,10 +87,6 @@ public enum QwenCloudProviderDescriptor {
 
 struct QwenCloudWebFetchStrategy: ProviderFetchStrategy {
     private static let log = CodexBarLog.logger("qwen-cloud")
-
-    #if os(macOS)
-    static let browserOrder: BrowserCookieImportOrder = [.chrome]
-    #endif
 
     let id: String = "qwen-cloud.web"
     let kind: ProviderFetchKind = .web
@@ -129,6 +144,10 @@ struct QwenCloudWebFetchStrategy: ProviderFetchStrategy {
 
     func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
         false
+    }
+
+    func diagnostic(forPriorFailure error: Error) -> String? {
+        error is QwenCloudTeamUnavailable ? nil : "Team usage unavailable: \(error.localizedDescription)"
     }
 
     static func resolveCookieHeader(context: ProviderFetchContext, allowCached: Bool) throws -> String {
@@ -189,8 +208,7 @@ struct QwenCloudWebFetchStrategy: ProviderFetchStrategy {
             var importLog: [String] = []
             let session = try QwenCloudCookieImport.importSession(
                 browserDetection: context.browserDetection,
-                logger: { importLog.append($0) },
-                importOrder: Self.browserOrder)
+                logger: { importLog.append($0) })
             let rawCookieNames = session.cookies.map(\.name).filter { !$0.isEmpty }.uniquedSorted()
             guard let headers = QwenCloudCookieHeader.headers(
                 from: session.cookies,

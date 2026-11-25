@@ -36,18 +36,48 @@ struct CursorAccountSwitchBrowserScanTests {
         #expect(unknown == nil)
         #expect(unverifiedArcChannel == nil)
         #expect(ambiguousYandexChannel == nil)
+        #expect(CursorStatusProbe.interactiveBrowser(bundleIdentifier: nil) == nil)
+        #expect(CursorStatusProbe.interactiveBrowser(bundleIdentifier: "") == nil)
+        #expect(CursorStatusProbe.interactiveBrowser(bundleIdentifier: " \n\t") == nil)
+    }
+
+    @Test(arguments: [
+        ("at.studio.AsideBrowser", Browser.aside),
+        ("com.google.Chrome.dev", .chromeDev),
+        ("com.operasoftware.Opera", .opera),
+        ("com.operasoftware.OperaNeon", .operaNeon),
+        ("com.brave.Browser.origin", .braveOrigin),
+    ])
+    func `new catalog browsers use their verified application identifiers`(fixture: (String, Browser)) {
+        let (identifier, browser) = fixture
+        #expect(CursorStatusProbe.interactiveBrowser(bundleIdentifier: identifier) == browser)
+        #expect(CursorStatusProbe.interactiveBrowser(bundleIdentifier: " \(identifier.uppercased())\n") == browser)
     }
 
     @Test
     func `interactive browser mapping covers every unambiguous SweetCookieKit browser`() {
         let mapping = CursorStatusProbe.interactiveBrowserByBundleIdentifier
         let mappedBrowsers = Set(mapping.values)
-        let deliberatelyUnsupported: Set<Browser> = [.arcBeta, .arcCanary, .yandex]
+        // Ego Lite (SweetCookieKit 0.5.6) has no verified application bundle identifier yet.
+        // Claude desktop supplies Claude cookies but cannot perform Cursor browser login.
+        let deliberatelyUnsupported: Set<Browser> = [.arcBeta, .arcCanary, .yandex, .egoLite, .claudeDesktop]
 
         #expect(mapping.count == mappedBrowsers.count)
         #expect(mappedBrowsers.isDisjoint(with: deliberatelyUnsupported))
         #expect(mappedBrowsers.union(deliberatelyUnsupported) == Set(Browser.allCases))
         #expect(mapping.keys.allSatisfy { !$0.isEmpty && $0 == $0.lowercased() })
+    }
+
+    @Test
+    func `mapped Firefox variants are keychain-free for interactive login`() {
+        let mappedFirefoxVariants: Set<Browser> = [
+            .firefox,
+            .firefoxBeta,
+            .firefoxDeveloperEdition,
+            .firefoxNightly,
+        ]
+
+        #expect(mappedFirefoxVariants.allSatisfy { !$0.usesKeychainForCookieDecryption })
     }
 
     @Test

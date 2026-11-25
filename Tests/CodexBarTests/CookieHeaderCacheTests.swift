@@ -388,10 +388,13 @@ struct CookieHeaderCacheTests {
             #expect(loaded == nil)
             #expect(FileManager.default.fileExists(atPath: legacyURL.path) == true)
 
-            switch KeychainCacheStore.load(key: .cookie(provider: provider), as: CookieHeaderCache.Entry.self) {
+            switch KeychainCacheStore.load(
+                key: .cookie(provider: provider.instanceID),
+                as: CookieHeaderCache.Entry.self)
+            {
             case .missing:
                 #expect(true)
-            case .found, .temporarilyUnavailable, .invalid:
+            case .found, .interactionRequired, .temporarilyUnavailable, .invalid:
                 #expect(Bool(false), "Expected temporary miss not to migrate legacy cache")
             }
         }
@@ -407,7 +410,7 @@ struct CookieHeaderCacheTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         CookieHeaderCache.withLegacyBaseURLOverrideForTesting(legacyBase) {
             let provider: UsageProvider = .codex
-            let key = KeychainCacheStore.Key.cookie(provider: provider)
+            let key = KeychainCacheStore.Key.cookie(provider: provider.instanceID)
             KeychainCacheStore.store(key: key, entry: WrongEntry(value: "not-a-cookie-entry"))
 
             #expect(CookieHeaderCache.load(provider: provider) == nil)
@@ -415,7 +418,7 @@ struct CookieHeaderCacheTests {
             switch KeychainCacheStore.load(key: key, as: CookieHeaderCache.Entry.self) {
             case .missing:
                 #expect(true)
-            case .found, .temporarilyUnavailable, .invalid:
+            case .found, .interactionRequired, .temporarilyUnavailable, .invalid:
                 #expect(Bool(false), "Expected invalid cookie cache to be cleared")
             }
         }
@@ -438,7 +441,7 @@ struct CookieHeaderCacheTests {
                 cookieHeader: "auth=scoped",
                 sourceLabel: "Chrome")
             KeychainCacheStore.store(
-                key: .cookie(provider: provider, scopeIdentifier: "managed-store-unreadable"),
+                key: .cookie(provider: provider.instanceID, scopeIdentifier: "managed-store-unreadable"),
                 entry: WrongEntry(value: "invalid"))
             CookieHeaderCache.store(
                 CookieHeaderCache.Entry(
@@ -473,7 +476,7 @@ struct CookieHeaderCacheTests {
 
         // Remove the backing entry without going through CookieHeaderCache: the strict load
         // sees the change, the display path keeps serving the memoized snapshot.
-        KeychainCacheStore.clear(key: .cookie(provider: provider))
+        KeychainCacheStore.clear(key: .cookie(provider: provider.instanceID))
         #expect(CookieHeaderCache.load(provider: provider) == nil)
         #expect(CookieHeaderCache.loadForDisplay(provider: provider)?.cookieHeader == "auth=abc")
     }
@@ -489,12 +492,12 @@ struct CookieHeaderCacheTests {
         #expect(CookieHeaderCache.loadForDisplay(provider: provider) == nil)
 
         KeychainCacheStore.store(
-            key: .cookie(provider: provider),
+            key: .cookie(provider: provider.instanceID),
             entry: CookieHeaderCache.Entry(
                 cookieHeader: "auth=behind-the-back",
                 storedAt: Date(timeIntervalSince1970: 0),
                 sourceLabel: "Chrome"))
-        defer { KeychainCacheStore.clear(key: .cookie(provider: provider)) }
+        defer { KeychainCacheStore.clear(key: .cookie(provider: provider.instanceID)) }
         #expect(CookieHeaderCache.loadForDisplay(provider: provider) == nil)
     }
 
@@ -593,7 +596,7 @@ struct CookieHeaderCacheTests {
         try await CookieHeaderCache.withDisplayUnavailableRetryIntervalOverrideForTesting(0.05) {
             let provider: UsageProvider = .codex
             KeychainCacheStore.store(
-                key: .cookie(provider: provider),
+                key: .cookie(provider: provider.instanceID),
                 entry: CookieHeaderCache.Entry(
                     cookieHeader: "auth=available-after-retry",
                     storedAt: Date(timeIntervalSince1970: 0),
@@ -610,7 +613,9 @@ struct CookieHeaderCacheTests {
             var retried: CookieHeaderCache.Entry?
             for _ in 0..<500 {
                 retried = CookieHeaderCache.loadForDisplay(provider: provider)
-                if retried != nil { break }
+                if retried != nil {
+                    break
+                }
                 try await Task.sleep(for: .milliseconds(10))
             }
             #expect(retried?.cookieHeader == "auth=available-after-retry")
@@ -829,7 +834,7 @@ struct CookieHeaderCacheTests {
 
         let provider: UsageProvider = .codex
         KeychainCacheStore.store(
-            key: .cookie(provider: provider),
+            key: .cookie(provider: provider.instanceID),
             entry: CookieHeaderCache.Entry(
                 cookieHeader: "auth=secret",
                 storedAt: Date(timeIntervalSince1970: 0),
@@ -858,7 +863,7 @@ struct CookieHeaderCacheTests {
         try await CookieHeaderCache.withDisplayStalenessIntervalOverrideForTesting(0) {
             let provider: UsageProvider = .codex
             KeychainCacheStore.store(
-                key: .cookie(provider: provider),
+                key: .cookie(provider: provider.instanceID),
                 entry: CookieHeaderCache.Entry(
                     cookieHeader: "auth=old",
                     storedAt: Date(timeIntervalSince1970: 0),
@@ -866,7 +871,7 @@ struct CookieHeaderCacheTests {
             #expect(CookieHeaderCache.loadForDisplay(provider: provider)?.cookieHeader == "auth=old")
 
             KeychainCacheStore.store(
-                key: .cookie(provider: provider),
+                key: .cookie(provider: provider.instanceID),
                 entry: CookieHeaderCache.Entry(
                     cookieHeader: "auth=new",
                     storedAt: Date(timeIntervalSince1970: 1),
@@ -921,6 +926,106 @@ struct CookieHeaderCacheTests {
                 defer { CookieHeaderCache.resetDisplayCacheForTesting() }
                 return operation()
             }
+        }
+    }
+}
+
+#if os(macOS)
+extension CookieHeaderCacheTests {
+    @Test
+    func `display retries an externally repaired ACL after the shared cooldown`() async throws {
+        CookieHeaderCache.resetDisplayCacheForTesting()
+        defer { CookieHeaderCache.resetDisplayCacheForTesting() }
+        let preflightCount = LockIsolated(0)
+        let cacheDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cookie-acl-recovery-\(UUID().uuidString)")
+        try await CookieHeaderCache.withLegacyBaseURLOverrideForTesting(cacheDirectory) {
+            try await KeychainCacheStore.withServiceOverrideForTesting("display-recovery-\(UUID().uuidString)") {
+                try await KeychainAccessGate.withTaskOverrideForTesting(false) {
+                    try await KeychainAccessPreflight.withCheckGenericPasswordOverrideForTesting { _, _ in
+                        preflightCount.setValue(preflightCount.value + 1)
+                        return preflightCount.value == 1 ? .interactionRequired : .notFound
+                    } operation: {
+                        try await KeychainCacheStore.$taskInteractionRequiredRetryIntervalOverride.withValue(0.05) {
+                            _ = KeychainCacheStore.withRealKeychainPathForTesting {
+                                CookieHeaderCache.loadForDisplay(provider: .cursor)
+                            }
+                            #expect(preflightCount.value == 1)
+                            try await Task.sleep(for: .milliseconds(75))
+                            for _ in 0..<200 {
+                                _ = KeychainCacheStore.withRealKeychainPathForTesting {
+                                    CookieHeaderCache.loadForDisplay(provider: .cursor)
+                                }
+                                if preflightCount.value >= 2 {
+                                    break
+                                }
+                                try await Task.sleep(for: .milliseconds(5))
+                            }
+                            #expect(preflightCount.value == 2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    func `loadForDisplay does not repeatedly validate a cache ACL that needs authorization`() async throws {
+        CookieHeaderCache.resetDisplayCacheForTesting()
+        defer { CookieHeaderCache.resetDisplayCacheForTesting() }
+
+        let provider: UsageProvider = .cursor
+        let preflightCount = LockIsolated(0)
+        try await KeychainCacheStore.withServiceOverrideForTesting("cache-preflight-loop-\(UUID().uuidString)") {
+            try await KeychainAccessGate.withTaskOverrideForTesting(false) {
+                try await KeychainAccessPreflight.withCheckGenericPasswordOverrideForTesting { _, _ in
+                    preflightCount.setValue(preflightCount.value + 1)
+                    return .interactionRequired
+                } operation: {
+                    try await CookieHeaderCache.withDisplayUnavailableRetryIntervalOverrideForTesting(0.01) {
+                        let first = KeychainCacheStore.withRealKeychainPathForTesting {
+                            CookieHeaderCache.loadForDisplay(provider: provider)
+                        }
+                        #expect(first == nil)
+                        #expect(preflightCount.value == 1)
+
+                        try await Task.sleep(for: .milliseconds(20))
+                        for _ in 0..<100 {
+                            _ = KeychainCacheStore.withRealKeychainPathForTesting {
+                                CookieHeaderCache.loadForDisplay(provider: provider)
+                            }
+                            if preflightCount.value > 1 {
+                                break
+                            }
+                            try await Task.sleep(for: .milliseconds(5))
+                        }
+
+                        #expect(
+                            preflightCount.value == 1,
+                            "An ACL authorization failure must not trigger automatic Security.framework revalidation")
+                    }
+                }
+            }
+        }
+    }
+}
+#endif
+
+extension CookieHeaderCacheTests {
+    @Test
+    func `a validated nonpersistent refresh commits no mutations and cannot be committed twice`() {
+        self.withIsolatedCookieCache {
+            CookieHeaderCache.store(provider: .lithosai, cookieHeader: "session=old", sourceLabel: "Fixture")
+            guard let gate = CookieHeaderCache.beginRefreshReadSuppression(provider: .lithosai) else {
+                Issue.record("Expected a refresh transaction")
+                return
+            }
+            defer { CookieHeaderCache.endRefreshReadSuppression(gate) }
+            CookieHeaderCache.markNonpersistentRefreshValidated(provider: .lithosai)
+            #expect(CookieHeaderCache.commitRefreshReadSuppression(gate) == CookieRefreshCommitSummary(
+                stagedCount: 0, committedCount: 0, failedCount: 0))
+            #expect(CookieHeaderCache.load(provider: .lithosai)?.cookieHeader == "session=old")
+            #expect(CookieHeaderCache.commitRefreshReadSuppression(gate).failedCount == 1)
         }
     }
 }

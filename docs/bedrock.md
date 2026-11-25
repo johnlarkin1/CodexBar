@@ -11,6 +11,37 @@ read_when:
 CodexBar reads AWS Cost Explorer for Bedrock spend and can compare the current month against an optional budget. When
 permitted, it also reads CloudWatch for rolling 14-day Claude token and request totals in the configured region.
 
+## Monitoring charges and refresh frequency
+
+**Monitoring Bedrock spend can add charges to your AWS bill.** AWS currently charges **$0.01 per Cost Explorer API
+request** against the primary billing view, separately from Bedrock inference charges. See the
+[AWS Cost Explorer pricing page](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/pricing/) for current rates.
+For example, 5,000 billed requests cost $50 at that rate. A CodexBar refresh is not a fixed-price unit: monthly spend,
+daily cost history, and paginated responses can make separate requests. Optional CloudWatch activity uses another API
+and is subject to [CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/).
+
+To reduce automatic requests, open **Settings → General → Refreshing** and choose a longer refresh interval or
+**Manual**. This setting applies to all providers. Manual stops the recurring timer; startup, explicit refreshes,
+and **Refresh when the menu opens** can still fetch data. Turn off that option as well to reduce menu-triggered requests.
+Disable AWS Bedrock in Providers to stop its app refreshes; separate CLI invocations can still make billed requests.
+
+Successful Cost Explorer measurements are reused for up to six hours for periodic app usage and process-local
+cost history. The bounded in-memory cache holds one monthly total and one daily report (up to 1 MiB), keyed by the
+resolved AWS access key ID, configured region, endpoint, and requested UTC period. Profile reassignment and credential
+rotation miss the cache; a new UTC day, changed reporting period, or process restart can also make a new paid request. Cached usage and
+cost history retain their original `updatedAt` timestamps. Errors and unavailable data are not cached; measured zero
+remains a valid result. CloudWatch activity continues to refresh separately.
+
+An explicitly user-initiated app usage refresh bypasses the monthly cache. CLI and server usage measurements always
+fetch fresh monthly spend, including HTTP `refresh=1`, without enabling interactive prompts. Daily cost history can
+reuse its cache within the running app or CLI server; `codexbar cost --provider bedrock --refresh` bypasses it. A fresh
+CLI invocation starts with an empty cache. Endpoint overrides bypass the shared cache. There is no persistent billing
+cache or cache-duration setting.
+
+The optional monthly budget only changes the displayed progress. It does not cap AWS charges or stop polling.
+The AWS Bedrock provider's Connection settings show these monitoring charges, link to current Cost Explorer pricing,
+and explain how the shared refresh controls reduce requests in both access-key and AWS-profile modes.
+
 ## Authentication
 
 CodexBar supports two authentication modes, selected in Preferences → Providers → AWS Bedrock → Authentication.
@@ -65,7 +96,7 @@ tracking continue unchanged.
 
 - Service: AWS Cost Explorer.
 - Region: `AWS_REGION` or `AWS_DEFAULT_REGION`, defaulting to `us-east-1`.
-- Usage: current-month Bedrock spend and historical daily cost buckets.
+- Usage: current-month Bedrock spend and historical daily cost buckets. Cost Explorer buckets are UTC; shared reporting periods select available date-labeled buckets, and a local date ahead of UTC remains incomplete. The shared All cost period requests the current month plus up to 13 historical months, matching [Cost Explorer’s API history limit](https://docs.aws.amazon.com/cost-management/latest/userguide/ce-api-best-practices.html).
 - Claude activity: rolling 14-day input tokens, output tokens, and requests from the configured region's `AWS/Bedrock`
   CloudWatch metrics. Other model families are excluded.
 - Budget: `CODEXBAR_BEDROCK_BUDGET`, when set to a positive dollar amount.
@@ -75,6 +106,8 @@ tracking continue unchanged.
 ## Display
 
 - Shows month-to-date Bedrock spend.
+- Cost Explorer's `DataUnavailableException` reports **Spend unavailable** for monthly spend and daily history; it is not a measured zero. A successful response reporting zero cost remains zero, including when AWS credits cover the net charge. Gross usage and credit adjustments are not shown separately.
+- Daily history retains explicitly measured zero-cost billing days, including their dates and service breakdowns; missing or unparseable rows do not create zero-cost entries.
 - Shows budget progress when a budget is configured.
 - Shows rolling 14-day Claude tokens and requests when CloudWatch access is available.
 - Reuses the shared inline dashboard for daily cost history when enough buckets are available.

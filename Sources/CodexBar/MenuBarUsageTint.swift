@@ -11,6 +11,7 @@ import Foundation
 /// The values are mid-luminance and high-chroma so they stay legible against a light menu bar, a dark menu bar,
 /// and a translucent one over an arbitrary wallpaper. `NSColor.systemGreen` in particular is far too light on
 /// white. Color is never the only signal: the bar fill length already encodes the same value.
+///
 /// Which part of a menu bar layout strip `MenuBarUsageTint` colors.
 ///
 /// The meter icon is a single glyph, so the legacy render path has nothing to choose between. A layout strip is a
@@ -65,5 +66,19 @@ enum MenuBarUsageTint {
             return Self.medium.blended(withFraction: fraction, of: Self.high) ?? Self.medium
         }
         return Self.high
+    }
+}
+
+extension MenuBarLayoutToken {
+    /// Tokens whose value the usage tint restates, colored under `MenuBarUsageColorTarget.usage`.
+    var carriesUsageTint: Bool {
+        switch self {
+        case .percent, .lanePercent, .extraPercent, .pace, .usageBar, .progressBar, .runsOut, .runsOutCompact:
+            true
+        case .icon, .providerName, .accountLabel, .resetCountdown, .resetAbsolute, .windowResetCountdown,
+             .windowResetAbsolute, .balance, .costToday, .tokensPerMinute, .tokensSparkline, .costWindow,
+             .spendAmount, .spendBudget, .separatorDot, .separator, .space, .hidden, .conditional:
+            false
+        }
     }
 }

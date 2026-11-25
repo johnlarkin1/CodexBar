@@ -4,6 +4,21 @@ import Testing
 
 struct ClaudeWebUsageExtraWindowTests {
     @Test
+    func `boolean scoped percentages do not become zero or one percent`() throws {
+        let json = #"""
+        {"five_hour":{"utilization":12},"limits":[
+          {"kind":"weekly_scoped","group":"weekly","percent":true,"scope":{"model":{"display_name":"Fable"}}},
+          {"kind":"weekly_scoped","group":"weekly","percent":false,"scope":{"model":{"display_name":"Story"}}}
+        ]}
+        """#
+        let data = Data(json.utf8)
+        let web = try ClaudeWebAPIFetcher._parseUsageResponseForTesting(data)
+        let oauth = try ClaudeUsageFetcher._mapOAuthUsageForTesting(data)
+        #expect(web.extraRateWindows.isEmpty)
+        #expect(oauth.extraRateWindows.isEmpty)
+    }
+
+    @Test
     func `parses claude web API sonnet usage response`() throws {
         let json = """
         {
@@ -55,7 +70,7 @@ struct ClaudeWebUsageExtraWindowTests {
             balance: 100,
             updatedAt: now.addingTimeInterval(1))
 
-        let merged = try #require(ClaudeUsageFetcher._mergeProviderCostForTesting(
+        let merged = try #require(ClaudeUsageFetcher.mergeProviderCost(
             primary: primary,
             web: web))
 
@@ -83,11 +98,52 @@ struct ClaudeWebUsageExtraWindowTests {
             balance: 100,
             updatedAt: now)
 
-        let merged = try #require(ClaudeUsageFetcher._mergeProviderCostForTesting(
+        let merged = try #require(ClaudeUsageFetcher.mergeProviderCost(
             primary: primary,
             web: web))
 
         #expect(merged == primary)
+    }
+
+    @Test
+    func `web extras preserve OAuth credential ownership evidence`() {
+        let primaryCost = ProviderCostSnapshot(
+            used: 5,
+            limit: 20,
+            currencyCode: "USD",
+            period: "Monthly cap",
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let snapshot = ClaudeUsageSnapshot(
+            primary: RateWindow(usedPercent: 7, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            opus: nil,
+            providerCost: primaryCost,
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_001),
+            accountEmail: "user@example.com",
+            accountOrganization: "org-123",
+            loginMethod: "Pro",
+            rawText: nil,
+            oauthKeychainPersistentRefHash: "persistent-ref",
+            oauthHistoryOwnerIdentifier: "history-owner",
+            oauthCredentialOwner: .claudeCLI,
+            oauthKeychainCredentialUnavailable: true)
+        let webCost = ProviderCostSnapshot(
+            used: 0,
+            limit: 0,
+            currencyCode: "USD",
+            period: "Extra usage",
+            balance: 100,
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_002))
+
+        let enriched = snapshot.replacingWebExtras(
+            extraRateWindows: [],
+            providerCost: webCost)
+
+        #expect(enriched.providerCost == webCost)
+        #expect(enriched.oauthCredentialOwner == .claudeCLI)
+        #expect(enriched.oauthKeychainPersistentRefHash == "persistent-ref")
+        #expect(enriched.oauthHistoryOwnerIdentifier == "history-owner")
+        #expect(enriched.oauthKeychainCredentialUnavailable)
     }
 
     @Test
@@ -133,6 +189,71 @@ struct ClaudeWebUsageExtraWindowTests {
             oauthProfile: OAuthProfileResponse(
                 emailAddress: "user@example.com",
                 organizationUuid: "org-other")))
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func `CLI web extras require matching emails even when organization names match`(
+        primaryHasEmail: Bool,
+        webHasEmail: Bool)
+    {
+        let snapshot = Self.identitySnapshot(email: primaryHasEmail ? " USER@example.com " : nil)
+        let webData = Self.identityWebData(email: webHasEmail ? "user@example.com" : nil)
+
+        #expect(ClaudeUsageFetcher.webExtrasAccountMatches(
+            snapshot: snapshot,
+            webData: webData,
+            oauthProfile: nil) == (primaryHasEmail && webHasEmail))
+    }
+
+    @Test
+    func `CLI matching emails still reject known organization mismatch`() {
+        #expect(!ClaudeUsageFetcher.webExtrasAccountMatches(
+            snapshot: Self.identitySnapshot(email: "user@example.com"),
+            webData: Self.identityWebData(email: "user@example.com", organization: "Other Team"),
+            oauthProfile: nil))
+    }
+
+    @Test
+    func `OAuth organization UUID retains identity when account email is unavailable`() {
+        #expect(ClaudeUsageFetcher.webExtrasAccountMatches(
+            snapshot: Self.identitySnapshot(email: nil),
+            webData: Self.identityWebData(email: nil),
+            oauthProfile: OAuthProfileResponse(emailAddress: nil, organizationUuid: "org-123")))
+        #expect(!ClaudeUsageFetcher.webExtrasAccountMatches(
+            snapshot: Self.identitySnapshot(email: nil),
+            webData: Self.identityWebData(email: nil),
+            oauthProfile: OAuthProfileResponse(emailAddress: nil, organizationUuid: nil)))
+    }
+
+    private static func identitySnapshot(email: String?) -> ClaudeUsageSnapshot {
+        ClaudeUsageSnapshot(
+            primary: RateWindow(usedPercent: 7, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: nil,
+            opus: nil,
+            providerCost: nil,
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            accountEmail: email,
+            accountOrganization: "Shared Team",
+            loginMethod: "Pro",
+            rawText: nil)
+    }
+
+    private static func identityWebData(
+        email: String?,
+        organization: String = "Shared Team") -> ClaudeWebAPIFetcher.WebUsageData
+    {
+        ClaudeWebAPIFetcher.WebUsageData(
+            sessionPercentUsed: 7,
+            sessionResetsAt: nil,
+            weeklyPercentUsed: nil,
+            weeklyResetsAt: nil,
+            opusPercentUsed: nil,
+            extraRateWindows: [],
+            extraUsageCost: nil,
+            accountOrganization: organization,
+            accountOrganizationID: "org-123",
+            accountEmail: email,
+            loginMethod: "Pro")
     }
 
     @Test

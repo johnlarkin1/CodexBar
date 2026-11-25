@@ -68,25 +68,10 @@ public struct DoubaoUsageSnapshot: Sendable {
             secondary: nil,
             tertiary: nil,
             extraRateWindows: nil,
-            kiroUsage: nil,
-            ampUsage: nil,
             providerCost: nil,
-            zaiUsage: nil,
-            minimaxUsage: nil,
-            deepseekUsage: nil,
-            mimoUsage: nil,
-            openRouterUsage: nil,
-            sakanaPayAsYouGo: nil,
-            clawRouterUsage: nil,
-            sub2APIUsage: nil,
-            wayfinderUsage: nil,
             openAIAPIUsage: nil,
             codexResetCredits: nil,
-            claudeAdminAPIUsage: nil,
             mistralUsage: nil,
-            deepgramUsage: nil,
-            poeUsage: nil,
-            cursorRequests: nil,
             commandCodeSubscriptionEnrichmentUnavailable: false,
             commandCodeHasSubscriptionPlan: false,
             commandCodeMonthlyGrantDepleted: false,
@@ -174,25 +159,10 @@ public struct DoubaoCodingPlanUsage: Sendable, Equatable {
             secondary: codingSecondary,
             tertiary: codingTertiary,
             extraRateWindows: finalExtraWindows,
-            kiroUsage: nil,
-            ampUsage: nil,
             providerCost: nil,
-            zaiUsage: nil,
-            minimaxUsage: nil,
-            deepseekUsage: nil,
-            mimoUsage: nil,
-            openRouterUsage: nil,
-            sakanaPayAsYouGo: nil,
-            clawRouterUsage: nil,
-            sub2APIUsage: nil,
-            wayfinderUsage: nil,
             openAIAPIUsage: nil,
             codexResetCredits: nil,
-            claudeAdminAPIUsage: nil,
             mistralUsage: nil,
-            deepgramUsage: nil,
-            poeUsage: nil,
-            cursorRequests: nil,
             commandCodeSubscriptionEnrichmentUnavailable: false,
             commandCodeHasSubscriptionPlan: false,
             commandCodeMonthlyGrantDepleted: false,
@@ -262,14 +232,14 @@ public enum DoubaoUsageError: LocalizedError, Sendable {
 }
 
 public struct DoubaoUsageFetcher: Sendable {
-    private static let log = CodexBarLog.logger(LogCategories.doubaoUsage)
+    private static let log = CodexBarLog.logger(LogCategories.provider(.doubao, scope: "usage"))
     private static let apiURL = URL(string: "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions")!
     private static let codingPlanAPIURL = URL(
         string: "https://open.volcengineapi.com/?Action=GetCodingPlanUsage&Version=2024-01-01")!
     /// Agent Plan usage lives behind a sibling Volcengine Top OpenAPI action (`GetAFPUsage`,
-    /// AFP = "Agent Flow Points"), signed with the same AK/SK the Coding Plan path uses. An
-    /// account holds a Coding Plan *or* an Agent Plan, so `GetCodingPlanUsage` returns no
-    /// active quota for an Agent Plan account and we fall back to this action.
+    /// AFP = "Agent Flow Points"), signed with the same AK/SK the Coding Plan path uses.
+    /// Accounts can hold Coding Plan and Agent Plan simultaneously, so both actions must be
+    /// queried independently.
     private static let agentPlanAPIURL = URL(
         string: "https://open.volcengineapi.com/?Action=GetAFPUsage&Version=2024-01-01")!
 
@@ -360,23 +330,54 @@ public struct DoubaoUsageFetcher: Sendable {
         }
 
         let codingPlanUsage = try self.decodeCodingPlanUsage(from: response.data)
-        if codingPlanUsage.quotas.isEmpty {
-            // A 200 with no quota window means the Coding Plan is not active for this account
-            // (e.g. Status "Reclaimed" after switching to an Agent Plan). Fall back to the
-            // Agent Plan (AFP) usage before surfacing an empty Coding Plan snapshot.
-            let agentSnapshot = try await self.fetchAgentPlanUsage(
+        let agentPlanUsage: DoubaoCodingPlanUsage?
+        do {
+            // Keep these requests sequential. Coding Plan is the required result and AFP is an
+            // independent, best-effort product probe with its own bounded request timeout.
+            agentPlanUsage = try await self.fetchAgentPlanUsage(
                 credentials: credentials, session: transport, date: date)
-            if agentSnapshot.codingPlanUsage?.quotas.isEmpty == false {
-                return agentSnapshot
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as DoubaoUsageError {
+            if self.isAgentPlanAbsence(error) || !codingPlanUsage.quotas.isEmpty {
+                Self.log.debug("Doubao agent plan usage unavailable; preserving Coding Plan usage: \(error)")
+                agentPlanUsage = nil
+            } else {
+                throw error
             }
+        } catch {
+            if !codingPlanUsage.quotas.isEmpty {
+                Self.log.debug("Doubao agent plan usage unavailable; preserving Coding Plan usage: \(error)")
+                agentPlanUsage = nil
+            } else {
+                throw error
+            }
+        }
+
+        let combinedUsage: DoubaoCodingPlanUsage = if codingPlanUsage.quotas.isEmpty, let agentPlanUsage,
+                                                      !agentPlanUsage.quotas.isEmpty
+        {
+            agentPlanUsage
+        } else if let agentPlanUsage, !agentPlanUsage.quotas.isEmpty {
+            DoubaoCodingPlanUsage(
+                status: codingPlanUsage.status,
+                updateTime: codingPlanUsage.updateTime ?? agentPlanUsage.updateTime,
+                quotas: codingPlanUsage.quotas + agentPlanUsage.quotas)
+        } else {
+            codingPlanUsage
         }
         return DoubaoUsageSnapshot(
             remainingRequests: 0,
             limitRequests: 0,
             resetTime: nil,
-            updatedAt: codingPlanUsage.updateTime ?? date,
+            updatedAt: combinedUsage.updateTime ?? date,
             apiKeyValid: true,
-            codingPlanUsage: codingPlanUsage)
+            codingPlanUsage: combinedUsage)
+    }
+
+    private static func isAgentPlanAbsence(_ error: DoubaoUsageError) -> Bool {
+        guard case let .apiError(statusCode, _) = error else { return false }
+        return statusCode == 403 || statusCode == 404
     }
 
     /// Fetches Agent Plan (AFP) usage via the AK/SK-signed `GetAFPUsage` action. Mirrors the
@@ -386,7 +387,7 @@ public struct DoubaoUsageFetcher: Sendable {
     static func fetchAgentPlanUsage(
         credentials: DoubaoCodingPlanCredentials,
         session transport: any ProviderHTTPTransport = ProviderHTTPClient.shared,
-        date: Date = Date()) async throws -> DoubaoUsageSnapshot
+        date: Date = Date()) async throws -> DoubaoCodingPlanUsage
     {
         let body = Data()
         var request = URLRequest(url: self.agentPlanAPIURL)
@@ -412,18 +413,15 @@ public struct DoubaoUsageFetcher: Sendable {
         }
         guard response.statusCode == 200 else {
             let summary = Self.apiErrorSummary(statusCode: response.statusCode, data: response.data)
-            Self.log.error("Doubao agent plan API returned \(response.statusCode): \(summary)")
+            if response.statusCode == 403 || response.statusCode == 404 {
+                Self.log.debug("Doubao agent plan is unavailable: \(summary)")
+            } else {
+                Self.log.error("Doubao agent plan API returned \(response.statusCode): \(summary)")
+            }
             throw DoubaoUsageError.apiError(response.statusCode, summary)
         }
 
-        let agentPlanUsage = try self.decodeAgentPlanUsage(from: response.data)
-        return DoubaoUsageSnapshot(
-            remainingRequests: 0,
-            limitRequests: 0,
-            resetTime: nil,
-            updatedAt: agentPlanUsage.updateTime ?? date,
-            apiKeyValid: true,
-            codingPlanUsage: agentPlanUsage)
+        return try self.decodeAgentPlanUsage(from: response.data)
     }
 
     static func decodeAgentPlanUsage(from data: Data) throws -> DoubaoCodingPlanUsage {
@@ -648,19 +646,7 @@ public struct DoubaoUsageFetcher: Sendable {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: trimmed) {
-            return date
-        }
-
-        let fallback = ISO8601DateFormatter()
-        fallback.formatOptions = [.withInternetDateTime]
-        if let date = fallback.date(from: trimmed) {
-            return date
-        }
-
-        return nil
+        return ISO8601DateParser.parse(trimmed)
     }
 
     private static func confirmAmbiguousZeroRemaining(
@@ -823,14 +809,7 @@ public struct DoubaoUsageFetcher: Sendable {
             return nil
         }
 
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = isoFormatter.date(from: trimmed) {
-            return date
-        }
-        let isoFallback = ISO8601DateFormatter()
-        isoFallback.formatOptions = [.withInternetDateTime]
-        if let date = isoFallback.date(from: trimmed) {
+        if let date = ISO8601DateParser.parse(trimmed) {
             return date
         }
 

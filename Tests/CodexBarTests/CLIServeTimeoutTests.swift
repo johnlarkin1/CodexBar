@@ -5,7 +5,8 @@ import Testing
 
 struct CLIServeTimeoutTests {
     @Test
-    func `serve cost keeps pricing refresh outside the request deadline`() {
+    func `dashboard awaits pricing refresh while serve refreshes in background`() {
+        #expect(!CodexBarCLI.dashboardCostRefreshesPricingInBackground)
         #expect(CodexBarCLI.serveCostRefreshesPricingInBackground)
     }
 
@@ -89,6 +90,177 @@ struct CLIServeTimeoutTests {
     }
 
     @Test
+    func `late source completion feeds a queued same fingerprint successor`() async {
+        let clock = ServeManualDeadlineClock()
+        let source = ServeFetchGate<Int>()
+        let acceptance = ServeAcceptanceProbe<Int>()
+        let coordinator: CLIServeOperationCoordinator<Int> = self.makeCoordinator(clock: clock)
+        let firstDeadline = clock.now().advanced(by: .seconds(30))
+
+        let first = Task {
+            await coordinator.value(
+                for: "usage:",
+                fingerprint: "config-a",
+                deadline: firstDeadline,
+                timeoutValue: -1,
+                accept: { await acceptance.accept($0) },
+                operation: { await source.run(7) })
+        }
+        await source.waitForStarts(1)
+        await clock.waitForPendingSleeps(1)
+        await clock.fireAll()
+        #expect(await first.value == -1)
+
+        let successor = Task {
+            await coordinator.value(
+                for: "usage:",
+                fingerprint: "config-a",
+                deadline: firstDeadline.advanced(by: .seconds(30)),
+                timeoutValue: -2,
+                operation: { await source.run(9) })
+        }
+        await self.waitForOperationCount(2, coordinator: coordinator)
+        await clock.waitForPendingSleeps(1)
+        await source.releaseAll()
+
+        #expect(await successor.value == 7)
+        #expect(await source.startCount() == 1)
+        #expect(await acceptance.callCount() == 1)
+        await clock.waitForCancellations(1)
+        await self.waitForOperationCount(0, coordinator: coordinator)
+    }
+
+    @Test
+    func `late source completion promotes a different fingerprint successor`() async {
+        let clock = ServeManualDeadlineClock()
+        let source = ServeFetchGate<Int>()
+        let acceptance = ServeAcceptanceProbe<Int>()
+        let coordinator: CLIServeOperationCoordinator<Int> = self.makeCoordinator(clock: clock)
+        let firstDeadline = clock.now().advanced(by: .seconds(30))
+
+        let first = Task {
+            await coordinator.value(
+                for: "usage:",
+                fingerprint: "config-a",
+                deadline: firstDeadline,
+                timeoutValue: -1,
+                accept: { await acceptance.accept($0) },
+                operation: { await source.run(7) })
+        }
+        await source.waitForStarts(1)
+        await clock.waitForPendingSleeps(1)
+        await clock.fireAll()
+        #expect(await first.value == -1)
+
+        let successor = Task {
+            await coordinator.value(
+                for: "usage:",
+                fingerprint: "config-b",
+                deadline: firstDeadline.advanced(by: .seconds(30)),
+                timeoutValue: -2,
+                operation: { await source.run(9) })
+        }
+        await self.waitForOperationCount(2, coordinator: coordinator)
+        await source.releaseAll()
+
+        #expect(await successor.value == 9)
+        #expect(await source.startCount() == 2)
+        #expect(await source.peakCount() == 1)
+        #expect(await acceptance.callCount() == 1)
+        await self.waitForOperationCount(0, coordinator: coordinator)
+    }
+
+    @Test
+    func `late acceptance after shutdown resumes nobody and releases the slot`() async {
+        let clock = ServeManualDeadlineClock()
+        let source = ServeFetchGate<Int>()
+        let acceptance = ServeFetchGate<Int>()
+        let coordinator: CLIServeOperationCoordinator<Int> = self.makeCoordinator(clock: clock)
+        let firstDeadline = clock.now().advanced(by: .seconds(30))
+
+        let first = Task {
+            await coordinator.value(
+                for: "usage:",
+                fingerprint: "config-a",
+                deadline: firstDeadline,
+                timeoutValue: -1,
+                accept: { await acceptance.run($0) },
+                operation: { await source.run(7) })
+        }
+        await source.waitForStarts(1)
+        await clock.waitForPendingSleeps(1)
+        await clock.fireAll()
+        #expect(await first.value == -1)
+
+        let successor = Task {
+            await coordinator.value(
+                for: "usage:",
+                fingerprint: "config-a",
+                deadline: firstDeadline.advanced(by: .seconds(30)),
+                timeoutValue: -2,
+                operation: { await source.run(9) })
+        }
+        await self.waitForOperationCount(2, coordinator: coordinator)
+        await source.releaseAll()
+        await acceptance.waitForStarts(1)
+        await coordinator.shutdown()
+
+        #expect(await successor.value == -2)
+        #expect(await source.startCount() == 1)
+        await acceptance.releaseAll()
+        await self.waitForOperationCount(0, coordinator: coordinator)
+        #expect(await coordinator.snapshot() == .init(
+            operationCount: 0,
+            waiterCount: 0,
+            timerCount: 0,
+            isShutDown: true))
+    }
+
+    @Test
+    func `late response warms the cache for the next same config request`() async {
+        let clock = ServeManualDeadlineClock()
+        let source = ServeFetchGate<CLILocalHTTPResponse>()
+        let operations: CLIServeOperationCoordinator<CLIServeCoordinatedResponse> = self.makeCoordinator(clock: clock)
+        let cache = CLIServeResponseCache(operations: operations)
+        let built = CLILocalHTTPResponse(
+            status: .ok,
+            body: Data(#"{"schemaVersion":1}"#.utf8))
+
+        let first = Task {
+            await CodexBarCLI.cachedServeResponse(
+                key: "dashboard:v1:snapshot:",
+                cache: cache,
+                refreshInterval: 60,
+                requestTimeout: 30)
+            {
+                await source.run(built)
+            }
+        }
+        await source.waitForStarts(1)
+        await clock.waitForPendingSleeps(1)
+        await clock.fireAll()
+        #expect(await first.value.status == .gatewayTimeout)
+
+        await source.releaseAll()
+        await self.waitForOperationCount(0, coordinator: operations)
+        let next = await CodexBarCLI.cachedServeResponse(
+            key: "dashboard:v1:snapshot:",
+            cache: cache,
+            refreshInterval: 60,
+            requestTimeout: 30)
+        {
+            await source.run(CLILocalHTTPResponse(
+                status: .ok,
+                body: Data(#"{"schemaVersion":2}"#.utf8)))
+        }
+
+        #expect(next.status == .ok)
+        #expect(next.body == built.body)
+        #expect(await source.startCount() == 1)
+        #expect(await operations.snapshot().operationCount == 0)
+    }
+
+    @Test
     func `earlier follower tightens the shared absolute budget`() async {
         let clock = ServeManualDeadlineClock()
         let gate = ServeFetchGate<Int>()
@@ -156,7 +328,7 @@ struct CLIServeTimeoutTests {
         await gate.releaseAll()
 
         #expect(await result.value == -1)
-        #expect(await acceptance.callCount() == 0)
+        #expect(await acceptance.callCount() == 1)
         await clock.waitForCancellations(1)
         await self.waitForOperationCount(0, coordinator: coordinator)
     }
@@ -594,6 +766,21 @@ struct CLIServeTimeoutTests {
             sleepUntil: { deadline in try await clock.sleep(until: deadline) })
     }
 
+    private func seedExpiredLastGood(
+        _ response: CLILocalHTTPResponse,
+        key: String,
+        fingerprint: String,
+        cache: CLIServeResponseCache) async
+    {
+        let recordedAt = Date().addingTimeInterval(-61)
+        _ = await cache.completeFetch(
+            response,
+            for: CodexBarCLI.serveCacheKey(operationKey: key, configToken: fingerprint),
+            policy: CLIServeResponseCache.CachePolicy(ttl: 60, staleTTL: 600),
+            now: recordedAt,
+            shouldCache: true)
+    }
+
     private func waitForOperationCount(
         _ expected: Int,
         coordinator: CLIServeOperationCoordinator<some Sendable>) async
@@ -621,6 +808,154 @@ struct CLIServeTimeoutTests {
     }
 }
 
+extension CLIServeTimeoutTests {
+    @Test
+    func `expired response returns stale immediately while background refresh commits`() async {
+        let clock = ServeManualDeadlineClock()
+        let source = ServeFetchGate<CLILocalHTTPResponse>()
+        let operations: CLIServeOperationCoordinator<CLIServeCoordinatedResponse> = self.makeCoordinator(clock: clock)
+        let cache = CLIServeResponseCache(operations: operations)
+        let old = CLILocalHTTPResponse(status: .ok, body: Data(#"{"value":"old"}"#.utf8))
+        let new = CLILocalHTTPResponse(status: .ok, body: Data(#"{"value":"new"}"#.utf8))
+        await self.seedExpiredLastGood(old, key: "dashboard:default", fingerprint: "config-a", cache: cache)
+
+        let returned = await CodexBarCLI.cachedServeResponse(
+            key: "dashboard:default",
+            cache: cache,
+            refreshInterval: 60,
+            requestTimeout: 30,
+            configFingerprint: "config-a",
+            staleWhileRevalidate: true)
+        {
+            await source.run(new)
+        }
+
+        #expect(returned.body == old.body)
+        await source.waitForStarts(1)
+        #expect(await source.startCount() == 1)
+        await source.releaseAll()
+        await self.waitForOperationCount(0, coordinator: operations)
+
+        let refreshed = await CodexBarCLI.cachedServeResponse(
+            key: "dashboard:default",
+            cache: cache,
+            refreshInterval: 60,
+            requestTimeout: 30,
+            configFingerprint: "config-a")
+        {
+            await source.run(old)
+        }
+        #expect(refreshed.body == new.body)
+        #expect(await source.startCount() == 1)
+    }
+
+    @Test
+    func `concurrent stale hits coalesce into one background rebuild`() async {
+        let clock = ServeManualDeadlineClock()
+        let source = ServeFetchGate<CLILocalHTTPResponse>()
+        let operations: CLIServeOperationCoordinator<CLIServeCoordinatedResponse> = self.makeCoordinator(clock: clock)
+        let cache = CLIServeResponseCache(operations: operations)
+        let old = CLILocalHTTPResponse(status: .ok, body: Data(#"{"value":"old"}"#.utf8))
+        let new = CLILocalHTTPResponse(status: .ok, body: Data(#"{"value":"new"}"#.utf8))
+        await self.seedExpiredLastGood(old, key: "dashboard:default", fingerprint: "config-a", cache: cache)
+
+        let responses = await withTaskGroup(of: CLILocalHTTPResponse.self) { group in
+            for _ in 0..<2 {
+                group.addTask {
+                    await CodexBarCLI.cachedServeResponse(
+                        key: "dashboard:default",
+                        cache: cache,
+                        refreshInterval: 60,
+                        requestTimeout: 30,
+                        configFingerprint: "config-a",
+                        staleWhileRevalidate: true)
+                    {
+                        await source.run(new)
+                    }
+                }
+            }
+            var values: [CLILocalHTTPResponse] = []
+            for await response in group {
+                values.append(response)
+            }
+            return values
+        }
+
+        #expect(responses.allSatisfy { $0.body == old.body })
+        await source.waitForStarts(1)
+        #expect(await source.startCount() == 1)
+        await source.releaseAll()
+        await self.waitForOperationCount(0, coordinator: operations)
+        #expect(await source.startCount() == 1)
+    }
+
+    @Test
+    func `refresh interval zero blocks instead of serving stale`() async {
+        let clock = ServeManualDeadlineClock()
+        let source = ServeFetchGate<CLILocalHTTPResponse>()
+        let completion = ServeCompletionProbe()
+        let operations: CLIServeOperationCoordinator<CLIServeCoordinatedResponse> = self.makeCoordinator(clock: clock)
+        let cache = CLIServeResponseCache(operations: operations)
+        let old = CLILocalHTTPResponse(status: .ok, body: Data(#"{"value":"old"}"#.utf8))
+        let new = CLILocalHTTPResponse(status: .ok, body: Data(#"{"value":"new"}"#.utf8))
+        await self.seedExpiredLastGood(old, key: "dashboard:default", fingerprint: "config-a", cache: cache)
+
+        let request = Task {
+            let response = await CodexBarCLI.cachedServeResponse(
+                key: "dashboard:default",
+                cache: cache,
+                refreshInterval: 0,
+                requestTimeout: 30,
+                configFingerprint: "config-a",
+                staleWhileRevalidate: true)
+            {
+                await source.run(new)
+            }
+            await completion.finish()
+            return response
+        }
+        await source.waitForStarts(1)
+        #expect(await !(completion.isFinished()))
+        await source.releaseAll()
+
+        #expect(await request.value.body == new.body)
+        #expect(await source.startCount() == 1)
+    }
+
+    @Test
+    func `config fingerprint change blocks instead of serving another keys stale response`() async {
+        let clock = ServeManualDeadlineClock()
+        let source = ServeFetchGate<CLILocalHTTPResponse>()
+        let completion = ServeCompletionProbe()
+        let operations: CLIServeOperationCoordinator<CLIServeCoordinatedResponse> = self.makeCoordinator(clock: clock)
+        let cache = CLIServeResponseCache(operations: operations)
+        let old = CLILocalHTTPResponse(status: .ok, body: Data(#"{"config":"a"}"#.utf8))
+        let new = CLILocalHTTPResponse(status: .ok, body: Data(#"{"config":"b"}"#.utf8))
+        await self.seedExpiredLastGood(old, key: "dashboard:default", fingerprint: "config-a", cache: cache)
+
+        let request = Task {
+            let response = await CodexBarCLI.cachedServeResponse(
+                key: "dashboard:default",
+                cache: cache,
+                refreshInterval: 60,
+                requestTimeout: 30,
+                configFingerprint: "config-b",
+                staleWhileRevalidate: true)
+            {
+                await source.run(new)
+            }
+            await completion.finish()
+            return response
+        }
+        await source.waitForStarts(1)
+        #expect(await !(completion.isFinished()))
+        await source.releaseAll()
+
+        #expect(await request.value.body == new.body)
+        #expect(await source.startCount() == 1)
+    }
+}
+
 private actor ServeAcceptanceProbe<Value: Sendable> {
     private var calls = 0
 
@@ -631,6 +966,18 @@ private actor ServeAcceptanceProbe<Value: Sendable> {
 
     func callCount() -> Int {
         self.calls
+    }
+}
+
+private actor ServeCompletionProbe {
+    private var finished = false
+
+    func finish() {
+        self.finished = true
+    }
+
+    func isFinished() -> Bool {
+        self.finished
     }
 }
 
@@ -822,5 +1169,76 @@ private actor ServeManualSleeper {
         for (_, continuation) in ready {
             continuation.resume()
         }
+    }
+}
+
+extension CLIServeTimeoutTests {
+    @Test
+    func `forced refresh bypasses a fresh cache and joins the active measurement`() async {
+        let cache = CLIServeResponseCache()
+        let source = ServeFetchGate<CLILocalHTTPResponse>()
+        let old = CLILocalHTTPResponse(status: .ok, body: Data(#"{"value":"old"}"#.utf8))
+        let fresh = CLILocalHTTPResponse(status: .ok, body: Data(#"{"value":"fresh"}"#.utf8))
+        _ = await CodexBarCLI.cachedServeResponse(
+            key: "usage:claude", cache: cache, refreshInterval: 60, requestTimeout: 0) { old }
+        let first = Task {
+            await CodexBarCLI.cachedServeResponse(
+                key: "usage:claude",
+                cache: cache,
+                refreshInterval: 60,
+                requestTimeout: 0,
+                staleWhileRevalidate: true,
+                forceRefresh: true) { await source.run(fresh) }
+        }
+        await source.waitForStarts(1)
+        let second = Task {
+            await CodexBarCLI.cachedServeResponse(
+                key: "usage:claude",
+                cache: cache,
+                refreshInterval: 60,
+                requestTimeout: 0,
+                staleWhileRevalidate: true,
+                forceRefresh: true) { await source.run(fresh) }
+        }
+        await self.waitForWaiterCount(2, coordinator: cache.operations)
+        await source.releaseAll()
+        #expect(await first.value.body == fresh.body)
+        #expect(await second.value.body == fresh.body)
+        #expect(await source.startCount() == 1)
+        let cached = await CodexBarCLI.cachedServeResponse(
+            key: "usage:claude", cache: cache, refreshInterval: 60, requestTimeout: 0) { old }
+        #expect(cached.body == fresh.body)
+    }
+
+    @Test
+    func `forced measurement intervals are isolated by provider`() async throws {
+        let clock = ServeManualDeadlineClock()
+        let coordinator: CLIServeOperationCoordinator<Int> = self.makeCoordinator(clock: clock)
+        try await coordinator.waitForRefreshInterval(for: "claude", minimumInterval: .zero)
+        let waiting = Task {
+            try await coordinator.waitForRefreshInterval(for: "claude", minimumInterval: .seconds(5))
+        }
+        await clock.waitForPendingSleeps(1)
+        try await coordinator.waitForRefreshInterval(for: "codex", minimumInterval: .seconds(5))
+        #expect(await clock.pendingSleepCount() == 1)
+        clock.advance(by: .seconds(5))
+        await clock.fireAll()
+        try await waiting.value
+        #expect(await clock.pendingSleepCount() == 0)
+    }
+
+    @Test
+    func `cancelling a forced measurement wait does not start its fetch`() async throws {
+        let clock = ServeManualDeadlineClock()
+        let coordinator: CLIServeOperationCoordinator<Int> = self.makeCoordinator(clock: clock)
+        try await coordinator.waitForRefreshInterval(for: "claude", minimumInterval: .zero)
+        let waiting = Task {
+            try await coordinator.waitForRefreshInterval(for: "claude", minimumInterval: .seconds(5))
+            Issue.record("Cancelled refresh started a fetch")
+        }
+        await clock.waitForPendingSleeps(1)
+        waiting.cancel()
+        await #expect(throws: CancellationError.self) { try await waiting.value }
+        #expect(await clock.pendingSleepCount() == 0)
     }
 }

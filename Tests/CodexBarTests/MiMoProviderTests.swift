@@ -170,7 +170,7 @@ struct MiMoProviderTests {
 
         #expect(usage.primary == nil)
         #expect(usage.secondary == nil)
-        #expect(usage.mimoUsage?.balanceDetail == "$25.51")
+        #expect(usage.detailRow(label: "Balance")?.value == "$25.51")
         #expect(usage.loginMethod(for: .mimo) == nil)
     }
 
@@ -186,7 +186,7 @@ struct MiMoProviderTests {
         let usage = snapshot.toUsageSnapshot()
 
         #expect(usage.primary == nil)
-        #expect(usage.mimoUsage?.balanceDetail == "$25.51 (Paid: $20.00 / Granted: $5.51)")
+        #expect(usage.detailRow(label: "Balance")?.value == "$25.51 (Paid: $20.00 / Granted: $5.51)")
         #expect(usage.loginMethod(for: .mimo) == nil)
     }
 
@@ -211,7 +211,7 @@ struct MiMoProviderTests {
         #expect(usage.primary?.resetDescription == "10,100,158 / 200,000,000 Credits")
         #expect(usage.primary?.resetsAt == resetDate)
         #expect(usage.secondary == nil)
-        #expect(usage.mimoUsage?.balanceDetail == "$25.51")
+        #expect(usage.detailRow(label: "Balance")?.value == "$25.51")
         #expect(usage.loginMethod(for: .mimo) == "Standard")
     }
 
@@ -234,7 +234,7 @@ struct MiMoProviderTests {
     }
 
     @Test
-    func `menu card shows balance as status text with and without token plan`() throws {
+    func `menu card shows declarative balance with and without token plan`() throws {
         let now = Date(timeIntervalSince1970: 1_742_771_200)
         let metadata = try #require(ProviderDefaults.metadata[.mimo])
         let balanceOnly = MiMoUsageSnapshot(
@@ -259,11 +259,12 @@ struct MiMoProviderTests {
         let balanceModel = Self.makeMenuCardModel(snapshot: balanceOnly, metadata: metadata, now: now)
         let planModel = Self.makeMenuCardModel(snapshot: withPlan, metadata: metadata, now: now)
 
-        #expect(balanceModel.metrics.first?.title == "Balance")
-        #expect(balanceModel.metrics.first?.statusText == "$25.51 (Paid: $20.00 / Granted: $5.51)")
+        #expect(balanceModel.metrics.isEmpty)
+        #expect(balanceModel.providerDetails.first?.rows.first?.label == "Balance")
+        #expect(balanceModel.providerDetails.first?.rows.first?.value == "$25.51 (Paid: $20.00 / Granted: $5.51)")
         #expect(planModel.metrics.first?.title == "Credits")
-        #expect(planModel.metrics.last?.title == "Balance")
-        #expect(planModel.metrics.last?.statusText == "$25.51 (Paid: $20.00 / Granted: $5.51)")
+        #expect(planModel.providerDetails.first?.rows.first?.label == "Balance")
+        #expect(planModel.providerDetails.first?.rows.first?.value == "$25.51 (Paid: $20.00 / Granted: $5.51)")
     }
 
     @Test
@@ -282,7 +283,7 @@ struct MiMoProviderTests {
         let usage = snapshot.toUsageSnapshot()
 
         #expect(usage.primary == nil)
-        #expect(usage.mimoUsage?.balanceDetail == "$0.00")
+        #expect(usage.detailRow(label: "Balance")?.value == "$0.00")
         #expect(usage.loginMethod(for: .mimo) == nil)
     }
 
@@ -299,7 +300,7 @@ struct MiMoProviderTests {
         let decoded = try JSONDecoder().decode(UsageSnapshot.self, from: JSONEncoder().encode(usage))
 
         #expect(decoded.primary == nil)
-        #expect(decoded.mimoUsage?.balanceDetail == "$25.51 (Paid: $20.00 / Granted: $5.51)")
+        #expect(decoded.detailRow(label: "Balance")?.value == "$25.51 (Paid: $20.00 / Granted: $5.51)")
     }
 
     @Test
@@ -319,8 +320,8 @@ struct MiMoProviderTests {
             updatedAt: Date())
             .toUsageSnapshot()
 
-        let balanceIcon = IconRemainingResolver.resolvedRemaining(snapshot: balanceOnly, style: .mimo)
-        let planIcon = IconRemainingResolver.resolvedRemaining(snapshot: withPlan, style: .mimo)
+        let balanceIcon = IconRemainingResolver.resolvedPercents(snapshot: balanceOnly, style: .mimo, showUsed: false)
+        let planIcon = IconRemainingResolver.resolvedPercents(snapshot: withPlan, style: .mimo, showUsed: false)
 
         #expect(balanceIcon.primary == nil)
         #expect(balanceIcon.secondary == nil)
@@ -549,9 +550,11 @@ struct MiMoProviderTests {
         #expect(requestedPaths.contains("/api/v1/balance"))
     }
 
-    @Test
-    func `required balance failure cancels optional mimo requests promptly`() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func `required balance failure cancels optional mimo requests`() async throws {
         let optionalStarted = MiMoOptionalRequestGate()
+        let cancellations = AsyncStream<Void>.makeStream()
+        defer { cancellations.continuation.finish() }
         let transport = ProviderHTTPTransportStub { request in
             let path = try #require(request.url?.path)
             if path.hasSuffix("/balance") {
@@ -560,12 +563,17 @@ struct MiMoProviderTests {
             }
 
             await optionalStarted.open()
-            try await Task.sleep(for: .seconds(5))
+            do {
+                try await Task.sleep(for: .seconds(60))
+                Issue.record("Optional request reached its hang guard without cancellation")
+            } catch {
+                cancellations.continuation.yield(())
+                throw error
+            }
             let (response, data) = try Self.makeResponse(url: #require(request.url), body: "{}")
             return (data, response)
         }
 
-        let startedAt = ContinuousClock.now
         do {
             _ = try await MiMoUsageFetcher.fetchUsage(
                 cookieHeader: "userId=123; api-platform_serviceToken=svc-token",
@@ -575,9 +583,10 @@ struct MiMoProviderTests {
         } catch let error as URLError {
             #expect(error.code == .userAuthenticationRequired)
         }
-        let elapsed = startedAt.duration(to: .now)
-
-        #expect(elapsed < .seconds(1), "Required failure was delayed by optional requests: \(elapsed)")
+        cancellations.continuation.finish()
+        var cancelled = cancellations.stream.makeAsyncIterator()
+        #expect(await cancelled.next() != nil)
+        #expect(await cancelled.next() != nil)
     }
 
     @Test
@@ -782,7 +791,7 @@ extension MiMoProviderTests {
                 #expect(result.sourceLabel == "local")
                 #expect(result.strategyID == "mimo.local")
                 #expect(result.usage.primary == nil)
-                #expect(result.usage.mimoUsage == nil)
+                #expect(result.usage.details.isEmpty)
                 #expect(result.usage.loginMethod(for: .mimo) == "Local · 150 today · 150 week · 150 total · 2 sessions")
             case let .failure(error):
                 Issue.record("Expected local MiMo fallback, got \(error)")
@@ -972,7 +981,7 @@ extension MiMoProviderTests {
             #expect(requestedCookies.count == 6)
             #expect(requestedCookies.contains(where: { $0.contains("expired-token") }))
             #expect(requestedCookies.contains(where: { $0.contains("valid-token") }))
-            #expect(result.usage.mimoUsage?.balanceDetail == "$25.51")
+            #expect(result.usage.detailRow(label: "Balance")?.value == "$25.51")
             #expect(CookieHeaderCache.load(provider: .mimo)?.sourceLabel == "Active Chrome")
         }
     }
@@ -1038,7 +1047,7 @@ extension MiMoProviderTests {
 
             #expect(requestedCookies.contains(where: { $0.contains("stale-chrome-token") }))
             #expect(requestedCookies.contains(where: { $0.contains("valid-safari-token") }))
-            #expect(result.usage.mimoUsage?.balanceDetail == "$25.51")
+            #expect(result.usage.detailRow(label: "Balance")?.value == "$25.51")
             #expect(CookieHeaderCache.load(provider: .mimo)?.sourceLabel == "Safari")
         }
     }
@@ -1547,7 +1556,6 @@ extension MiMoProviderTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -1574,7 +1582,6 @@ extension MiMoProviderTests {
                 keyDataFetched: false,
                 keyLimit: nil,
                 keyUsage: nil,
-                rateLimit: nil,
                 updatedAt: updatedAt).toUsageSnapshot()
         case .mimo:
             return MiMoUsageSnapshot(

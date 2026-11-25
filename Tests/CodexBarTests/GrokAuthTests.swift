@@ -139,6 +139,53 @@ struct GrokAuthTests {
     }
 
     @Test
+    func `pasted credentials are SuperGrok and not expired`() {
+        let creds = GrokCredentials.pasted(accessToken: "pasted-token")
+        #expect(creds.accessToken == "pasted-token")
+        #expect(creds.loginMethod == "SuperGrok")
+        #expect(!creds.isExpired)
+        #expect(creds.email == nil)
+    }
+
+    @Test
+    func `token file to open is grok auth json when present`() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexBar-GrokTokenFile-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let auth = home.appendingPathComponent("auth.json")
+        try Data("{}".utf8).write(to: auth)
+
+        let opened = GrokCredentialsStore.tokenFileURLToOpen(env: ["GROK_HOME": home.path])
+        #expect(opened == auth)
+        #expect(opened.lastPathComponent == "auth.json")
+        #expect(!opened.path.contains(".codexbar"))
+    }
+
+    @Test
+    func `token file to open is grok home when auth json is missing`() {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexBar-GrokTokenMissing-\(UUID().uuidString)", isDirectory: true)
+        let opened = GrokCredentialsStore.tokenFileURLToOpen(env: ["GROK_HOME": home.path])
+        #expect(opened.standardizedFileURL.path == home.standardizedFileURL.path)
+        #expect(opened.lastPathComponent != "config.json")
+    }
+
+    @Test
+    func `plan display maps SuperGrok Heavy from billing tier`() {
+        #expect(GrokPlan.displayName(from: "SUPERGROK_HEAVY") == "SuperGrok Heavy")
+        #expect(GrokPlan.displayName(from: "SuperGrok") == "SuperGrok")
+
+        let pasted = GrokCredentials.pasted(accessToken: "token")
+        #expect(GrokPlan.loginMethod(
+            subscriptionTier: "SUPERGROK_HEAVY",
+            credentials: pasted) == "SuperGrok Heavy")
+        #expect(GrokPlan.loginMethod(
+            subscriptionTier: nil,
+            credentials: pasted) == "SuperGrok")
+    }
+
+    @Test
     func `remote auth failures surface even with fresh local credentials`() {
         #expect(GrokStatusProbe.shouldSurfaceRemoteAuthError(GrokWebBillingError.requestFailed(401, "unauthorized")))
         #expect(GrokStatusProbe.shouldSurfaceRemoteAuthError(GrokWebBillingError.requestFailed(403, "forbidden")))
@@ -149,9 +196,13 @@ struct GrokAuthTests {
     @Test
     func `team method unavailable is classified without broadening other rpc failures`() {
         #expect(GrokStatusProbe.isBillingMethodUnavailable(
-            GrokRPCError.requestFailed("Method not found")))
+            GrokRPCError.requestFailed("Method not found", code: -32601)))
         #expect(GrokStatusProbe.isBillingMethodUnavailable(
-            GrokRPCError.requestFailed("Method not found: x.ai/billing")))
+            GrokRPCError.requestFailed("Unsupported RPC method: x.ai/billing", code: -32601)))
+        #expect(!GrokStatusProbe.isBillingMethodUnavailable(
+            GrokRPCError.requestFailed("Method not found", code: -32001)))
+        #expect(!GrokStatusProbe.isBillingMethodUnavailable(
+            GrokRPCError.requestFailed("Method not found")))
         #expect(!GrokStatusProbe.isBillingMethodUnavailable(
             GrokRPCError.requestFailed("Authentication required")))
         #expect(!GrokStatusProbe.isBillingMethodUnavailable(nil))
@@ -161,7 +212,7 @@ struct GrokAuthTests {
     func `team identity fallback requires an attempted billing call`() throws {
         let json = #"{"https://auth.x.ai::client":{"key":"token","principal_type":"Team"}}"#
         let credentials = try GrokCredentialsStore.parse(data: Data(json.utf8))
-        let methodNotFound = GrokRPCError.requestFailed("Method not found")
+        let methodNotFound = GrokRPCError.requestFailed("Method not found", code: -32601)
 
         #expect(GrokStatusProbe.shouldUseIdentityOnlyFallback(
             credentials: credentials,

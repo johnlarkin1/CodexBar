@@ -9,6 +9,9 @@ public enum AlibabaTokenPlanUsageError: LocalizedError, Sendable, Equatable {
     case apiError(String)
     case networkError(String)
     case parseFailed(String)
+    /// The Personal gateway returned a 200 "Success" envelope with no rolling-window payload — a
+    /// transient server-side quirk, not a real parse failure. Retried before it ever surfaces.
+    case usageWindowsUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -22,6 +25,8 @@ public enum AlibabaTokenPlanUsageError: LocalizedError, Sendable, Equatable {
             "Alibaba Token Plan network error: \(message)"
         case let .parseFailed(message):
             "Could not parse Alibaba Token Plan usage: \(message)"
+        case .usageWindowsUnavailable:
+            "Alibaba Token Plan usage is temporarily unavailable; it will refresh automatically."
         }
     }
 }
@@ -30,10 +35,14 @@ public enum AlibabaTokenPlanUsageError: LocalizedError, Sendable, Equatable {
 public struct AlibabaTokenPlanUsageFetcher: Sendable {
     private struct PersonalAPIContext: Sendable {
         let apiCookieHeader: String
+        let secToken: String?
         let region: AlibabaTokenPlanAPIRegion
-        let environment: [String: String]
-        let session: URLSession
+        @ProcessEnvironment private(set) var environment: [String: String]
+        let now: Date
+        let session: any ProviderHTTPTransport
     }
+
+    static let usageSession = URLSession(configuration: .default)
 
     private static let log = CodexBarLog.logger("alibaba-token-plan")
     private static let bssServiceCode = "BssOpenAPI-V3"
@@ -42,6 +51,11 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
     private static let personalUsageAPI = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage"
     private static let personalSubscriptionAPI = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/subscription"
     private static let personalQuotaConfigAPI = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/quota-config"
+    /// The Personal usage gateway intermittently answers with a 200 "Success" envelope that omits the
+    /// rolling-window payload; an immediate re-request usually returns it. Bounded so a genuinely empty
+    /// stretch still degrades quickly.
+    private static let personalUsageMaxAttempts = 3
+    private static let personalUsageRetryDelayNanoseconds: UInt64 = 400_000_000
     private static let browserLikeUserAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
@@ -103,39 +117,34 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
 
         let url = self.resolveQuotaURL(region: region, environment: environment)
         let apiRedirectDiagnostics = RedirectDiagnostics(cookieHeader: normalizedAPIHeader)
-        let dashboardRedirectDiagnostics: RedirectDiagnostics?
-        let apiSession: URLSession
-        let dashboardSession: URLSession
-        if let overrideSession {
-            apiSession = overrideSession
-            dashboardSession = overrideSession
-            dashboardRedirectDiagnostics = nil
-        } else {
-            let dashboardDiagnostics = RedirectDiagnostics(cookieHeader: normalizedDashboardHeader)
-            apiSession = URLSession(
-                configuration: .default,
-                delegate: apiRedirectDiagnostics,
-                delegateQueue: nil)
-            dashboardSession = URLSession(
-                configuration: .default,
-                delegate: dashboardDiagnostics,
-                delegateQueue: nil)
-            dashboardRedirectDiagnostics = dashboardDiagnostics
+        let dashboardRedirectDiagnostics = RedirectDiagnostics(cookieHeader: normalizedDashboardHeader)
+        let session = overrideSession ?? Self.usageSession
+        let apiSession = ProviderHTTPTransportHandler { request in
+            try await session.data(for: request, delegate: apiRedirectDiagnostics)
         }
-        defer {
-            if overrideSession == nil {
-                apiSession.invalidateAndCancel()
-                dashboardSession.invalidateAndCancel()
-            }
+        let dashboardSession = ProviderHTTPTransportHandler { request in
+            try await session.data(for: request, delegate: dashboardRedirectDiagnostics)
         }
 
         if region.usesPersonalTokenPlanAPI {
-            return try await self.fetchPersonalUsage(
+            // The Personal gateway accepts cookie-only requests for some accounts,
+            // but others reject them with `BailianGateway.Workspace.NotAuthorised`
+            // unless the browser's `sec_token` is present. Resolve it best-effort
+            // (mirroring the browser) and continue without it when unavailable.
+            let personalSECToken = await self.resolveSECToken(
+                dashboardCookieHeader: normalizedDashboardHeader,
                 apiCookieHeader: normalizedAPIHeader,
+                region: region,
+                environment: environment,
+                session: dashboardSession)
+            let context = PersonalAPIContext(
+                apiCookieHeader: normalizedAPIHeader,
+                secToken: personalSECToken,
                 region: region,
                 environment: environment,
                 now: now,
                 session: apiSession)
+            return try await self.fetchPersonalUsage(context: context)
         }
 
         let secToken = await self.resolveSECToken(
@@ -188,7 +197,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
                 ])
             throw AlibabaTokenPlanUsageError.networkError(error.localizedDescription)
         }
-        if let dashboardRedirectDiagnostics, !dashboardRedirectDiagnostics.redirects.isEmpty {
+        if !dashboardRedirectDiagnostics.redirects.isEmpty {
             Self.log.info(
                 "Alibaba Token Plan dashboard redirects",
                 metadata: [
@@ -279,7 +288,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
             }
             throw AlibabaTokenPlanUsageError.parseFailed("Invalid JSON response")
         }
-        let expanded = self.expandedJSON(object)
+        let expanded = OneConsoleJSON.expandEmbeddedJSON(object)
         guard let dictionary = expanded as? [String: Any] else {
             throw AlibabaTokenPlanUsageError.parseFailed("Unexpected payload")
         }
@@ -310,46 +319,54 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
             updatedAt: now)
     }
 
-    private static func fetchPersonalUsage(
-        apiCookieHeader: String,
-        region: AlibabaTokenPlanAPIRegion,
-        environment: [String: String],
-        now: Date,
-        session: URLSession) async throws -> AlibabaTokenPlanUsageSnapshot
-    {
-        let context = PersonalAPIContext(
-            apiCookieHeader: apiCookieHeader,
-            region: region,
-            environment: environment,
-            session: session)
+    private static func fetchPersonalUsage(context: PersonalAPIContext) async throws -> AlibabaTokenPlanUsageSnapshot {
         self.log.info(
             "Fetching Alibaba Token Plan Personal usage",
             metadata: [
-                "apiHost": self.resolveQuotaURL(region: region, environment: environment).host ?? "unknown",
-                "region": region.rawValue,
-                "apiCookieNames": self.cookieNamesDescription(from: apiCookieHeader),
-                "hasCSRF": self.hasCSRF(in: apiCookieHeader) ? "1" : "0",
-                "secTokenSource": "not-required",
+                "apiHost": self.resolveQuotaURL(
+                    region: context.region,
+                    environment: context.environment).host ?? "unknown",
+                "region": context.region.rawValue,
+                "apiCookieNames": self.cookieNamesDescription(from: context.apiCookieHeader),
+                "hasCSRF": self.hasCSRF(in: context.apiCookieHeader) ? "1" : "0",
+                "secTokenSource": context.secToken == nil ? "missing" : "resolved",
             ])
 
-        let usageData = try await self.fetchPersonalAPI(
-            api: self.personalUsageAPI,
-            dataParameters: [:],
-            context: context)
         let subscriptionData = await self.fetchOptionalPersonalAPI(
             api: self.personalSubscriptionAPI,
-            dataParameters: ["commodityCode": region.tokenPlanProductCode],
+            dataParameters: ["commodityCode": context.region.tokenPlanProductCode],
             context: context)
         let quotaConfigData = await self.fetchOptionalPersonalAPI(
             api: self.personalQuotaConfigAPI,
             dataParameters: [:],
             context: context)
 
-        return try AlibabaTokenPlanPersonalUsageParser.parse(
-            from: usageData,
-            subscriptionData: subscriptionData,
-            quotaConfigData: quotaConfigData,
-            now: now)
+        // The Personal usage gateway intermittently returns a 200 "Success" with an empty payload
+        // (no rolling-window fields). It is usually populated on an immediate re-request, so retry a
+        // few times before surfacing the transient gap — which keeps the last-good card and shows a
+        // "temporarily unavailable" note rather than a hard "could not parse" error.
+        for attempt in 0..<Self.personalUsageMaxAttempts {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: Self.personalUsageRetryDelayNanoseconds)
+            }
+            do {
+                let usageData = try await self.fetchPersonalAPI(
+                    api: self.personalUsageAPI,
+                    dataParameters: [:],
+                    context: context)
+                return try AlibabaTokenPlanPersonalUsageParser.parse(
+                    from: usageData,
+                    subscriptionData: subscriptionData,
+                    quotaConfigData: quotaConfigData,
+                    now: context.now)
+            } catch AlibabaTokenPlanUsageError.usageWindowsUnavailable {
+                Self.log.info(
+                    "Alibaba Token Plan Personal usage returned no windows; retrying",
+                    metadata: ["attempt": "\(attempt + 1)", "max": "\(Self.personalUsageMaxAttempts)"])
+                continue
+            }
+        }
+        throw AlibabaTokenPlanUsageError.usageWindowsUnavailable
     }
 
     private static func fetchOptionalPersonalAPI(
@@ -382,9 +399,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
         request.httpBody = try self.personalAPIRequestBody(
             api: api,
             dataParameters: dataParameters,
-            apiCookieHeader: context.apiCookieHeader,
-            region: context.region,
-            environment: context.environment)
+            context: context)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         request.setValue(context.apiCookieHeader, forHTTPHeaderField: "Cookie")
@@ -445,26 +460,30 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
     private static func personalAPIRequestBody(
         api: String,
         dataParameters: [String: String],
-        apiCookieHeader: String,
-        region: AlibabaTokenPlanAPIRegion,
-        environment: [String: String]) throws -> Data
+        context: PersonalAPIContext) throws -> Data
     {
-        let dashboardURL = self.dashboardURL(region: region, environment: environment)
+        let dashboardURL = self.dashboardURL(region: context.region, environment: context.environment)
+        // NOTE: `cornerstoneParam` must not carry a hardcoded `switchAgent`.
+        // The gateway binds that value to a specific account's workspace, so a
+        // captured agent ID makes every other account fail with
+        // `BailianGateway.Workspace.NotAuthorised`. Omitting it lets the gateway
+        // resolve the session's default workspace.
         var cornerstone: [String: Any] = [
             "feTraceId": UUID().uuidString.lowercased(),
             "feURL": dashboardURL.absoluteString,
             "protocol": "V2",
             "console": "ONE_CONSOLE",
             "productCode": "p_efm",
-            "switchAgent": 1_233_135,
             "switchUserType": 3,
             "domain": dashboardURL.host ?? "",
-            "consoleSite": region.personalConsoleSite,
+            "consoleSite": context.region.personalConsoleSite,
             "userNickName": "",
             "userPrincipalName": "",
             "xsp_lang": "en-US",
         ]
-        if let anonymousID = self.extractCookieValue(name: "cna", from: apiCookieHeader), !anonymousID.isEmpty {
+        if let anonymousID = self.extractCookieValue(name: "cna", from: context.apiCookieHeader),
+           !anonymousID.isEmpty
+        {
             cornerstone["X-Anonymous-Id"] = anonymousID
         }
         var apiData = dataParameters as [String: Any]
@@ -479,15 +498,17 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
             throw AlibabaTokenPlanUsageError.parseFailed("Could not encode request parameters")
         }
 
-        var body = URLComponents()
-        body.queryItems = [
-            URLQueryItem(name: "product", value: self.personalConsoleProduct),
-            URLQueryItem(name: "action", value: region.personalAPIAction),
-            URLQueryItem(name: "region", value: region.currentRegionID),
-            URLQueryItem(name: "language", value: "en-US"),
-            URLQueryItem(name: "params", value: paramsJSON),
+        var fields = [
+            ("product", self.personalConsoleProduct),
+            ("action", context.region.personalAPIAction),
+            ("region", context.region.currentRegionID),
+            ("language", "en-US"),
+            ("params", paramsJSON),
         ]
-        return Data((body.percentEncodedQuery ?? "").utf8)
+        if let secToken = context.secToken, !secToken.isEmpty {
+            fields.append(("sec_token", secToken))
+        }
+        return FormURLEncoding.body(fields)
     }
 
     private static func subscriptionSummaryRequestBody(region: AlibabaTokenPlanAPIRegion, secToken: String?) -> Data {
@@ -498,18 +519,16 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
             return Data()
         }
 
-        var components = URLComponents()
-        var queryItems = [
-            URLQueryItem(name: "product", value: Self.bssServiceCode),
-            URLQueryItem(name: "action", value: Self.subscriptionSummaryAction),
-            URLQueryItem(name: "params", value: paramsString),
-            URLQueryItem(name: "region", value: region.currentRegionID),
+        var fields = [
+            ("product", Self.bssServiceCode),
+            ("action", Self.subscriptionSummaryAction),
+            ("params", paramsString),
+            ("region", region.currentRegionID),
         ]
         if let secToken, !secToken.isEmpty {
-            queryItems.append(URLQueryItem(name: "sec_token", value: secToken))
+            fields.append(("sec_token", secToken))
         }
-        components.queryItems = queryItems
-        return Data((components.percentEncodedQuery ?? "").utf8)
+        return FormURLEncoding.body(fields)
     }
 
     private static func resolveSECToken(
@@ -517,7 +536,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
         apiCookieHeader: String,
         region: AlibabaTokenPlanAPIRegion,
         environment: [String: String],
-        session: URLSession) async -> String?
+        session: any ProviderHTTPTransport) async -> String?
     {
         let cookieSECToken = self.extractCookieValue(name: "sec_token", from: dashboardCookieHeader) ??
             self.extractCookieValue(name: "sec_token", from: apiCookieHeader)
@@ -529,6 +548,17 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
         request.setValue(
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             forHTTPHeaderField: "Accept")
+        // The OneConsole shell only server-renders `window.ALIYUN_CONSOLE_CONFIG.SEC_TOKEN` for a
+        // genuine same-origin document navigation; a bare request receives a token-less shell, so the
+        // Personal `sec_token` can never be scraped. Send the browser-navigation headers so the shell
+        // includes it (mainland Personal/Solo rejects the API without it — fixes #2500/#2349/#2370).
+        if let origin = request.url.flatMap(\.host).map({ "https://\($0)/" }) {
+            request.setValue(origin, forHTTPHeaderField: "Referer")
+        }
+        request.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+        request.setValue("navigate", forHTTPHeaderField: "Sec-Fetch-Mode")
+        request.setValue("document", forHTTPHeaderField: "Sec-Fetch-Dest")
+        request.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
 
         if let (data, response) = try? await session.data(for: request),
            let httpResponse = response as? HTTPURLResponse,
@@ -572,7 +602,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
         cookieHeader: String,
         region: AlibabaTokenPlanAPIRegion,
         environment: [String: String],
-        session: URLSession) async -> String?
+        session: any ProviderHTTPTransport) async -> String?
     {
         let baseURL = self.consoleBaseURL(region: region, environment: environment)
         let userInfoURL = baseURL.appendingPathComponent("tool/user/info.json")
@@ -593,7 +623,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
             return nil
         }
 
-        let expanded = self.expandedJSON(object)
+        let expanded = OneConsoleJSON.expandEmbeddedJSON(object)
         guard let token = self.findFirstString(forKeys: ["secToken", "sec_token"], in: expanded),
               !token.isEmpty
         else {
@@ -622,7 +652,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
     }
 
     private static func quotaURL(from rawHost: String, region: AlibabaTokenPlanAPIRegion) -> URL? {
-        let cleaned = AlibabaTokenPlanSettingsReader.cleaned(rawHost)
+        let cleaned = SettingsValue.cleaned(rawHost)
         guard let cleaned else { return nil }
         guard let base = ProviderEndpointOverrideValidator.normalizedHTTPSURL(from: cleaned) else { return nil }
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
@@ -711,16 +741,30 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
             if self.isLoginOrTokenError(code: code, message: message) {
                 throw AlibabaTokenPlanUsageError.loginRequired
             }
+            if self.isAuthorizationError(code: code, message: message) {
+                throw AlibabaTokenPlanUsageError.invalidCredentials
+            }
             throw AlibabaTokenPlanUsageError.apiError(message)
         }
 
         if self.findBoolValues(forKeys: ["Success", "success"], in: dictionary).contains(false) {
-            let code = self.findFirstString(forKeys: ["errorCode", "Code", "code"], in: dictionary)
-            let message = self.findFirstString(
-                forKeys: ["errorMsg", "Message", "message", "msg", "Code", "code"],
-                in: dictionary) ?? "request was not successful"
+            // The OneConsole gateway can return an outer success envelope
+            // (`"code": "200"`, `"successResponse": true`) while the nested
+            // `data` frame carries `success: false` with the real `errorCode`.
+            // Read the failure details from that frame first so users see the
+            // actual gateway error instead of the misleading outer `200`.
+            let frame = self.failingSuccessFrame(in: dictionary) ?? dictionary
+            let code = self.findFirstString(forKeys: ["errorCode", "Code", "code"], in: frame) ??
+                self.findFirstString(forKeys: ["errorCode", "Code", "code"], in: dictionary)
+            let message = self.findFirstString(forKeys: ["errorMsg", "Message", "message", "msg"], in: frame) ??
+                self.findFirstString(
+                    forKeys: ["errorMsg", "Message", "message", "msg", "Code", "code"],
+                    in: dictionary) ?? "request was not successful"
             if self.isLoginOrTokenError(code: code, message: message) {
                 throw AlibabaTokenPlanUsageError.loginRequired
+            }
+            if self.isAuthorizationError(code: code, message: message) {
+                throw AlibabaTokenPlanUsageError.invalidCredentials
             }
             throw AlibabaTokenPlanUsageError.apiError(message)
         }
@@ -749,6 +793,9 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
         if self.isLoginOrTokenError(code: codeText, message: messageText) {
             throw AlibabaTokenPlanUsageError.loginRequired
         }
+        if self.isAuthorizationError(code: codeText, message: messageText) {
+            throw AlibabaTokenPlanUsageError.invalidCredentials
+        }
     }
 
     private static func isLoginOrTokenError(code: String?, message: String?) -> Bool {
@@ -762,6 +809,53 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
             combined.contains("request has expired") ||
             combined.contains("refresh page") ||
             combined.contains("请求已经过期")
+    }
+
+    private static func isAuthorizationError(code: String?, message: String?) -> Bool {
+        let combined = [code, message]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+        // Workspace permission failures are not credential failures. Treating
+        // them as such would evict a valid browser session and repeat the same
+        // failure after re-importing it.
+        if combined.contains("workspace.notauthorised") ||
+            combined.contains("workspace.notauthorized")
+        {
+            return false
+        }
+        return combined.contains("notauthorised") ||
+            combined.contains("notauthorized") ||
+            combined.contains("not authorised") ||
+            combined.contains("not authorized") ||
+            combined.contains("unauthorised") ||
+            combined.contains("unauthorized") ||
+            combined.contains("access denied") ||
+            combined.contains("forbidden")
+    }
+
+    /// Finds the first dictionary anywhere in the payload whose own
+    /// `success`/`Success` flag is `false`, so error details can be read from
+    /// the same frame that reported the failure.
+    private static func failingSuccessFrame(in value: Any) -> [String: Any]? {
+        if let dict = value as? [String: Any] {
+            if self.parseBool(dict["success"]) == false || self.parseBool(dict["Success"]) == false {
+                return dict
+            }
+            for nestedValue in dict.values {
+                if let nested = self.failingSuccessFrame(in: nestedValue) {
+                    return nested
+                }
+            }
+            return nil
+        }
+        if let array = value as? [Any] {
+            for item in array {
+                if let nested = self.failingSuccessFrame(in: item) {
+                    return nested
+                }
+            }
+        }
+        return nil
     }
 
     private static let planNameKeys = [
@@ -910,73 +1004,15 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
     }
 
     private static func findFirstDictionary(forKeys keys: [String], in value: Any) -> [String: Any]? {
-        if let dict = value as? [String: Any] {
-            for key in keys {
-                if let nested = dict[key] as? [String: Any] {
-                    return nested
-                }
-            }
-            for nestedValue in dict.values {
-                if let nested = self.findFirstDictionary(forKeys: keys, in: nestedValue) {
-                    return nested
-                }
-            }
-            return nil
-        }
-        if let array = value as? [Any] {
-            for item in array {
-                if let nested = self.findFirstDictionary(forKeys: keys, in: item) {
-                    return nested
-                }
-            }
-        }
-        return nil
+        OneConsoleJSON.findFirstValue(forExactKeys: keys, in: value, transform: { $0 as? [String: Any] })
     }
 
     private static func findFirstDictionary(matchingAnyKey keys: [String], in value: Any) -> [String: Any]? {
-        if let dict = value as? [String: Any] {
-            if keys.contains(where: { dict[$0] != nil }) {
-                return dict
-            }
-            for nestedValue in dict.values {
-                if let nested = self.findFirstDictionary(matchingAnyKey: keys, in: nestedValue) {
-                    return nested
-                }
-            }
-            return nil
-        }
-        if let array = value as? [Any] {
-            for item in array {
-                if let nested = self.findFirstDictionary(matchingAnyKey: keys, in: item) {
-                    return nested
-                }
-            }
-        }
-        return nil
+        OneConsoleJSON.findObject(containingAnyOf: Set(keys), in: value)
     }
 
     private static func findFirstString(forKeys keys: [String], in value: Any) -> String? {
-        if let dict = value as? [String: Any] {
-            for key in keys {
-                if let parsed = self.parseString(dict[key]) {
-                    return parsed
-                }
-            }
-            for nestedValue in dict.values {
-                if let parsed = self.findFirstString(forKeys: keys, in: nestedValue) {
-                    return parsed
-                }
-            }
-            return nil
-        }
-        if let array = value as? [Any] {
-            for item in array {
-                if let parsed = self.findFirstString(forKeys: keys, in: item) {
-                    return parsed
-                }
-            }
-        }
-        return nil
+        OneConsoleJSON.findFirstValue(forExactKeys: keys, in: value, transform: OneConsoleJSON.string)
     }
 
     private static func findBoolValues(forKeys keys: [String], in value: Any) -> [Bool] {
@@ -992,95 +1028,27 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
     }
 
     private static func findFirstInt(forKeys keys: [String], in value: Any) -> Int? {
-        if let dict = value as? [String: Any] {
-            for key in keys {
-                if let parsed = self.parseInt(dict[key]) {
-                    return parsed
-                }
-            }
-            for nestedValue in dict.values {
-                if let parsed = self.findFirstInt(forKeys: keys, in: nestedValue) {
-                    return parsed
-                }
-            }
-            return nil
-        }
-        if let array = value as? [Any] {
-            for item in array {
-                if let parsed = self.findFirstInt(forKeys: keys, in: item) {
-                    return parsed
-                }
-            }
-        }
-        return nil
+        OneConsoleJSON.findFirstValue(forExactKeys: keys, in: value, transform: OneConsoleJSON.int)
     }
 
     private static func findFirstDate(forKeys keys: [String], in value: Any) -> Date? {
-        if let dict = value as? [String: Any] {
-            for key in keys {
-                if let parsed = self.parseDate(dict[key]) {
-                    return parsed
-                }
-            }
-            for nestedValue in dict.values {
-                if let parsed = self.findFirstDate(forKeys: keys, in: nestedValue) {
-                    return parsed
-                }
-            }
-            return nil
-        }
-        if let array = value as? [Any] {
-            for item in array {
-                if let parsed = self.findFirstDate(forKeys: keys, in: item) {
-                    return parsed
-                }
-            }
-        }
-        return nil
-    }
-
-    private static func expandedJSON(_ value: Any) -> Any {
-        OneConsoleJSON.expandEmbeddedJSON(value)
+        OneConsoleJSON.findFirstValue(forExactKeys: keys, in: value, transform: self.parseDate)
     }
 
     private static func anyString(for keys: [String], in dict: [String: Any]) -> String? {
-        for key in keys {
-            if let value = OneConsoleJSON.string(dict[key]) {
-                return value
-            }
-        }
-        return nil
+        OneConsoleJSON.firstValue(forKeys: keys, in: dict, transform: OneConsoleJSON.string)
     }
 
     private static func anyDouble(for keys: [String], in dict: [String: Any]) -> Double? {
-        for key in keys {
-            if let value = self.parseDouble(dict[key]) {
-                return value
-            }
-        }
-        return nil
+        OneConsoleJSON.firstValue(forKeys: keys, in: dict, transform: self.parseDouble)
     }
 
     private static func anyDate(for keys: [String], in dict: [String: Any]) -> Date? {
-        for key in keys {
-            if let value = OneConsoleJSON.date(dict[key]) {
-                return value
-            }
-        }
-        return nil
+        OneConsoleJSON.firstValue(forKeys: keys, in: dict, transform: OneConsoleJSON.date)
     }
 
     private static func anyBool(for keys: [String], in dict: [String: Any]) -> Bool? {
-        for key in keys {
-            if let value = self.parseBool(dict[key]) {
-                return value
-            }
-        }
-        return nil
-    }
-
-    private static func parseInt(_ raw: Any?) -> Int? {
-        OneConsoleJSON.int(raw)
+        OneConsoleJSON.firstValue(forKeys: keys, in: dict, transform: self.parseBool)
     }
 
     private static func parseDouble(_ raw: Any?) -> Double? {
@@ -1103,12 +1071,8 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
         return nil
     }
 
-    private static func parseString(_ raw: Any?) -> String? {
-        OneConsoleJSON.string(raw)
-    }
-
     private static func parseDate(_ raw: Any?) -> Date? {
-        if let intValue = self.parseInt(raw) {
+        if let intValue = OneConsoleJSON.int(raw) {
             if intValue > 1_000_000_000_000 {
                 return Date(timeIntervalSince1970: TimeInterval(intValue) / 1000)
             }
@@ -1116,7 +1080,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
                 return Date(timeIntervalSince1970: TimeInterval(intValue))
             }
         }
-        if let string = self.parseString(raw) {
+        if let string = OneConsoleJSON.string(raw) {
             let formatter = ISO8601DateFormatter()
             if let date = formatter.date(from: string) {
                 return date
@@ -1140,7 +1104,7 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
         if let number = raw as? NSNumber {
             return number.boolValue
         }
-        guard let string = self.parseString(raw)?.lowercased() else { return nil }
+        guard let string = OneConsoleJSON.string(raw)?.lowercased() else { return nil }
         switch string {
         case "true", "1", "yes", "active", "valid", "normal":
             return true
@@ -1182,12 +1146,15 @@ public struct AlibabaTokenPlanUsageFetcher: Sendable {
         return names.isEmpty ? "none" : names.joined(separator: ",")
     }
 
-    private static func extractSECToken(from html: String) -> String? {
+    static func extractSECToken(from html: String) -> String? {
         let patterns = [
             #""secToken"\s*:\s*"([^"]+)""#,
             #""sec_token"\s*:\s*"([^"]+)""#,
             #"secToken['"]?\s*[:=]\s*['"]([^'"]+)['"]"#,
             #"sec_token['"]?\s*[:=]\s*['"]([^'"]+)['"]"#,
+            // Aliyun's OneConsole shell embeds it inside `window.ALIYUN_CONSOLE_CONFIG` with an
+            // upper-case, unquoted key: `SEC_TOKEN: "<token>"`. The lower-case patterns above miss it.
+            #"SEC_TOKEN['"]?\s*[:=]\s*['"]([^'"]+)['"]"#,
         ]
         for pattern in patterns {
             if let token = self.matchFirstGroup(pattern: pattern, in: html), !token.isEmpty {

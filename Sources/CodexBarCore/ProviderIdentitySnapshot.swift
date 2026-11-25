@@ -1,36 +1,48 @@
 import Foundation
 
 public struct ProviderIdentitySnapshot: Codable, Sendable {
-    public let providerID: UsageProvider?
+    public let providerID: ProviderInstanceID?
     public let accountEmail: String?
     public let accountOrganization: String?
     public let loginMethod: String?
     public let accountID: String?
+    /// Live-only verified ownership for saved-account widgets; never changes sync or hook identity.
+    public private(set) var widgetAccountOwnerID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case providerID, accountEmail, accountOrganization, loginMethod, accountID
+    }
 
     public init(
-        providerID: UsageProvider?,
+        providerID: ProviderInstanceID?,
         accountEmail: String?,
         accountOrganization: String?,
         loginMethod: String?,
-        accountID: String? = nil)
+        accountID: String? = nil,
+        widgetAccountOwnerID: String? = nil)
     {
         self.providerID = providerID
         self.accountEmail = accountEmail
         self.accountOrganization = accountOrganization
         self.loginMethod = loginMethod
         self.accountID = accountID
+        self.widgetAccountOwnerID = widgetAccountOwnerID
     }
 
-    public func scoped(to provider: UsageProvider) -> ProviderIdentitySnapshot {
-        if self.providerID == provider {
+    public func scoped(to instanceID: ProviderInstanceID) -> ProviderIdentitySnapshot {
+        if self.providerID == instanceID {
             return self
         }
         return ProviderIdentitySnapshot(
-            providerID: provider,
+            providerID: instanceID,
             accountEmail: self.accountEmail,
             accountOrganization: self.accountOrganization,
             loginMethod: self.loginMethod,
             accountID: self.accountID)
+    }
+
+    public func scoped(to provider: UsageProvider) -> ProviderIdentitySnapshot {
+        self.scoped(to: provider.instanceID)
     }
 }
 

@@ -4,9 +4,6 @@ import Foundation
 enum UsagePaceText {
     struct WeeklyDetail {
         let leftLabel: String
-        /// Menu bar form of `leftLabel`: `+20%` when under the expected burn, `-8%` when over, `0%` on pace.
-        /// The prose form is fine in the dropdown but eats menu bar width the strip does not have.
-        let compactLabel: String
         let rightLabel: String?
         let expectedUsedPercent: Double
         let stage: UsagePace.Stage
@@ -23,6 +20,28 @@ enum UsagePaceText {
         case weekly
     }
 
+    static func dailyTarget(
+        _ target: Double?,
+        unit: String?,
+        preferredCurrency: String) -> String?
+    {
+        guard let target else { return nil }
+        let number = target.formatted(.number.precision(.fractionLength(0...2)).locale(codexBarLocalizedLocale()))
+        let amount: String
+        switch unit?.lowercased() {
+        case "%": amount = "\(number)%"
+        case "credits": amount = L("%@ %@", number, L("credits"))
+        case "requests": amount = L("%@ requests", number)
+        default:
+            guard let unit,
+                  Locale.Currency.isoCurrencies.contains(where: { $0.identifier == unit.uppercased() })
+            else { return nil }
+            amount = UsageFormatter.convertedCostString(
+                target, preferredCurrency: preferredCurrency, providerCurrency: unit.uppercased())
+        }
+        return L("monthly_daily_target_format", amount)
+    }
+
     static func weeklySummary(provider: UsageProvider, pace: UsagePace, now: Date = .init()) -> String {
         let detail = self.weeklyDetail(provider: provider, pace: pace, now: now)
         if let rightLabel = detail.rightLabel {
@@ -34,7 +53,6 @@ enum UsagePaceText {
     static func weeklyDetail(provider: UsageProvider, pace: UsagePace, now: Date = .init()) -> WeeklyDetail {
         WeeklyDetail(
             leftLabel: self.detailLeftLabel(for: pace),
-            compactLabel: self.detailCompactLabel(for: pace),
             rightLabel: self.detailRightLabel(for: pace, provider: provider, context: .weekly, now: now),
             expectedUsedPercent: pace.expectedUsedPercent,
             stage: pace.stage)
@@ -92,25 +110,6 @@ enum UsagePaceText {
         }
     }
 
-    /// Signed counterpart to `detailLeftLabel`, sharing its stage-first branching so the two never disagree.
-    /// Sign reads as budget: `+` is quota held back against the expected burn, `-` is quota spent ahead of it.
-    /// Built from `UsageFormatter.percentString` rather than a catalog string so the `%` placement stays
-    /// consistent with every other percentage in the strip.
-    private static func detailCompactLabel(for pace: UsagePace) -> String {
-        let deltaValue = abs(pace.deltaPercent).rounded()
-        if deltaValue == 0 {
-            return UsageFormatter.percentString(0)
-        }
-        switch pace.stage {
-        case .onTrack:
-            return UsageFormatter.percentString(0)
-        case .slightlyAhead, .ahead, .farAhead:
-            return "-\(UsageFormatter.percentString(deltaValue))"
-        case .slightlyBehind, .behind, .farBehind:
-            return "+\(UsageFormatter.percentString(deltaValue))"
-        }
-    }
-
     private static func detailRightLabel(
         for pace: UsagePace,
         provider: UsageProvider,
@@ -133,18 +132,16 @@ enum UsagePaceText {
 
         guard let runOutProbability = pace.runOutProbability else { return etaLabel }
         let roundedRisk = self.roundedRiskPercent(runOutProbability)
-        let riskLabel = L("≈ %d%% run-out risk", roundedRisk)
-        if pace.willLastToReset, roundedRisk > 0 {
-            return riskLabel
-        }
+        let riskLabel = L("(%d%% risk)", roundedRisk)
         if let etaLabel {
-            return L("%@ · %@", etaLabel, riskLabel)
+            return L("%@ %@", etaLabel, riskLabel)
         }
         return riskLabel
     }
 
     private static func combinedLastsLabel(for pace: UsagePace, provider: UsageProvider) -> String {
-        guard provider == .codex else { return L("Lasts until reset") }
+        let paceCapability = ProviderDescriptorRegistry.descriptor(for: provider).pace
+        guard paceCapability.showsHeadroomHint else { return L("Lasts until reset") }
         guard let speedLabel = self.speedHintLabel(for: pace) else {
             return L("Lasts until reset")
         }
@@ -160,15 +157,7 @@ enum UsagePaceText {
     }
 
     private static func durationText(seconds: TimeInterval, now: Date) -> String {
-        let date = now.addingTimeInterval(seconds)
-        let countdown = UsageFormatter.resetCountdownDescription(from: date, now: now)
-        if countdown == "now" {
-            return "now"
-        }
-        if countdown.hasPrefix("in ") {
-            return String(countdown.dropFirst(3))
-        }
-        return countdown
+        UsageFormatter.resetCountdownDuration(from: now.addingTimeInterval(seconds), now: now)
     }
 
     private static func roundedRiskPercent(_ probability: Double) -> Int {
@@ -178,18 +167,8 @@ enum UsagePaceText {
     }
 
     static func sessionPace(provider: UsageProvider, window: RateWindow, now: Date) -> UsagePace? {
-        guard provider == .codex || provider == .claude || provider == .ollama || provider == .antigravity ||
-            provider == .kimi
-        else { return nil }
-        if provider == .ollama, window.windowMinutes == nil {
-            return nil
-        }
-        if provider == .antigravity, let windowMinutes = window.windowMinutes, windowMinutes != 300 {
-            return nil
-        }
-        if provider == .kimi, window.windowMinutes != KimiProviderDescriptor.sessionWindowMinutes {
-            return nil
-        }
+        let paceCapability = ProviderDescriptorRegistry.descriptor(for: provider).pace
+        guard paceCapability.supportsSessionPace(window: window, now: now) else { return nil }
         guard window.remainingPercent > 0 else { return nil }
         guard let pace = UsagePace.weekly(window: window, now: now, defaultWindowMinutes: 300) else { return nil }
         guard pace.expectedUsedPercent >= 3 else { return nil }
@@ -200,7 +179,6 @@ enum UsagePaceText {
         guard let pace = sessionPace(provider: provider, window: window, now: now) else { return nil }
         return WeeklyDetail(
             leftLabel: Self.detailLeftLabel(for: pace),
-            compactLabel: Self.detailCompactLabel(for: pace),
             rightLabel: Self.detailRightLabel(for: pace, provider: provider, context: .session, now: now),
             expectedUsedPercent: pace.expectedUsedPercent,
             stage: pace.stage)

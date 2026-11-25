@@ -17,23 +17,30 @@ package final class ProcessPipeCapture: @unchecked Sendable {
     private var isFinished = false
     private var didReachEOF = false
     private var isStopping = false
+    private var isStopped = false
     private var continuation: CheckedContinuation<Void, Never>?
     #if os(Linux)
-    private let readerQueue = DispatchQueue(label: "com.steipete.CodexBar.process-pipe-capture.reader")
     private let callbackQueue = DispatchQueue(label: "com.steipete.CodexBar.process-pipe-capture.callback")
-    private var readSource: DispatchSourceRead?
-    private var sourceStarted = false
-    private var sourceCancelled = false
+    private var readerStarted = false
+    private var readerExited = false
     private var callbackScheduled = false
     private var callbackRequested = false
     #endif
 
-    package init(
+    package convenience init(
         pipe: Pipe,
         maxBytes: Int = ProcessPipeCapture.defaultMaxBytes,
         onData: (@Sendable () -> Void)? = nil)
     {
-        self.handle = pipe.fileHandleForReading
+        self.init(handle: pipe.fileHandleForReading, maxBytes: maxBytes, onData: onData)
+    }
+
+    package init(
+        handle: FileHandle,
+        maxBytes: Int = ProcessPipeCapture.defaultMaxBytes,
+        onData: (@Sendable () -> Void)? = nil)
+    {
+        self.handle = handle
         self.maxBytes = max(0, maxBytes)
         self.onData = onData
     }
@@ -42,12 +49,22 @@ package final class ProcessPipeCapture: @unchecked Sendable {
         #if os(Linux)
         self.start(linuxDescriptorSetup: Self.makeNonBlocking)
         #else
-        self.installReadabilityHandler()
+        self.handle.readabilityHandler = { [weak self] handle in
+            self?.handleReadableData(from: handle)
+        }
         #endif
     }
 
     #if os(Linux)
     package func start(linuxDescriptorSetup: @Sendable (Int32) -> Bool) {
+        self.condition.lock()
+        guard !self.readerStarted, !self.isFinished, !self.isStopping else {
+            self.condition.unlock()
+            return
+        }
+        self.readerStarted = true
+        self.condition.unlock()
+
         let fileDescriptor = self.handle.fileDescriptor
         guard linuxDescriptorSetup(fileDescriptor) else {
             self.finishFailedLinuxStart()
@@ -55,20 +72,14 @@ package final class ProcessPipeCapture: @unchecked Sendable {
         }
 
         // FileHandle.readabilityHandler duplicates the descriptor on Linux and traps if dup(2) returns EMFILE.
-        // A dispatch read source monitors the pipe's existing descriptor, so descriptor exhaustion cannot trigger
-        // Foundation's precondition failure.
-        let source = DispatchSource.makeReadSource(fileDescriptor: fileDescriptor, queue: self.readerQueue)
-        source.setEventHandler { [weak self] in
-            self?.handleLinuxReadableData(fileDescriptor: fileDescriptor)
+        // DispatchSourceRead avoids that duplication, but Swift 6.3's Linux epoll backend can unregister and free
+        // a pipe's shared muxnote on its target queue while the manager queue is still traversing the HUP event.
+        // Poll on an owned thread instead: the reader keeps sole descriptor-close ownership, while the bounded poll
+        // interval keeps stop() responsive without allocating a wakeup descriptor that would break the EMFILE path.
+        Thread.detachNewThread { [self] in
+            Thread.current.name = "CodexBar pipe capture"
+            self.runLinuxReader(fileDescriptor: fileDescriptor)
         }
-        source.setCancelHandler { [weak self] in
-            self?.finishLinuxSourceCancellation()
-        }
-        self.condition.lock()
-        self.readSource = source
-        self.sourceStarted = true
-        self.condition.unlock()
-        source.resume()
     }
     #endif
 
@@ -113,6 +124,14 @@ package final class ProcessPipeCapture: @unchecked Sendable {
         return self.didReachEOF
     }
 
+    /// Snapshot of the bytes captured so far, without stopping the capture. Lets a caller
+    /// poll for interactive output (e.g. a device-flow URL/code) while the process is still running.
+    package func currentSnapshot() -> Data {
+        self.condition.lock()
+        defer { self.condition.unlock() }
+        return self.data
+    }
+
     package static func decodeUTF8(_ data: Data) -> String {
         // A byte cap can split the final scalar; lossy decoding preserves the valid captured prefix.
         // swiftlint:disable:next optional_data_string_conversion
@@ -121,7 +140,7 @@ package final class ProcessPipeCapture: @unchecked Sendable {
 
     private func handleReadableData(from handle: FileHandle) {
         self.condition.lock()
-        guard !self.isStopping else {
+        guard !self.isStopping, !self.isFinished else {
             self.condition.unlock()
             return
         }
@@ -133,6 +152,8 @@ package final class ProcessPipeCapture: @unchecked Sendable {
 
         self.condition.lock()
         if chunk.isEmpty {
+            // Complete EOF monitor cleanup before stop can close the handle.
+            handle.readabilityHandler = nil
             self.isFinished = true
             self.didReachEOF = true
             continuation = self.continuation
@@ -149,15 +170,49 @@ package final class ProcessPipeCapture: @unchecked Sendable {
         }
         self.condition.unlock()
 
-        if chunk.isEmpty {
-            handle.readabilityHandler = nil
-        } else {
+        if !chunk.isEmpty {
             self.onData?()
         }
         continuation?.resume()
     }
 
     #if os(Linux)
+    private func runLinuxReader(fileDescriptor: Int32) {
+        var pollDescriptor = pollfd(fd: fileDescriptor, events: Int16(POLLIN), revents: 0)
+
+        while true {
+            self.condition.lock()
+            let shouldStop = self.isStopping
+            self.condition.unlock()
+            if shouldStop { break }
+
+            pollDescriptor.revents = 0
+            #if canImport(Glibc)
+            let pollResult = Glibc.poll(&pollDescriptor, 1, 25)
+            #elseif canImport(Musl)
+            let pollResult = Musl.poll(&pollDescriptor, 1, 25)
+            #endif
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                self.finishLinuxRead(reachedEOF: false)
+                break
+            }
+            if pollResult == 0 { continue }
+
+            self.handleLinuxReadableData(fileDescriptor: fileDescriptor)
+            self.condition.lock()
+            let finished = self.isFinished || self.isStopping
+            self.condition.unlock()
+            if finished { break }
+        }
+
+        try? self.handle.close()
+        self.condition.lock()
+        self.readerExited = true
+        self.condition.broadcast()
+        self.condition.unlock()
+    }
+
     private func handleLinuxReadableData(fileDescriptor: Int32) {
         self.condition.lock()
         guard !self.isStopping else {
@@ -207,14 +262,12 @@ package final class ProcessPipeCapture: @unchecked Sendable {
         }
 
         var continuation: CheckedContinuation<Void, Never>?
-        var sourceToCancel: DispatchSourceRead?
         self.condition.lock()
         if reachedEnd {
             self.isFinished = true
             self.didReachEOF = true
             continuation = self.continuation
             self.continuation = nil
-            sourceToCancel = self.readSource
         }
         self.activeCallbacks -= 1
         if self.activeCallbacks == 0 || reachedEnd {
@@ -222,10 +275,25 @@ package final class ProcessPipeCapture: @unchecked Sendable {
         }
         self.condition.unlock()
 
-        sourceToCancel?.cancel()
         if receivedData {
             self.scheduleLinuxDataCallback()
         }
+        continuation?.resume()
+    }
+
+    private func finishLinuxRead(reachedEOF: Bool) {
+        let continuation: CheckedContinuation<Void, Never>?
+        self.condition.lock()
+        if self.isStopping {
+            continuation = nil
+        } else {
+            self.isFinished = true
+            self.didReachEOF = reachedEOF
+            continuation = self.continuation
+            self.continuation = nil
+            self.condition.broadcast()
+        }
+        self.condition.unlock()
         continuation?.resume()
     }
 
@@ -263,28 +331,14 @@ package final class ProcessPipeCapture: @unchecked Sendable {
         try? self.handle.close()
         self.condition.lock()
         self.isFinished = true
+        self.readerExited = true
         let continuation = self.continuation
         self.continuation = nil
         self.condition.broadcast()
         self.condition.unlock()
         continuation?.resume()
     }
-
-    private func finishLinuxSourceCancellation() {
-        try? self.handle.close()
-        self.condition.lock()
-        self.sourceCancelled = true
-        self.readSource = nil
-        self.condition.broadcast()
-        self.condition.unlock()
-    }
     #endif
-
-    private func installReadabilityHandler() {
-        self.handle.readabilityHandler = { [weak self] handle in
-            self?.handleReadableData(from: handle)
-        }
-    }
 
     private func waitUntilFinished() async {
         await withCheckedContinuation { continuation in
@@ -300,45 +354,41 @@ package final class ProcessPipeCapture: @unchecked Sendable {
     }
 
     private func stopAndSnapshot() -> Data {
-        let continuation: CheckedContinuation<Void, Never>?
-        let snapshot: Data
-        #if os(Linux)
-        let source: DispatchSourceRead?
         self.condition.lock()
-        self.isStopping = true
-        source = self.readSource
-        self.readSource = nil
-        self.condition.unlock()
-        source?.cancel()
-        #else
-        self.handle.readabilityHandler = nil
-        #endif
-
-        self.condition.lock()
+        while self.isStopping, !self.isStopped {
+            self.condition.wait()
+        }
+        guard !self.isStopped else {
+            let snapshot = self.data
+            self.condition.unlock()
+            return snapshot
+        }
         self.isStopping = true
         #if os(Linux)
-        while self.activeCallbacks > 0 || (self.sourceStarted && !self.sourceCancelled) {
+        if !self.readerStarted {
+            try? self.handle.close()
+            self.readerExited = true
+        }
+        self.condition.broadcast()
+        while self.readerStarted, !self.readerExited {
             self.condition.wait()
         }
         #else
         while self.activeCallbacks > 0 {
             self.condition.wait()
         }
-        #endif
-        self.isFinished = true
-        continuation = self.continuation
-        self.continuation = nil
-        snapshot = self.data
-        self.condition.unlock()
-
-        // Explicitly close the read-end file descriptor. On Linux
-        // swift-corelibs-foundation, clearing readabilityHandler does not
-        // release the underlying dup'd monitor fd, so the pipe read end leaks
-        // if we rely solely on closeOnDealloc. Closing here prevents the
-        // long-running fd growth that leads to EMFILE/SIGILL (issue #2234).
-        #if !os(Linux)
+        if !self.didReachEOF {
+            self.handle.readabilityHandler = nil
+        }
         try? self.handle.close()
         #endif
+        self.isFinished = true
+        self.isStopped = true
+        let continuation = self.continuation
+        self.continuation = nil
+        let snapshot = self.data
+        self.condition.broadcast()
+        self.condition.unlock()
 
         continuation?.resume()
         return snapshot

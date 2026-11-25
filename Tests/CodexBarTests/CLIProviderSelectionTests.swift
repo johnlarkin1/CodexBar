@@ -21,6 +21,37 @@ struct CLIProviderSelectionTests {
             "|kiro|",
             "|warp|",
             "|ollama|",
+            "|devpass|",
+            "|atlascloud|",
+            "|vercel|",
+            "|llmman|",
+            "|aixy|",
+            "|raycast|",
+            "|xkiro|",
+            "|museai|",
+            "|lithosai|",
+            "|workbuddy|",
+            "|tavily|",
+            "|linkup|",
+            "|tinyapi|",
+            "|exa|",
+            "|cosmic|",
+            "|aerostack|",
+            "|sailresearch|",
+            "|sofya|",
+            "|fal|",
+            "|flora|",
+            "|parallel|",
+            "|siliconflow|",
+            "|claudeplatform|",
+            "|munito|",
+            "|soniox|",
+            "|traecn|",
+            "|chatbox|",
+            "|abliteration|",
+            "|tripo|",
+            "|googledeveloper|",
+            "|trustedrouter|",
             "|both|",
             "|all]",
         ]
@@ -64,49 +95,94 @@ struct CLIProviderSelectionTests {
     }
 
     @Test
-    func `provider selection respects override`() {
-        let selection = CodexBarCLI.providerSelection(rawOverride: "gemini", enabled: [.codex, .claude])
+    func `help advertises the toon output format`() {
+        let usage = CodexBarCLI.usageHelp(version: "0.0.0")
+        let root = CodexBarCLI.rootHelp(version: "0.0.0")
+
+        #expect(usage.contains("--format text|json|toon"))
+        #expect(root.contains("--format text|json|toon"))
+        #expect(usage.contains("codexbar usage --format toon"))
+        #expect(root.contains("codexbar --format toon"))
+    }
+
+    @Test
+    func `provider selection respects override`() throws {
+        let selection = try CodexBarCLI.providerSelection(rawOverride: "gemini", enabled: [.codex, .claude])
         #expect(selection.asList == [.gemini])
     }
 
     @Test
-    func `provider selection uses enabled providers when three or more are enabled`() {
-        let selection = CodexBarCLI.providerSelection(
+    func `provider selection uses enabled providers when three or more are enabled`() throws {
+        let selection = try CodexBarCLI.providerSelection(
             rawOverride: nil,
             enabled: [.codex, .claude, .zai, .cursor, .gemini, .antigravity, .factory, .copilot])
         #expect(selection.asList == [.codex, .claude, .zai, .cursor, .gemini, .antigravity, .factory, .copilot])
     }
 
     @Test
-    func `provider selection does not expand three enabled providers to all providers`() {
+    func `provider selection does not expand three enabled providers to all providers`() throws {
         let enabled: [UsageProvider] = [.codex, .claude, .copilot]
-        let selection = CodexBarCLI.providerSelection(rawOverride: nil, enabled: enabled)
+        let selection = try CodexBarCLI.providerSelection(rawOverride: nil, enabled: enabled)
         #expect(selection.asList == enabled)
         #expect(!selection.asList.contains(.gemini))
     }
 
     @Test
-    func `provider selection uses both for codex and claude`() {
-        let selection = CodexBarCLI.providerSelection(rawOverride: nil, enabled: [.codex, .claude])
+    func `provider selection uses both for codex and claude`() throws {
+        let selection = try CodexBarCLI.providerSelection(rawOverride: nil, enabled: [.codex, .claude])
         #expect(selection.asList == [.codex, .claude])
     }
 
     @Test
-    func `provider selection uses custom for codex and gemini`() {
+    func `provider selection uses custom for codex and gemini`() throws {
         let enabled: [UsageProvider] = [.codex, .gemini]
-        let selection = CodexBarCLI.providerSelection(rawOverride: nil, enabled: enabled)
+        let selection = try CodexBarCLI.providerSelection(rawOverride: nil, enabled: enabled)
         #expect(selection.asList == enabled)
     }
 
     @Test
-    func `provider selection accepts kiro alias`() {
-        let selection = CodexBarCLI.providerSelection(rawOverride: "kiro-cli", enabled: [.codex])
+    func `provider selection accepts kiro alias`() throws {
+        let selection = try CodexBarCLI.providerSelection(rawOverride: "kiro-cli", enabled: [.codex])
         #expect(selection.asList == [.kiro])
     }
 
     @Test
-    func `provider selection honors empty enabled set`() {
-        let selection = CodexBarCLI.providerSelection(rawOverride: nil, enabled: [])
+    func `provider selection accepts claude platform alias`() throws {
+        let selection = try CodexBarCLI.providerSelection(rawOverride: "claude-platform", enabled: [.claude])
+        #expect(selection.asList == [.claudeplatform])
+    }
+
+    @Test
+    func `provider selection honors empty enabled set`() throws {
+        let selection = try CodexBarCLI.providerSelection(rawOverride: nil, enabled: [])
         #expect(selection.asList == [])
+    }
+
+    @Test
+    func `unknown explicit provider is an argument error naming the value`() {
+        #expect {
+            try CodexBarCLI.providerSelection(rawOverride: "not-a-real-provider", enabled: [.codex])
+        } throws: { error in
+            guard let error = error as? CLIArgumentError else { return false }
+            return error.message == "unknown provider 'not-a-real-provider'"
+        }
+    }
+
+    @Test
+    func `unknown explicit provider does not fall back when nothing is enabled`() {
+        #expect(throws: CLIArgumentError.self) {
+            try CodexBarCLI.providerSelection(rawOverride: "nope", enabled: [])
+        }
+    }
+
+    @Test
+    func `both and all stay valid explicit selections`() throws {
+        #expect(try CodexBarCLI.providerSelection(rawOverride: "both", enabled: []).asList.count >= 1)
+        #expect(try CodexBarCLI.providerSelection(rawOverride: "ALL", enabled: [.codex]).asList.count > 1)
+    }
+
+    @Test
+    func `default selection preserves a single enabled provider`() {
+        #expect(CodexBarCLI.defaultProviderSelection(enabled: [.codex]).asList == [.codex])
     }
 }

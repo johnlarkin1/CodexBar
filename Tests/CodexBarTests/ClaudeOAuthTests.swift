@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import CodexBarCore
 
-@Suite(.serialized)
+@Suite(.serialized, ClaudeOAuthDefaultsFixtures())
 struct ClaudeOAuthTests {
     @Test
     func `parses O auth credentials`() throws {
@@ -105,11 +105,11 @@ struct ClaudeOAuthTests {
         let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(
             Data(json.utf8),
             rateLimitTier: "claude_pro")
-        #expect(snap.primary.usedPercent == 12.5)
-        #expect(snap.primary.windowMinutes == 300)
+        #expect(snap.primary?.usedPercent == 12.5)
+        #expect(snap.primary?.windowMinutes == 300)
         #expect(snap.secondary?.usedPercent == 30)
         #expect(snap.opus?.usedPercent == 5)
-        #expect(snap.primary.resetsAt != nil)
+        #expect(snap.primary?.resetsAt != nil)
         #expect(snap.loginMethod == "Claude Pro")
         #expect(snap.oauthHistoryOwnerIdentifier?.count == 64)
     }
@@ -142,6 +142,7 @@ struct ClaudeOAuthTests {
             transport: transport)
 
         #expect(profile.emailAddress == "user@example.com")
+        #expect(profile.accountUuid == "account-123")
         #expect(profile.organizationUuid == "org-123")
         let request = try #require(await transport.requests().first)
         #expect(request.url?.absoluteString == "https://api.anthropic.com/api/oauth/profile")
@@ -214,6 +215,29 @@ struct ClaudeOAuthTests {
         #expect(fable?.title == "Fable only")
         #expect(fable?.window.usedPercent == 5)
         #expect(fable?.window.resetsAt != nil)
+    }
+
+    @Test
+    func `keeps Fable limit when a sibling entry or its own optional field has an unexpected type`() throws {
+        let json = """
+        {
+          "five_hour": { "utilization": 11.0, "resets_at": "2026-07-03T00:30:00.282668+00:00" },
+          "seven_day": { "utilization": 9.0, "resets_at": "2026-07-08T09:00:00.282694+00:00" },
+          "limits": [
+            null,
+            { "kind": "session", "group": "session", "percent": "11", "resets_at": null, "scope": null },
+            {
+              "kind": "weekly_scoped", "group": "weekly", "percent": 5, "resets_at": 1791800000,
+              "scope": { "model": { "id": null, "display_name": "Fable" }, "surface": null },
+              "is_active": false
+            }
+          ]
+        }
+        """
+        let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(Data(json.utf8))
+        let fable = snap.extraRateWindows.first(where: { $0.id == "claude-weekly-scoped-fable" })
+        #expect(fable?.window.usedPercent == 5)
+        #expect(fable?.window.resetsAt == nil)
     }
 
     @Test
@@ -358,10 +382,9 @@ struct ClaudeOAuthTests {
             Data(json.utf8),
             subscriptionType: "enterprise")
         #expect(snap.loginMethod == "Claude Enterprise")
-        #expect(snap.primary.usedPercent == 38.15)
-        #expect(snap.primaryWindowKind == .spendLimit)
-        #expect(snap.primary.windowMinutes == nil)
-        #expect(snap.primary.resetDescription == "Spend limit: €7.63 / €20.00")
+        #expect(snap.providerCost?.spendLimitWindow?.usedPercent == 38.15)
+        #expect(snap.primary == nil)
+        #expect(snap.primary?.windowMinutes == nil)
         #expect(snap.secondary == nil)
         #expect(snap.providerCost?.period == "Spend limit")
         #expect(snap.providerCost?.currencyCode == "EUR")
@@ -390,9 +413,8 @@ struct ClaudeOAuthTests {
         """
         let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(Data(json.utf8))
         #expect(snap.loginMethod == nil)
-        #expect(snap.primaryWindowKind == .spendLimit)
-        #expect(snap.primary.usedPercent == 38.15)
-        #expect(snap.primary.resetDescription == "Spend limit: €7.63 / €20.00")
+        #expect(snap.primary == nil)
+        #expect(snap.providerCost?.spendLimitWindow?.usedPercent == 38.15)
         #expect(snap.providerCost?.period == "Spend limit")
         #expect(snap.providerCost?.currencyCode == "EUR")
         #expect(snap.providerCost?.limit == 20)
@@ -415,9 +437,8 @@ struct ClaudeOAuthTests {
         let snap = try ClaudeUsageFetcher._mapOAuthUsageForTesting(
             Data(json.utf8),
             subscriptionType: "enterprise")
-        #expect(snap.primaryWindowKind == .spendLimit)
-        #expect(snap.primary.usedPercent == 12.3456)
-        #expect(snap.primary.resetDescription == "Spend limit: $1,234.56 / $10,000.00")
+        #expect(snap.primary == nil)
+        #expect(snap.providerCost?.spendLimitWindow?.usedPercent == 12.3456)
         #expect(snap.providerCost?.period == "Spend limit")
         #expect(snap.providerCost?.limit == 10000)
         #expect(snap.providerCost?.used == 1234.56)
@@ -587,9 +608,9 @@ struct ClaudeOAuthTests {
         let legacyKey = "claudeOAuthUsageRateLimitBlockedUntilV1"
         let expiredKey = prefix + "expired"
         let malformedKey = prefix + "malformed"
-        UserDefaults.standard.set(now.addingTimeInterval(600).timeIntervalSince1970, forKey: legacyKey)
-        UserDefaults.standard.set(now.addingTimeInterval(-1).timeIntervalSince1970, forKey: expiredKey)
-        UserDefaults.standard.set("not-a-date", forKey: malformedKey)
+        ClaudeOAuthDefaultsFixtures.defaults.set(now.addingTimeInterval(600).timeIntervalSince1970, forKey: legacyKey)
+        ClaudeOAuthDefaultsFixtures.defaults.set(now.addingTimeInterval(-1).timeIntervalSince1970, forKey: expiredKey)
+        ClaudeOAuthDefaultsFixtures.defaults.set("not-a-date", forKey: malformedKey)
 
         ClaudeOAuthUsageRateLimitGate.recordRateLimit(
             accessToken: accessToken,
@@ -598,10 +619,10 @@ struct ClaudeOAuthTests {
 
         #expect(!preferenceName.contains(accessToken))
         #expect(String(preferenceName.dropFirst(prefix.count)).count == 64)
-        #expect(UserDefaults.standard.object(forKey: preferenceName) != nil)
-        #expect(UserDefaults.standard.object(forKey: legacyKey) == nil)
-        #expect(UserDefaults.standard.object(forKey: expiredKey) == nil)
-        #expect(UserDefaults.standard.object(forKey: malformedKey) == nil)
+        #expect(ClaudeOAuthDefaultsFixtures.defaults.object(forKey: preferenceName) != nil)
+        #expect(ClaudeOAuthDefaultsFixtures.defaults.object(forKey: legacyKey) == nil)
+        #expect(ClaudeOAuthDefaultsFixtures.defaults.object(forKey: expiredKey) == nil)
+        #expect(ClaudeOAuthDefaultsFixtures.defaults.object(forKey: malformedKey) == nil)
     }
 
     @Test
@@ -795,7 +816,7 @@ struct ClaudeOAuthTests {
     // MARK: - Scope-based strategy resolution
 
     @Test
-    func `prefers O auth when available`() {
+    func `app auto prefers available O auth over CLI`() {
         let strategy = ClaudeProviderDescriptor.resolveUsageStrategy(
             selectedDataSource: .auto,
             webExtrasEnabled: false,
@@ -817,14 +838,14 @@ struct ClaudeOAuthTests {
     }
 
     @Test
-    func `falls back to web when O auth missing and CLI missing`() {
+    func `app auto uses available O auth when CLI is missing`() {
         let strategy = ClaudeProviderDescriptor.resolveUsageStrategy(
             selectedDataSource: .auto,
             webExtrasEnabled: false,
             hasWebSession: true,
             hasCLI: false,
-            hasOAuthCredentials: false)
-        #expect(strategy.dataSource == .web)
+            hasOAuthCredentials: true)
+        #expect(strategy.dataSource == .oauth)
     }
 
     @Test

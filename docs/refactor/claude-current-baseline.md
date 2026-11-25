@@ -53,7 +53,7 @@ The generic provider pipeline currently resolves Claude strategies in this order
 | app | oauth | `oauth` | No fallback. |
 | app | cli | `cli` | No fallback. |
 | app | web | `web` | No fallback. |
-| cli | auto | `web -> cli` | Web can fall through to CLI. CLI is terminal. |
+| cli | auto | `web -> cli` (Linux: `web -> oauth -> cli`) | Web can fall through to OAuth/CLI. Linux always plans OAuth; it is skipped without usable noninteractive credentials, and its request failures fall through to CLI. Cancellation is terminal. CLI is terminal. |
 | cli | oauth | `oauth` | No fallback. |
 | cli | cli | `cli` | No fallback. |
 | cli | web | `web` | No fallback. |
@@ -125,6 +125,8 @@ Claude Web enrichment is usage-extra-only when the primary source is OAuth or CL
 - A matching prepaid balance may enrich an existing `providerCost` without replacing its spend/limit values.
 - OAuth enrichment calls `GET /api/oauth/profile`; Web data is merged only when the email or organization UUID
   matches the primary Claude account.
+- CLI enrichment requires matching account emails. Organization display names can reject a known mismatch but
+  cannot establish account identity when an email is missing.
 - Web extras must not replace `accountEmail`, `accountOrganization`, or `loginMethod` from the primary source.
 - Snapshot identity remains provider-scoped to Claude.
 

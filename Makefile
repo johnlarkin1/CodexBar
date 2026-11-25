@@ -1,8 +1,14 @@
 # CodexBar Makefile — thin wrappers around Scripts/*.sh
 # Run `make` or `make help` to see available targets.
 
+SHELL := /bin/bash
+
 # Pull version from version.env for targets that need it
 include version.env
+
+# Keep FILTER literal, including Make expressions, shell syntax, and apostrophes.
+unexport FILTER
+test_filter_arg = $(if $(value FILTER),--filter '$(subst ','"'"',$(value FILTER))')
 
 # Matches codexbar_release_arch_label in Scripts/release_artifacts.sh.
 ARCH_LABEL ?= macos-universal
@@ -18,7 +24,8 @@ export APP_IDENTITY
 # GitHub repo for fork releases (override: make sign-and-release GH_REPO="org/repo")
 GH_REPO ?= johnlarkin1/CodexBar
 
-.PHONY: help build build-release test run run-test lint format check \
+.PHONY: help build build-release test test-fast test-skip-build test-tty test-live run run-test \
+        lint format check docs-list \
         sign package release sign-and-release appcast check-release \
         validate-changelog check-upstream clean
 
@@ -37,6 +44,18 @@ build-release: ## Release build
 test: ## Run full test suite
 	swift test
 
+test-fast: ## Fast sharded test run (FILTER=... to narrow)
+	./Scripts/test_fast.sh $(test_filter_arg)
+
+test-skip-build: ## Fast test run without rebuilding (FILTER=... to narrow)
+	./Scripts/test_fast.sh --skip-build $(test_filter_arg)
+
+test-tty: ## TTY integration tests
+	source ./Scripts/test_environment.sh && CODEXBAR_SUPPRESS_TEST_KEYCHAIN_ACCESS=1 swift test --filter TTYIntegrationTests
+
+test-live: ## Live account tests (touches the keychain)
+	export CODEXBAR_ALLOW_TEST_KEYCHAIN_ACCESS=1 && source ./Scripts/test_environment.sh && LIVE_TEST=1 swift test --filter LiveAccountTests
+
 run: ## Build, package, and launch (main dev workflow)
 	./Scripts/compile_and_run.sh
 
@@ -51,6 +70,9 @@ lint: ## SwiftFormat --lint + SwiftLint --strict (check only)
 
 format: ## SwiftFormat auto-fix
 	./Scripts/lint.sh format
+
+docs-list: ## List docs
+	node Scripts/docs-list.mjs
 
 # ── Release ─────────────────────────────────────────────────────────
 sign: ## Sign + notarize for distribution

@@ -4,7 +4,83 @@ import Testing
 @testable import CodexBar
 
 @MainActor
+@Suite(CodexCredentialFixtures())
 struct CodexAccountsSettingsSectionTests {
+    @Test
+    func `renaming persists presentation without changing auth or exposing names in private mode`() throws {
+        let settings = Self.makeSettingsStore(suite: "CodexAccountsSettingsSectionTests-rename")
+        settings._test_liveSystemCodexAccount = ObservedSystemCodexAccount(
+            email: "user@example.com",
+            workspaceAccountID: "team-a",
+            codexHomePath: "/Users/test/.codex",
+            observedAt: Date(),
+            identity: .providerAccount(id: "team-a"))
+        let account = try #require(settings.codexVisibleAccounts.first)
+        let store = Self.makeUsageStore(settings: settings)
+        let tokenAccount = ProviderTokenAccount(
+            id: UUID(), label: "Synthetic", token: "fixture-token", addedAt: 0, lastUsed: nil)
+        let initialCacheKey = store.tokenAccountSnapshotCacheKey(provider: .codex, account: tokenAccount)
+        let source = settings.codexActiveSource
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let initialIdentity = try encoder.encode(
+            (settings.providerConfig(for: .codex) ?? ProviderConfig(id: .codex)).fetchIdentityConfig)
+        let initialRevision = settings.providerConfigRevision(for: .codex)
+        settings.renameCodexAccount(account, to: " School ")
+        let renamed = try #require(settings.codexVisibleAccounts.first)
+        #expect(renamed.displayName == "School")
+        #expect(try encoder.encode(
+            (settings.providerConfig(for: .codex) ?? ProviderConfig(id: .codex)).fetchIdentityConfig) ==
+            initialIdentity)
+        #expect(settings.providerConfigRevision(for: .codex) == initialRevision)
+        #expect(settings.codexActiveSource == source)
+        #expect(store.tokenAccountSnapshotCacheKey(provider: .codex, account: tokenAccount) == initialCacheKey)
+        #expect(renamed.selectionSource == account.selectionSource)
+        #expect(renamed.authFingerprint == account.authFingerprint)
+        #expect(settings.codexVisibleAccountProjectionForMenuDisplay?.visibleAccounts.first?.customName == "School")
+        #expect(CodexAccountSwitcherLabeling.label(for: renamed, ordinal: 1, hidePersonalInfo: true)
+            .contains("School") == false)
+        #expect(store.codexAccountMenuCardModel(for: renamed, accountSnapshot: nil)?.providerName == "School")
+        store.lastSourceLabels[.codex] = "pat"
+        #expect(store.menuCardModel(for: .codex).providerName == "Codex")
+        store.lastSourceLabels[.codex] = "oauth"
+        #expect(store.menuCardModel(for: .codex).providerName == "School")
+        settings.codexUsageDataSource = .pat
+        #expect(store.menuCardModel(for: .codex).providerName == "Codex")
+        settings.codexUsageDataSource = .auto
+        settings.hidePersonalInfo = true
+        let pane = ProvidersPane(settings: settings, store: store)
+        let privateState = try #require(pane._test_codexAccountsSectionState())
+        #expect(!privateState.systemDisplayName.contains("School"))
+        #expect(store.codexAccountMenuCardModel(for: renamed, accountSnapshot: nil)?.providerName == "Codex")
+        settings.renameCodexAccount(renamed, to: " ")
+        #expect(settings.codexAccountNames.isEmpty)
+        #expect(settings.codexVisibleAccounts.first?.displayName == account.displayName)
+    }
+
+    @Test
+    func `clearing a recovered name removes its unresolved account preference`() {
+        let settings = Self.makeSettingsStore(suite: "CodexAccountsSettingsSectionTests-recovered-name")
+        let savedID = UUID()
+        func account(workspace: String?) -> CodexVisibleAccount {
+            CodexVisibleAccount(
+                id: "user@example.com",
+                email: "user@example.com",
+                workspaceAccountID: workspace,
+                storedAccountID: savedID,
+                selectionSource: .managedAccount(id: savedID),
+                isActive: false,
+                isLive: false,
+                canReauthenticate: true,
+                canRemove: true)
+        }
+        let unresolved = account(workspace: nil)
+        settings.renameCodexAccount(unresolved, to: "School")
+        #expect(settings.codexAccountNames[unresolved.customNameRecoveryKey] == "School")
+        settings.renameCodexAccount(account(workspace: "team-a"), to: "")
+        #expect(settings.codexAccountNames.isEmpty)
+    }
+
     @Test
     func `codex accounts section shows live badge only for live only multi account row`() throws {
         let settings = Self.makeSettingsStore(suite: "CodexAccountsSettingsSectionTests-live-badge")
@@ -134,7 +210,7 @@ struct CodexAccountsSettingsSectionTests {
         let settings = Self.makeSettingsStore(suite: "CodexAccountsSettingsSectionTests-select-split")
         let store = Self.makeUsageStore(settings: settings)
         let managedStoreURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let managedHome = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let managedHome = CodexCredentialFixtures.root.appendingPathComponent(
             UUID().uuidString,
             isDirectory: true)
         defer {
@@ -185,14 +261,14 @@ struct CodexAccountsSettingsSectionTests {
     func `codex accounts section disables add and reauth while managed authentication is in flight`() async throws {
         let settings = Self.makeSettingsStore(suite: "CodexAccountsSettingsSectionTests-in-flight")
         let store = Self.makeUsageStore(settings: settings)
-        let managedStoreURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: managedStoreURL) }
+        let root = CodexCredentialFixtures.root
+        let managedStoreURL = root.appendingPathComponent("managed.json")
 
         let managedAccountID = try #require(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-111111111111"))
         let managedAccount = ManagedCodexAccount(
             id: managedAccountID,
             email: "managed@example.com",
-            managedHomePath: "/tmp/managed",
+            managedHomePath: root.appendingPathComponent("legacy", isDirectory: true).path,
             createdAt: 1,
             updatedAt: 2,
             lastAuthenticatedAt: 2)
@@ -202,8 +278,6 @@ struct CodexAccountsSettingsSectionTests {
             accounts: [managedAccount]))
         settings._test_managedCodexAccountStoreURL = managedStoreURL
 
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
         let runner = BlockingManagedCodexLoginRunnerForSettingsSectionTests()
         let service = ManagedCodexAccountService(
             store: managedStore,
@@ -278,7 +352,7 @@ struct CodexAccountsSettingsSectionTests {
 
     @Test
     func `managed codex login failure message includes codex login output`() {
-        let error = ManagedCodexAccountServiceError.loginFailed(CodexLoginRunner.Result(
+        let error = ManagedCodexAccountServiceError.loginFailed(CLILoginRunner.Result(
             outcome: .failed(status: 2),
             output: "Browser selected the existing ChatGPT account"))
 
@@ -305,8 +379,7 @@ struct CodexAccountsSettingsSectionTests {
     }
 
     private static func makeSettingsStore(suite: String) -> SettingsStore {
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = InMemoryUserDefaults()
         let configStore = testConfigStore(suiteName: suite)
 
         return SettingsStore(
@@ -400,22 +473,22 @@ private struct TestManagedCodexHomeFactoryForSettingsSectionTests: ManagedCodexH
 }
 
 private struct StubManagedCodexLoginRunnerForSettingsSectionTests: ManagedCodexLoginRunning {
-    let result: CodexLoginRunner.Result
+    let result: CLILoginRunner.Result
 
-    func run(homePath _: String, timeout _: TimeInterval) async -> CodexLoginRunner.Result {
+    func run(homePath _: String, timeout _: TimeInterval) async -> CLILoginRunner.Result {
         self.result
     }
 
     static let success = StubManagedCodexLoginRunnerForSettingsSectionTests(
-        result: CodexLoginRunner.Result(outcome: .success, output: "ok"))
+        result: CLILoginRunner.Result(outcome: .success, output: "ok"))
 }
 
 private actor BlockingManagedCodexLoginRunnerForSettingsSectionTests: ManagedCodexLoginRunning {
-    private var waiters: [CheckedContinuation<CodexLoginRunner.Result, Never>] = []
+    private var waiters: [CheckedContinuation<CLILoginRunner.Result, Never>] = []
     private var startedWaiters: [CheckedContinuation<Void, Never>] = []
     private var didStart = false
 
-    func run(homePath _: String, timeout _: TimeInterval) async -> CodexLoginRunner.Result {
+    func run(homePath _: String, timeout _: TimeInterval) async -> CLILoginRunner.Result {
         self.didStart = true
         self.startedWaiters.forEach { $0.resume() }
         self.startedWaiters.removeAll()
@@ -432,7 +505,7 @@ private actor BlockingManagedCodexLoginRunnerForSettingsSectionTests: ManagedCod
     }
 
     func resume() {
-        let result = CodexLoginRunner.Result(outcome: .success, output: "ok")
+        let result = CLILoginRunner.Result(outcome: .success, output: "ok")
         self.waiters.forEach { $0.resume(returning: result) }
         self.waiters.removeAll()
     }

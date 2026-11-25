@@ -32,29 +32,13 @@ private func appLanguageDefaults() -> UserDefaults {
     return UserDefaults(suiteName: "CodexBar") ?? .standard
 }
 
-private let isRunningTestsProcessAtStartup: Bool = {
-    let env = ProcessInfo.processInfo.environment
-    if env["XCTestConfigurationFilePath"] != nil {
-        return true
-    }
-    if env["TESTING_LIBRARY_VERSION"] != nil {
-        return true
-    }
-    if env["SWIFT_TESTING"] != nil {
-        return true
-    }
-    return NSClassFromString("XCTestCase") != nil
-}()
-
-private func isRunningTestsProcess() -> Bool {
-    isRunningTestsProcessAtStartup
-}
+private let isRunningTestsProcessAtStartup = TestProcessSafety.isRunning
 
 private func resolvedAppLanguage() -> String {
     if let override = CodexBarLocalizationOverride.appLanguage {
         return override
     }
-    if isRunningTestsProcess() {
+    if isRunningTestsProcessAtStartup {
         return "en"
     }
     return appLanguageDefaults().string(forKey: "appLanguage") ?? ""
@@ -204,13 +188,31 @@ func L(_ key: String) -> String {
 }
 
 func L(_ key: String, _ arguments: CVarArg...) -> String {
-    String(format: L(key), arguments: arguments)
+    String(format: L(key), locale: codexBarLocalizedResourceLocale(), arguments: arguments)
 }
 
 func L(_ key: String, language: String) -> String {
     let resourceBundle = codexBarLocalizationResourceBundle()
     let bundle = localizedBundle(forLanguage: language)
     return codexBarLocalizedString(key, bundle: bundle, resourceBundle: resourceBundle)
+}
+
+/// Uses an explicit duration for Simplified Chinese quota surfaces while preserving the generic
+/// `Session` translation for conversations and other non-quota UI.
+func localizedSessionQuotaLabel(_ label: String, windowMinutes: Int?) -> String {
+    let localizedLabel = L(label)
+    guard label == "Session",
+          localizedBundle().bundleURL.lastPathComponent.caseInsensitiveCompare("zh-Hans.lproj") == .orderedSame,
+          let windowMinutes
+    else { return localizedLabel }
+
+    if windowMinutes == 7 * 24 * 60 {
+        return L("Weekly")
+    }
+    guard (60...(12 * 60)).contains(windowMinutes), windowMinutes.isMultiple(of: 60) else {
+        return localizedLabel
+    }
+    return "\(codexBarLocalizedInteger(windowMinutes / 60)) \(L("Hour"))"
 }
 
 func codexBarLocalizedLocale() -> Locale {

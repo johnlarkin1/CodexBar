@@ -1,12 +1,33 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 enum CostUsageJsonl {
     struct Line {
         let bytes: Data
         let wasTruncated: Bool
+        let startOffset: Int64
+        let endOffset: Int64
+
+        init(
+            bytes: Data,
+            wasTruncated: Bool,
+            startOffset: Int64 = 0,
+            endOffset: Int64 = 0)
+        {
+            self.bytes = bytes
+            self.wasTruncated = wasTruncated
+            self.startOffset = startOffset
+            self.endOffset = endOffset
+        }
     }
 
-    struct ResumeState: Codable {
+    struct ResumeState: Codable, Equatable {
         let offset: Int64
         fileprivate let lineStartOffset: Int64
         fileprivate let prefix: Data
@@ -21,8 +42,8 @@ enum CostUsageJsonl {
         let resumeState: ResumeState?
     }
 
-    fileprivate struct JSONTailState: Codable {
-        private enum ScalarState: Codable {
+    fileprivate struct JSONTailState: Codable, Equatable {
+        private enum ScalarState: Codable, Equatable {
             case notScalar
             case trueLiteral(Int)
             case falseLiteral(Int)
@@ -31,7 +52,7 @@ enum CostUsageJsonl {
             case invalid
         }
 
-        private enum NumberState: Codable {
+        private enum NumberState: Codable, Equatable {
             private enum ByteKind {
                 case zero
                 case digit
@@ -111,6 +132,18 @@ enum CostUsageJsonl {
         private var escaping = false
         private var sawNonWhitespace = false
         private var scalarState = ScalarState.notScalar
+
+        /// Persisted Codable checkpoints can contain unusual counters. Preserve the scalar updater
+        /// when skipping could bypass checked depth arithmetic or literal indexing.
+        func canSkipTerminatedSpanUpdates(count: Int) -> Bool {
+            guard self.containerDepth >= 0, self.containerDepth <= Int.max - count else { return false }
+            switch self.scalarState {
+            case let .trueLiteral(matched), let .falseLiteral(matched), let .nullLiteral(matched):
+                return matched >= 0
+            case .notScalar, .number, .invalid:
+                return true
+            }
+        }
 
         mutating func reset() {
             self = Self()
@@ -272,6 +305,7 @@ enum CostUsageJsonl {
             prefixBytes: prefixBytes,
             maxBytesToRead: maxBytesToRead,
             resumeState: nil,
+            shouldStop: nil,
             checkCancellation: checkCancellation,
             onLine: onLine).committedOffset
     }
@@ -284,6 +318,7 @@ enum CostUsageJsonl {
         prefixBytes: Int,
         maxBytesToRead: Int64?,
         resumeState: ResumeState?,
+        shouldStop: ((Int64) -> Bool)? = nil,
         checkCancellation: (() throws -> Void)? = nil,
         onLine: (Line) -> Void) throws -> ScanProgress
     {
@@ -330,9 +365,13 @@ enum CostUsageJsonl {
             }
         }
 
-        func flushLine() {
+        func flushLine(endOffset: Int64) {
             guard lineBytes > 0 else { return }
-            let line = Line(bytes: current, wasTruncated: truncated)
+            let line = Line(
+                bytes: current,
+                wasTruncated: truncated,
+                startOffset: lineStartOffset,
+                endOffset: endOffset)
             onLine(line)
             current.removeAll(keepingCapacity: true)
             lineBytes = 0
@@ -364,10 +403,13 @@ enum CostUsageJsonl {
 
         while true {
             try checkCancellation?()
+            if bytesRead > 0, shouldStop?(bytesRead) == true {
+                break
+            }
             let remaining = maxBytesToRead.map { max(0, $0 - bytesRead) }
             if remaining == 0 {
                 if let fileSize, startOffset + bytesRead >= fileSize, hasCompleteJSONTail() {
-                    flushLine()
+                    flushLine(endOffset: startOffset + bytesRead)
                     committedOffset = startOffset + bytesRead
                     lineStartOffset = committedOffset
                 }
@@ -378,7 +420,7 @@ enum CostUsageJsonl {
                 let chunk = try handle.read(upToCount: readCount) ?? Data()
                 if chunk.isEmpty {
                     if hasCompleteJSONTail() {
-                        flushLine()
+                        flushLine(endOffset: startOffset + bytesRead)
                         committedOffset = startOffset + bytesRead
                         lineStartOffset = committedOffset
                     }
@@ -391,20 +433,37 @@ enum CostUsageJsonl {
                 chunk.withUnsafeBytes { rawBuffer in
                     guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
                     var segmentStart = 0
-                    var index = 0
-                    while index < rawBuffer.count {
-                        if base[index] == 0x0A {
-                            appendSegment(base.advanced(by: segmentStart), count: index - segmentStart)
-                            flushLine()
-                            committedOffset = chunkStartOffset + Int64(index + 1)
-                            lineStartOffset = committedOffset
-                            segmentStart = index + 1
-                        } else {
-                            jsonTailState.append(base[index])
+                    while segmentStart < rawBuffer.count {
+                        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+                        guard let newline = memchr(
+                            base.advanced(by: segmentStart),
+                            0x0A,
+                            rawBuffer.count - segmentStart) else { break }
+                        let index = base.distance(to: newline.assumingMemoryBound(to: UInt8.self))
+                        #else
+                        var index = segmentStart
+                        while index < rawBuffer.count, base[index] != 0x0A {
+                            index += 1
                         }
-                        index += 1
+                        guard index < rawBuffer.count else { break }
+                        #endif
+                        // A negative decoded line count can keep tail state alive across the flush.
+                        if lineBytes < 0 || !jsonTailState.canSkipTerminatedSpanUpdates(count: index - segmentStart) {
+                            for byteIndex in segmentStart..<index {
+                                jsonTailState.append(base[byteIndex])
+                            }
+                        }
+                        appendSegment(base.advanced(by: segmentStart), count: index - segmentStart)
+                        let lineEndOffset = chunkStartOffset + Int64(index + 1)
+                        flushLine(endOffset: lineEndOffset)
+                        committedOffset = lineEndOffset
+                        lineStartOffset = committedOffset
+                        segmentStart = index + 1
                     }
                     if segmentStart < rawBuffer.count {
+                        for index in segmentStart..<rawBuffer.count {
+                            jsonTailState.append(base[index])
+                        }
                         appendSegment(base.advanced(by: segmentStart), count: rawBuffer.count - segmentStart)
                     }
                 }

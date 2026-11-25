@@ -26,9 +26,9 @@ struct MenuBarMetricWindowResolverTests {
     @Test
     func `automatic metric uses zai 5-hour token lane when it is most constrained`() {
         let snapshot = UsageSnapshot(
-            primary: RateWindow(usedPercent: 12, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
-            secondary: RateWindow(usedPercent: 10, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
-            tertiary: RateWindow(usedPercent: 92, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            primary: RateWindow(usedPercent: 92, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 12, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            tertiary: nil,
             updatedAt: Date())
 
         let window = MenuBarMetricWindowResolver.rateWindow(
@@ -280,7 +280,7 @@ struct MenuBarMetricWindowResolverTests {
     }
 
     @Test
-    func `automatic metric keeps default primary order when no window is exhausted`() {
+    func `automatic metric chooses highest usage without a forecast`() {
         let snapshot = UsageSnapshot(
             primary: RateWindow(usedPercent: 42, windowMinutes: 300, resetsAt: nil, resetDescription: "Primary"),
             secondary: RateWindow(usedPercent: 99, windowMinutes: 10080, resetsAt: nil, resetDescription: "Secondary"),
@@ -292,8 +292,8 @@ struct MenuBarMetricWindowResolverTests {
             snapshot: snapshot,
             supportsAverage: false)
 
-        #expect(window?.resetDescription == "Primary")
-        #expect(window?.usedPercent == 42)
+        #expect(window?.resetDescription == "Secondary")
+        #expect(window?.usedPercent == 99)
     }
 
     @Test
@@ -716,7 +716,7 @@ struct MenuBarMetricWindowResolverTests {
     @Test
     func `monthly plan metric selects Mistral subscription window`() {
         let snapshot = UsageSnapshot(
-            primary: nil,
+            primary: RateWindow(usedPercent: 2, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
             secondary: nil,
             extraRateWindows: [
                 NamedRateWindow(
@@ -733,6 +733,10 @@ struct MenuBarMetricWindowResolverTests {
             supportsAverage: false)
 
         #expect(window?.usedPercent == 42)
+        #expect(MenuBarMetricWindowResolver.rateWindow(
+            preference: .automatic, provider: .mistral, snapshot: snapshot, supportsAverage: false) == nil)
+        #expect(MenuBarMetricWindowResolver.rateWindow(
+            preference: .primary, provider: .mistral, snapshot: snapshot, supportsAverage: false)?.usedPercent == 2)
     }
 
     @Test

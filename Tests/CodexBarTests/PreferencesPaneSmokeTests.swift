@@ -12,6 +12,7 @@ struct PreferencesPaneSmokeTests {
         let store = Self.makeUsageStore(settings: settings)
 
         _ = GeneralPane(settings: settings).body
+        _ = ICloudSyncPane(settings: settings, state: CloudSyncState()).body
         _ = NotificationsPane(settings: settings).body
         _ = MenuBarPane(settings: settings, store: store).body
         _ = MenuPane(settings: settings, store: store).body
@@ -19,7 +20,9 @@ struct PreferencesPaneSmokeTests {
         _ = HooksPane(settings: settings).body
         _ = ProvidersPane(settings: settings, store: store).body
         _ = DebugPane(settings: settings, store: store).body
-        _ = AboutPane(updater: DisabledUpdaterController()).body
+        _ = AboutPane(
+            updater: DisabledUpdaterController(),
+            selection: PreferencesSelection(userDefaults: InMemoryUserDefaults())).body
         _ = SettingsSidebarView(settings: settings, store: store, selection: .constant(.general)).body
 
         settings.debugDisableKeychainAccess = false
@@ -45,13 +48,16 @@ struct PreferencesPaneSmokeTests {
         store._setErrorForTesting("Example error", provider: .codex)
 
         _ = GeneralPane(settings: settings).body
+        _ = ICloudSyncPane(settings: settings, state: CloudSyncState()).body
         _ = NotificationsPane(settings: settings).body
         _ = MenuBarPane(settings: settings, store: store).body
         _ = MenuPane(settings: settings, store: store).body
         _ = AdvancedPane(settings: settings, store: store).body
         _ = ProvidersPane(provider: .claude, settings: settings, store: store).body
         _ = DebugPane(settings: settings, store: store).body
-        _ = AboutPane(updater: DisabledUpdaterController()).body
+        _ = AboutPane(
+            updater: DisabledUpdaterController(),
+            selection: PreferencesSelection(userDefaults: InMemoryUserDefaults())).body
         _ = SettingsSidebarView(settings: settings, store: store, selection: .constant(.provider(.codex))).body
     }
 
@@ -94,8 +100,10 @@ struct PreferencesPaneSmokeTests {
         #expect(MenuBarSettingsMenuOptions.displayModes == MenuBarDisplayMode.allCases)
         #expect(MenuBarSettingsMenuOptions.iconStyles == MenuBarIconStyle.allCases)
         #expect(MenuBarSettingsMenuOptions.switcherRows == SwitcherRowsOption.allCases)
-        #expect(MenuSettingsMenuOptions.weeklyProgressWorkDays == [nil, 4, 5, 7])
+        #expect(MenuSettingsMenuOptions.weeklyProgressWorkDays == [nil, 4, 5, 6, 7])
         #expect(MenuSettingsMenuOptions.weeklyProgressWorkDaysLabel(nil) == L("Automatic"))
+        #expect(MenuSettingsMenuOptions.weeklyProgressWorkDaysLabel(6) == L("%d days", 6))
+        #expect(MenuSettingsMenuOptions.workdayTickAppearances == WorkdayTickAppearance.allCases)
         #expect(MenuSettingsMenuOptions.multiAccountLayouts == MultiAccountMenuLayout.allCases)
         #expect(MenuSettingsMenuOptions.usageBarsFill == UsageBarsFillOption.allCases)
         #expect(MenuSettingsMenuOptions.resetTimes == ResetTimesOption.allCases)
@@ -106,14 +114,28 @@ struct PreferencesPaneSmokeTests {
         let settings = Self.makeSettingsStore(suite: suite)
         settings.menuBarDisplayMode = .resetTime
         settings.weeklyProgressWorkDays = 7
+        settings.workdayTickAppearance = .highContrast
         settings.multiAccountMenuLayout = .stacked
         settings.costSummaryDisplayStyle = .costSubmenu
 
         let reloaded = Self.makeSettingsStore(suite: suite, reset: false)
         #expect(reloaded.menuBarDisplayMode == .resetTime)
         #expect(reloaded.weeklyProgressWorkDays == 7)
+        #expect(reloaded.workdayTickAppearance == .highContrast)
         #expect(reloaded.multiAccountMenuLayout == .stacked)
         #expect(reloaded.costSummaryDisplayStyle == .costSubmenu)
+
+        reloaded.weeklyProgressWorkDays = 6
+        #expect(Self.makeSettingsStore(suite: suite, reset: false).weeklyProgressWorkDays == 6)
+    }
+
+    @Test
+    func `settings menu picker keeps off list selections visible`() {
+        let workDays = MenuSettingsMenuOptions.weeklyProgressWorkDays
+        #expect(SettingsMenuPickerOptions.displayed(workDays, selection: 5) == workDays)
+        #expect(SettingsMenuPickerOptions.displayed(workDays, selection: nil) == workDays)
+        #expect(SettingsMenuPickerOptions.displayed(workDays, selection: 3) == [nil, 4, 5, 6, 7, 3])
+        #expect(MenuSettingsMenuOptions.weeklyProgressWorkDaysLabel(3) == L("%d days", 3))
     }
 
     @Test
@@ -126,9 +148,35 @@ struct PreferencesPaneSmokeTests {
 
     @Test
     func `inactive display contrast is available only for icon and percent`() {
-        #expect(!MenuBarPane.inactiveDisplayContrastAvailable(for: .critters))
-        #expect(!MenuBarPane.inactiveDisplayContrastAvailable(for: .bars))
-        #expect(MenuBarPane.inactiveDisplayContrastAvailable(for: .iconAndPercent))
+        #expect(!MenuBarPane.layoutEditorEnabled(for: .critters))
+        #expect(!MenuBarPane.layoutEditorEnabled(for: .bars))
+        #expect(MenuBarPane.layoutEditorEnabled(for: .iconAndPercent))
+    }
+
+    @Test
+    func `menu bar layout footer follows the selected style`() {
+        #expect(MenuBarPane.layoutEditorEnabled(for: .iconAndPercent))
+        #expect(!MenuBarPane.layoutEditorEnabled(for: .critters))
+        #expect(!MenuBarPane.layoutEditorEnabled(for: .bars))
+
+        CodexBarLocalizationOverride.$appLanguage.withValue("en") {
+            let enabledFooter = MenuBarPane.layoutFooterText(for: .iconAndPercent)
+            let disabledFooter = MenuBarPane.layoutFooterText(for: .critters)
+
+            #expect(enabledFooter.contains("Drag tokens"))
+            #expect(!enabledFooter.contains("Icon & percent"))
+            #expect(disabledFooter.contains("Icon & percent"))
+            #expect(!disabledFooter.contains("Drag tokens"))
+            #expect(!disabledFooter.contains("%@"))
+            #expect(MenuBarPane.layoutFooterText(for: .bars) == disabledFooter)
+        }
+
+        CodexBarLocalizationOverride.$appLanguage.withValue("de") {
+            let footer = MenuBarPane.layoutFooterText(for: .bars)
+
+            #expect(footer.contains(MenuBarIconStyle.iconAndPercent.label))
+            #expect(!footer.contains("%@"))
+        }
     }
 
     /// This fork defaults usage colors on; upstream defaults them off.
@@ -218,6 +266,24 @@ struct PreferencesPaneSmokeTests {
         #expect(!CostHistoryDaysEditor.title(days: 365).contains("%d"))
 
         _ = CostHistoryDaysEditor(settings: settings).body
+    }
+
+    @Test
+    func `agent session hosts editor builds for empty disabled and populated states`() {
+        let suite = "PreferencesPaneSmokeTests-agent-session-hosts"
+        let settings = Self.makeSettingsStore(suite: suite)
+
+        settings.agentSessionsEnabled = false
+        settings.agentSessionsManualHosts = ""
+        _ = AgentSessionHostsEditor(settings: settings).body
+        #expect(AgentSessionHostsEditor.inputFormatHint == "user@host, user@host")
+
+        settings.agentSessionsEnabled = true
+        settings.agentSessionsManualHosts = "developer@example-host"
+        _ = AgentSessionHostsEditor(settings: settings).body
+
+        let reloaded = Self.makeSettingsStore(suite: suite, reset: false)
+        #expect(reloaded.agentSessionsManualHosts == "developer@example-host")
     }
 
     @Test
@@ -529,6 +595,16 @@ struct PreferencesPaneSmokeTests {
     }
 
     @Test
+    func `english quit app label resolves without format placeholders`() {
+        CodexBarLocalizationOverride.$appLanguage.withValue("en") {
+            let label = L("quit_app")
+            #expect(label == "Quit CodexBar")
+            #expect(!label.contains("%@"))
+            #expect(!label.contains("%d"))
+        }
+    }
+
+    @Test
     func `german app language resolves localized labels`() {
         let settings = Self.makeSettingsStore(suite: "PreferencesPaneSmokeTests-language-de")
         settings.appLanguage = "de"
@@ -542,6 +618,13 @@ struct PreferencesPaneSmokeTests {
             #expect(L("display_mode_reset_time_desc").contains("↻ 15:56"))
             #expect(L("vertex_ai_login_instructions").contains("\n\n1. Öffnen Sie Terminal"))
             #expect(!L("vertex_ai_login_instructions").contains("\\n"))
+        }
+    }
+
+    @Test(arguments: [("fr", "6 jours"), ("ar", "٦ أيام"), ("fa", "۶ روز"), ("ja", "6日間")])
+    func `six work days label keeps the number first`(language: String, expected: String) {
+        CodexBarLocalizationOverride.$appLanguage.withValue(language) {
+            #expect(MenuSettingsMenuOptions.weeklyProgressWorkDaysLabel(6) == expected)
         }
     }
 
