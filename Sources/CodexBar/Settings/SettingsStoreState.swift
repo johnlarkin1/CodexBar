@@ -41,6 +41,7 @@ struct SettingsDefaultsState {
     var menuBarColorPace: Bool
     var menuBarPaceReservePositive: Bool
     var menuBarColorByProvider: Bool
+    var menuBarUsageColorsEnabled: Bool
     var menuBarHighContrastOnInactiveDisplays: Bool
     var menuBarDisplayModeRaw: String?
     var menuBarShowsResetTimeWhenExhausted: Bool

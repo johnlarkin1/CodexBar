@@ -341,6 +341,11 @@ extension SettingsStore {
         set { self.setDefault(\.menuBarColorByProvider, newValue, key: "menuBarColorByProvider") }
     }
 
+    var menuBarUsageColorsEnabled: Bool {
+        get { self.defaultsState.menuBarUsageColorsEnabled }
+        set { self.setDefault(\.menuBarUsageColorsEnabled, newValue, key: "menuBarUsageColorsEnabled") }
+    }
+
     var menuBarHighContrastOnInactiveDisplays: Bool {
         get { self.defaultsState.menuBarHighContrastOnInactiveDisplays }
         set { self.setDefault(

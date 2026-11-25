@@ -493,6 +493,10 @@ extension StatusItemController {
                 tint: providerTint,
                 for: button)
         } else {
+            // Usage color wins over "Color by provider" on the meter. The meter is baked as real RGB when
+            // tinted, so re-tinting it with the provider color would either no-op or erase the usage signal.
+            let usageTint = self.menuBarUsageTint(primaryBarPercent: primary, showUsed: showUsed)
+            let meterProviderTint = usageTint == nil ? providerTint : nil
             let signature = [
                 "mode=icon;measured=\(snapshot?.primary?.measured != nil)",
                 "provider=\(provider.rawValue)",
@@ -509,7 +513,8 @@ extension StatusItemController {
                 activity,
                 "hideCritters=\(self.settings.menuBarHidesCritters ? "1" : "0")",
                 "highContrast=\(self.shouldUseHighContrastStatusItemContent ? "1" : "0")",
-                "providerTint=\(providerTint?.description ?? "template")",
+                "providerTint=\(meterProviderTint?.description ?? "template")",
+                "usageColors=\(usageTint == nil ? "0" : "1")",
             ].joined(separator: "|")
             if shouldSkipRender(signature), canSkipCachedRender {
                 self.noteIconPerfRender(skipped: true)
@@ -526,11 +531,12 @@ extension StatusItemController {
                 tilt: tilt,
                 statusIndicator: statusIndicator,
                 hideCritters: self.settings.menuBarHidesCritters,
-                quotaLayoutPolicy: .provider(provider, snapshot: snapshot))
+                quotaLayoutPolicy: .provider(provider, snapshot: snapshot),
+                tint: usageTint)
             self.setButtonContent(
                 image: warningFlash ? Self.quotaWarningFlashImage(base: image) : image,
                 title: nil,
-                tint: providerTint,
+                tint: meterProviderTint,
                 for: button)
         }
         self.noteIconPerfRender(skipped: false)
@@ -546,6 +552,15 @@ extension StatusItemController {
     static func iconSignatureValue(_ value: Double?) -> String {
         guard let value else { return "nil" }
         return String(format: "%.3f", value)
+    }
+
+    /// Tint for the meter icon, or `nil` to leave it an untinted template.
+    ///
+    /// `primaryBarPercent` follows `usageBarsShowUsed`, so it is normalized to a used percentage here.
+    /// Reading it as "remaining" would paint a freshly reset quota red.
+    func menuBarUsageTint(primaryBarPercent: Double?, showUsed: Bool) -> NSColor? {
+        guard self.settings.menuBarUsageColorsEnabled else { return nil }
+        return MenuBarUsageTint.color(forUsedPercent: primaryBarPercent.map { showUsed ? $0 : 100 - $0 })
     }
 
     func resolvedMenuBarIconPercents(
