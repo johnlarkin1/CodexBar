@@ -51,6 +51,15 @@ struct MenuBarPane: View {
                 }
                 .disabled(!Self.layoutEditorEnabled(for: self.settings.menuBarIconStyle))
 
+                Toggle(isOn: self.$settings.menuBarUsageColorsEnabled) {
+                    SettingsRowLabel(
+                        L("menu_bar_usage_colors_title"),
+                        subtitle: L("menu_bar_usage_colors_subtitle"))
+                }
+                // The meter icon is what carries the tint; Icon + Percent renders the provider brand logo
+                // through MenuBarLayoutRenderer, which this setting does not touch.
+                .disabled(self.settings.menuBarIconStyle == .iconAndPercent)
+
                 Toggle(isOn: self.$settings.menuBarColorPace) {
                     SettingsRowLabel(
                         L("Color Pace Indicator"),
