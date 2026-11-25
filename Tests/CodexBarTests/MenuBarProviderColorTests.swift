@@ -150,6 +150,8 @@ struct MenuBarProviderColorTests {
         settings.selectedMenuProvider = .claude
         settings.menuBarIconStyle = style
         settings.menuBarColorByProvider = true
+        // Fork: usage colors default on and win over provider colors; isolate the provider-color path.
+        settings.menuBarUsageColorsEnabled = false
         settings.menuBarLayout = MenuBarLayout(lines: [[.percent(window: .session)]])
         for provider in UsageProvider.allCases {
             if let metadata = ProviderRegistry.shared.metadata[provider] {

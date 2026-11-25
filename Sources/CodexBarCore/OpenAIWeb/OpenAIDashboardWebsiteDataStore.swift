@@ -63,13 +63,22 @@ public enum OpenAIDashboardWebsiteDataStore {
     static func existingIdentifiers(
         in directory: URL = Self.namedStoreDirectory,
         initialize: () -> Void = { _ = WKWebsiteDataStore.default() },
-        enumerate: () async -> [UUID] = { await WKWebsiteDataStore.allDataStoreIdentifiers }) async -> [UUID]
+        enumerate: () async -> [UUID] = { await Self.fetchAllIdentifiers() }) async -> [UUID]
     {
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory.path),
               entries.contains(where: { UUID(uuidString: $0) != nil }) else { return [] }
         // Enumeration omits InitializeWebKit2; its IO callback needs the main RunLoop initialized first.
         initialize()
         return await enumerate()
+    }
+
+    /// Fork carry: `await WKWebsiteDataStore.allDataStoreIdentifiers` from a non-isolated closure segfaults in
+    /// `CheckedContinuation.resume` under Xcode 26.4 (Swift 6.3) on macOS 26.4, in debug and release alike.
+    /// Wrapping the completion-handler API by hand avoids the compiler-synthesized async thunk.
+    private static func fetchAllIdentifiers() async -> [UUID] {
+        await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.fetchAllDataStoreIdentifiers { continuation.resume(returning: $0) }
+        }
     }
 
     public static func removeStore(
