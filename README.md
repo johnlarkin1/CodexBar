@@ -2,7 +2,7 @@
 
 Tiny macOS 14+ menu bar app that keeps your Codex, Claude, Cursor, Gemini, Antigravity, Droid (Factory), Copilot, z.ai, Kiro, Vertex AI, Augment, Amp, JetBrains AI, and OpenRouter limits visible (session + weekly where available) and shows when each window resets. One status item per provider (or Merge Icons mode with a provider switcher and optional Overview tab); enable what you use from Settings. No Dock icon, minimal UI, dynamic bar icons in the menu bar.
 
-<img src="docs/codexbar.png" alt="CodexBar — every AI coding limit in your menu bar. 66 providers." width="520" />
+<a href="https://codexbar.app"><img src="docs/social.png?v=b34db92095031795" alt="CodexBar — every AI coding limit in your menu bar. 115 providers." width="100%" /></a>
 
 > ![IMPORTANT]
 > This is a FORKED project. I'll tell you why I did that below. 
@@ -40,6 +40,39 @@ That's fine, but the beauty of claudecodeusage is... it just works based on your
 - [Amp](docs/amp.md) — Browser cookie-based authentication with Amp Free usage tracking.
 - [JetBrains AI](docs/jetbrains.md) — Local XML-based quota from JetBrains IDE configuration; monthly credits tracking.
 - [OpenRouter](docs/openrouter.md) — API token for credit-based usage tracking across multiple AI providers.
+
+More providers, generated from each provider's docs (upstream now registers well over a hundred; see Settings → Providers for the full list):
+
+<!-- Generated provider additions: Scripts/regenerate-provider-docs.mjs -->
+- [Langdock](docs/langdock.md) — Selected Edge, Chrome, or Safari profile → personal included session and weekly limits (`web`, macOS).
+- [Soniox](docs/soniox.md) — Organization API key for prepaid USD balance and monthly spend against the organization budget.
+- [X API](docs/xapi.md) — Browser or manual console.x.com cookies for prepaid and free credits, including negative balances.
+- [Future AGI](docs/futureagi.md) — API key and secret key (billing-period usage, allowances, and estimated cost).
+- [LithosAI](docs/lithosai.md) — Browser or manual console cookies for prepaid USD balance and optional UTC spend.
+- [WorkBuddy](docs/workbuddy.md) — Chrome or manual www.workbuddy.cn cookies for the monthly credits allowance, plan name, cycle reset, and the platform reward credits.
+- [Tavily](docs/tavily.md) — API key for account-plan, per-key, and pay-as-you-go credit totals.
+- [Linkup](docs/linkup.md) — API key for the current prepaid USD credit balance.
+- [TinyApi](docs/tinyapi.md) — Browser or manual session cookies for aggregate available credits.
+- [Exa](docs/exa.md) — Team Management service key plus an explicit API key ID for month-to-date USD spend.
+- [Cosmic AI](docs/cosmic.md) — Explicit Personal Access Token and Project ID for separate project AI input/output counters and allowances.
+- [Aerostack](docs/aerostack.md) — Explicit account JWT for monthly AI tokens used and the observed account allowance.
+- [Sail Research](docs/sailresearch.md) — API key for organization credit balance and combined inference/Sailbox spend.
+- [Sofya](docs/sofya.md) — API key for separate account plan and purchased credit balances, eligibility, and the reported monthly reset.
+- [fal](docs/fal.md) — API key with billing read access for the current account credit balance.
+- [FLORA](docs/flora.md) — API key with billing permission plus a workspace ID for the available USD balance and month-to-date spend.
+- [Parallel](docs/parallel.md) — Browser session on platform.parallel.ai for the prepaid credit balance and pending debit.
+- [Claude Platform](docs/claudeplatform.md) — Browser or manual platform.claude.com session cookies for Console API credit balance, expiring credit grants, and month-to-date spend.
+- [Munito](docs/munito.md) — Admin API key with Read account data permission for today's and this month's spend against the organization's spend limits.
+- [Trae CN](docs/traecn.md) — Browser session for account credit usage.
+- [Chatbox AI](docs/chatbox.md) — API token
+- [abliteration.ai](docs/abliteration.md) — API key for prepaid USD credits and cumulative usage.
+- [OpenDesign](docs/opendesign.md) — Browser or manual session cookies for the active workspace's five-hour and weekly subscription allowance.
+- [SiliconFlow](docs/siliconflow.md) — API key in Auto/API; explicit Web for the China (CNY) console balance. International API balances use USD.
+- [Tripo](docs/tripo.md) — API key for available and reserved account credits from the official account balance endpoint.
+- [Google Developer Program](docs/googledeveloper.md) — Browser or manual me.developers.google.com session cookies for the current monthly Gen AI & Cloud credit of Google AI Pro and Ultra.
+- [TrustedRouter](docs/trustedrouter.md) — API key for the key's remaining limit and daily, weekly, monthly, and total spend.
+<!-- End generated provider additions -->
+
 - Open to new providers: [provider authoring guide](docs/provider.md).
 
 ## Features
@@ -68,7 +101,7 @@ Ya see how it's colored.
 
 ## Menu Bar Layout
 
-The fork's old separator-style toggle was retired when this synced to upstream 0.46. Upstream's menu bar layout editor covers it and more — you can place, reorder, and remove separator, percent, pace, reset, and cost tokens per provider.
+The fork's old separator-style toggle was retired when this synced to upstream 0.46. Upstream's menu bar layout editor covers it and more — you can place, reorder, and remove separator, percent, pace, reset, and cost tokens per provider. As of the 0.85 sync the fork's own pace and pipe-separator tokens are gone too: upstream's layout editor now has pace tokens (with a "Pace sign" setting) and a choice of separator glyphs, including `|`. Layouts saved with the fork's pipe token are migrated automatically.
 
 ## Better Menu Bar Configurations
 

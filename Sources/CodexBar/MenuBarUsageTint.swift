@@ -82,3 +82,23 @@ extension MenuBarLayoutToken {
         }
     }
 }
+
+extension MenuBarLayoutRenderer {
+    /// Fork: the strip has no single meter to read, so the tint follows whichever window the layout would show
+    /// first. `automatic` is what the default layout renders; session/weekly cover strips that skip it.
+    static func usageTint(data: MenuBarLayoutRenderData, options: MenuBarLayoutRenderOptions) -> NSColor? {
+        guard options.usageColorTarget != nil else { return nil }
+        return MenuBarUsageTint.color(forUsedPercent: (data.automatic ?? data.session ?? data.weekly)?.usedPercent)
+    }
+
+    /// Fork: `attributes` recolored with the usage tint, or unchanged when the token does not carry it.
+    static func attributes(
+        _ attributes: [NSAttributedString.Key: Any],
+        usageTint: NSColor?) -> [NSAttributedString.Key: Any]
+    {
+        guard let usageTint else { return attributes }
+        var tinted = attributes
+        tinted[.foregroundColor] = usageTint
+        return tinted
+    }
+}

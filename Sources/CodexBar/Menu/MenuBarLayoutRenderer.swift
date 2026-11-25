@@ -479,9 +479,8 @@ final class MenuBarLayoutRenderer {
         let usageForegroundColor = options.usageColorTarget == .everything ? usageTint : nil
         let foregroundColor = usageForegroundColor ?? providerTintColor ?? Self.neutralForegroundColor(options)
         let isTintActive = providerTintColor != nil || usageTint != nil
-        let iconTint = usageTint ?? providerTintColor
         let renderedIcon = icon.map { image in
-            iconTint.map { Self.attachmentImage(image, tint: $0, isMonochrome: false) } ?? image
+            (usageTint ?? providerTintColor).map { Self.attachmentImage(image, tint: $0, isMonochrome: false) } ?? image
         }
         let paragraphStyle = NSMutableParagraphStyle()
         if isStacked {
@@ -548,10 +547,6 @@ final class MenuBarLayoutRenderer {
                     result.append(NSAttributedString(string: "\u{2009}", attributes: attributes))
                 }
                 let tokenUsageTint = options.usageColorTarget == .usage && token.carriesUsageTint ? usageTint : nil
-                var tokenAttributes = attributes
-                if let tokenUsageTint {
-                    tokenAttributes[.foregroundColor] = tokenUsageTint
-                }
                 var renderedItem = Self.renderItem(
                     token,
                     data: data,
@@ -560,7 +555,7 @@ final class MenuBarLayoutRenderer {
                         font: font,
                         foregroundColor: tokenUsageTint ?? foregroundColor,
                         iconHeight: Self.iconHeight(size: options.size, isStacked: isStacked),
-                        attributes: tokenAttributes,
+                        attributes: Self.attributes(attributes, usageTint: tokenUsageTint),
                         isUsageTinted: tokenUsageTint != nil || usageForegroundColor != nil),
                     options: options)
                 switch token {
@@ -1293,13 +1288,6 @@ final class MenuBarLayoutRenderer {
         }
         tintedImage.isTemplate = isMonochrome
         return tintedImage
-    }
-
-    /// Fork: the strip has no single meter to read, so the tint follows whichever window the layout would show
-    /// first. `automatic` is what the default layout renders; session/weekly cover strips that skip it.
-    static func usageTint(data: MenuBarLayoutRenderData, options: MenuBarLayoutRenderOptions) -> NSColor? {
-        guard options.usageColorTarget != nil else { return nil }
-        return MenuBarUsageTint.color(forUsedPercent: (data.automatic ?? data.session ?? data.weekly)?.usedPercent)
     }
 
     private static func neutralForegroundColor(_ options: MenuBarLayoutRenderOptions) -> NSColor {

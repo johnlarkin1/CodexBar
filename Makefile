@@ -4,7 +4,7 @@
 SHELL := /bin/bash
 
 # Pull version from version.env for targets that need it
-include version.env
+-include version.env
 
 # Keep FILTER literal, including Make expressions, shell syntax, and apostrophes.
 unexport FILTER
@@ -41,8 +41,8 @@ build: ## Debug build
 build-release: ## Release build
 	swift build -c release
 
-test: ## Run full test suite
-	swift test
+test: ## Run full test suite (sharded, scrubs secret env vars)
+	./Scripts/test.sh
 
 test-fast: ## Fast sharded test run (FILTER=... to narrow)
 	./Scripts/test_fast.sh $(test_filter_arg)
@@ -65,8 +65,8 @@ run-test: ## Build with tests, package, and launch
 # ── Code Quality ────────────────────────────────────────────────────
 check: lint ## Alias for lint (upstream tooling and AGENTS.md expect `make check`)
 
-lint: ## SwiftFormat --lint + SwiftLint --strict (check only)
-	./Scripts/lint.sh lint
+lint: ## Lint (lint-linux on Linux, full lint on macOS)
+	./Scripts/lint.sh $(if $(filter Linux,$(shell uname -s)),lint-linux,lint)
 
 format: ## SwiftFormat auto-fix
 	./Scripts/lint.sh format
